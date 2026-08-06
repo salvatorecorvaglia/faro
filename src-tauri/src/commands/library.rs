@@ -30,7 +30,12 @@ pub fn save_query(state: State<'_, AppState>, mut query: SavedQuery) -> Result<S
     }
     // Treat a blank folder as "no folder" so an empty input field does not
     // create a folder literally named "".
-    if query.folder.as_deref().map(str::trim).is_some_and(str::is_empty) {
+    if query
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(str::is_empty)
+    {
         query.folder = None;
     }
 
@@ -96,7 +101,10 @@ mod tests {
 
     #[test]
     fn names_an_unnamed_query_after_its_first_statement() {
-        assert_eq!(default_query_name("SELECT * FROM users"), "SELECT * FROM users");
+        assert_eq!(
+            default_query_name("SELECT * FROM users"),
+            "SELECT * FROM users"
+        );
     }
 
     #[test]

@@ -82,12 +82,24 @@ fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(TABLE[(n >> 18 & 63) as usize] as char);
         out.push(TABLE[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -202,7 +214,12 @@ impl MongoDriver {
             })
             .collect();
 
-        ResultSet { columns, rows, truncated, elapsed_ms }
+        ResultSet {
+            columns,
+            rows,
+            truncated,
+            elapsed_ms,
+        }
     }
 }
 
@@ -218,7 +235,10 @@ fn urlencode(s: &str) -> String {
 }
 
 fn map_err(e: mongodb::error::Error) -> FaroError {
-    FaroError::Database { message: e.to_string(), code: None }
+    FaroError::Database {
+        message: e.to_string(),
+        code: None,
+    }
 }
 
 /// A parsed `db.collection.operation(args...)` call.
@@ -248,9 +268,9 @@ pub fn parse_query(input: &str) -> Result<MongoQuery> {
         )
     })?;
 
-    let open = rest.find('(').ok_or_else(|| {
-        FaroError::Sql("missing '(' — try db.collection.find({})".into())
-    })?;
+    let open = rest
+        .find('(')
+        .ok_or_else(|| FaroError::Sql("missing '(' — try db.collection.find({})".into()))?;
     if !rest.trim_end().ends_with(')') {
         return Err(FaroError::Sql("missing the closing ')'".into()));
     }
@@ -363,11 +383,7 @@ impl Driver for MongoDriver {
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>> {
-        let names = self
-            .client
-            .list_database_names()
-            .await
-            .map_err(map_err)?;
+        let names = self.client.list_database_names().await.map_err(map_err)?;
 
         Ok(names
             .into_iter()
@@ -492,8 +508,7 @@ impl Driver for MongoDriver {
                             .as_ref()
                             .and_then(|o| o.name.clone())
                             .unwrap_or_else(|| "index".to_string());
-                        let unique =
-                            m.options.as_ref().and_then(|o| o.unique).unwrap_or(false);
+                        let unique = m.options.as_ref().and_then(|o| o.unique).unwrap_or(false);
                         crate::model::IndexInfo {
                             columns: m.keys.keys().map(String::from).collect(),
                             // The _id index is created implicitly and cannot be
@@ -531,7 +546,10 @@ impl Driver for MongoDriver {
         let mut out = Vec::with_capacity(tables.len());
 
         for t in tables {
-            let table = TableRef { schema: t.schema.clone(), name: t.name.clone() };
+            let table = TableRef {
+                schema: t.schema.clone(),
+                name: t.name.clone(),
+            };
             // A smaller sample than describe_table: this feeds autocomplete,
             // where breadth across collections matters more than completeness
             // within one.
@@ -545,7 +563,11 @@ impl Driver for MongoDriver {
                     }
                 }
             }
-            out.push(TableColumns { schema: t.schema, name: t.name, columns });
+            out.push(TableColumns {
+                schema: t.schema,
+                name: t.name,
+                columns,
+            });
         }
         Ok(out)
     }
@@ -557,9 +579,7 @@ impl Driver for MongoDriver {
 
         let parsed = parse_query(sql)?;
         let started = Instant::now();
-        let collection = self
-            .db(None)
-            .collection::<Document>(&parsed.collection);
+        let collection = self.db(None).collection::<Document>(&parsed.collection);
 
         // One extra document reveals truncation without a count.
         let fetch = limit.saturating_add(1) as i64;
@@ -577,7 +597,11 @@ impl Driver for MongoDriver {
                 if let Some(projection) = parsed.args.get(1) {
                     find = find.projection(to_document(projection)?);
                 }
-                find = find.limit(if parsed.operation == "findOne" { 1 } else { fetch });
+                find = find.limit(if parsed.operation == "findOne" {
+                    1
+                } else {
+                    fetch
+                });
 
                 let cursor = tokio::select! {
                     biased;
@@ -627,10 +651,7 @@ impl Driver for MongoDriver {
                     .map(to_document)
                     .transpose()?
                     .unwrap_or_default();
-                let values = collection
-                    .distinct(&field, filter)
-                    .await
-                    .map_err(map_err)?;
+                let values = collection.distinct(&field, filter).await.map_err(map_err)?;
                 values
                     .into_iter()
                     .map(|v| bson::doc! { field.clone(): v })
@@ -799,7 +820,10 @@ pub fn decode_bson(value: &Bson) -> Value {
         // An ObjectId is the closest thing a document has to a primary key, so
         // it is shown as its hex form rather than as a nested object.
         Bson::ObjectId(id) => Value::Text(id.to_hex()),
-        Bson::DateTime(dt) => Value::Timestamp(dt.try_to_rfc3339_string().unwrap_or_else(|_| dt.to_string())),
+        Bson::DateTime(dt) => Value::Timestamp(
+            dt.try_to_rfc3339_string()
+                .unwrap_or_else(|_| dt.to_string()),
+        ),
         Bson::Binary(b) => Value::Bytes(b.bytes.clone()),
         // Nested documents and arrays keep their structure, which the grid shows
         // collapsed and the JSON view and cell inspector show in full.
@@ -855,8 +879,7 @@ mod tests {
 
     #[test]
     fn parses_an_aggregate_pipeline() {
-        let q =
-            parse_query(r#"db.books.aggregate([{"$match": {}}, {"$limit": 5}])"#).unwrap();
+        let q = parse_query(r#"db.books.aggregate([{"$match": {}}, {"$limit": 5}])"#).unwrap();
         assert_eq!(q.operation, "aggregate");
         assert_eq!(q.args.len(), 1);
         assert_eq!(q.args[0].as_array().unwrap().len(), 2);
@@ -936,7 +959,10 @@ mod tests {
     #[test]
     fn decimal128_is_carried_as_exact_text() {
         let d: bson::Decimal128 = "12345678901234567890.0987654321".parse().unwrap();
-        assert!(matches!(decode_bson(&Bson::Decimal128(d)), Value::Decimal(_)));
+        assert!(matches!(
+            decode_bson(&Bson::Decimal128(d)),
+            Value::Decimal(_)
+        ));
     }
 
     #[test]

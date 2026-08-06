@@ -8,8 +8,9 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
+    TableRef, Value,
 };
 
 pub struct PostgresDialect;
@@ -94,7 +95,11 @@ impl PostgresDriver {
             .await
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        Ok(Self { pool, meta, dialect: PostgresDialect })
+        Ok(Self {
+            pool,
+            meta,
+            dialect: PostgresDialect,
+        })
     }
 }
 
@@ -399,7 +404,12 @@ impl Driver for PostgresDriver {
             .map(|row| (0..columns.len()).map(|i| decode_value(row, i)).collect())
             .collect();
 
-        Ok(ResultSet { columns, rows: data, truncated, elapsed_ms })
+        Ok(ResultSet {
+            columns,
+            rows: data,
+            truncated,
+            elapsed_ms,
+        })
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {
@@ -500,12 +510,18 @@ mod tests {
     #[test]
     fn bytea_uses_postgres_hex_syntax() {
         // MySQL's X'..' form is a syntax error in Postgres; this must be '\x..'.
-        assert_eq!(PostgresDialect.quote_bytes(&[0x0a, 0x1b]), r"'\x0a1b'::bytea");
+        assert_eq!(
+            PostgresDialect.quote_bytes(&[0x0a, 0x1b]),
+            r"'\x0a1b'::bytea"
+        );
     }
 
     #[test]
     fn qualify_uses_schema_when_present() {
-        assert_eq!(PostgresDialect.qualify(Some("public"), "users"), r#""public"."users""#);
+        assert_eq!(
+            PostgresDialect.qualify(Some("public"), "users"),
+            r#""public"."users""#
+        );
         assert_eq!(PostgresDialect.qualify(None, "users"), r#""users""#);
     }
 

@@ -15,7 +15,10 @@ pub enum FaroError {
     /// A database-reported error. `message` is the engine's own words, which
     /// are almost always more useful than anything Faro could paraphrase.
     #[error("{message}")]
-    Database { message: String, code: Option<String> },
+    Database {
+        message: String,
+        code: Option<String>,
+    },
 
     #[error("no connection is open with id {0}")]
     NotConnected(String),
@@ -75,7 +78,12 @@ impl Serialize for FaroError {
             FaroError::Database { code, .. } => code.clone(),
             _ => None,
         };
-        SerializedError { kind: self.kind(), message: self.to_string(), code }.serialize(s)
+        SerializedError {
+            kind: self.kind(),
+            message: self.to_string(),
+            code,
+        }
+        .serialize(s)
     }
 }
 
@@ -92,7 +100,10 @@ impl From<sqlx::Error> for FaroError {
                 FaroError::Connection("timed out waiting for a free connection".into())
             }
             sqlx::Error::Io(io) => FaroError::Connection(io.to_string()),
-            _ => FaroError::Database { message: e.to_string(), code: None },
+            _ => FaroError::Database {
+                message: e.to_string(),
+                code: None,
+            },
         }
     }
 }

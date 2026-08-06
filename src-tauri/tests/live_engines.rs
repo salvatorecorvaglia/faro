@@ -73,11 +73,18 @@ macro_rules! engine_or_skip {
 
 async fn scalar(d: &dyn Driver, sql: &str) -> Value {
     let rs = d.query(sql, 1, CancellationToken::new()).await.unwrap();
-    rs.rows.first().and_then(|r| r.first()).cloned().unwrap_or(Value::Null)
+    rs.rows
+        .first()
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn cell(column: &str, text: &str) -> CellEdit {
-    CellEdit { column: column.into(), value: EditValue::Text(text.into()) }
+    CellEdit {
+        column: column.into(),
+        value: EditValue::Text(text.into()),
+    }
 }
 
 async fn apply(
@@ -138,14 +145,21 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
 
     // -- Foreign keys -----------------------------------------------------
     assert!(
-        books.foreign_keys.iter().any(|f| f.referenced_table.name == "authors"),
+        books
+            .foreign_keys
+            .iter()
+            .any(|f| f.referenced_table.name == "authors"),
         "{label}: books should reference authors: {:#?}",
         books.foreign_keys
     );
 
     // -- Querying and decoding -------------------------------------------
     let rs = d
-        .query("SELECT id, name, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap_or_else(|e| panic!("{label}: query failed: {e}"));
     assert_eq!(rs.rows.len(), 5, "{label}: author count");
@@ -155,7 +169,11 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
         Value::Text("Ada Lovelace".into()),
         "{label}: first name"
     );
-    assert_eq!(rs.rows[2][2], Value::Null, "{label}: NULL must decode as Null");
+    assert_eq!(
+        rs.rows[2][2],
+        Value::Null,
+        "{label}: NULL must decode as Null"
+    );
 
     // Unicode and embedded quotes must survive the round trip.
     let names: Vec<String> = rs
@@ -166,16 +184,29 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
             _ => None,
         })
         .collect();
-    assert!(names.iter().any(|n| n == "Ken O'Brien"), "{label}: apostrophe: {names:?}");
-    assert!(names.iter().any(|n| n.contains('Ó')), "{label}: unicode: {names:?}");
+    assert!(
+        names.iter().any(|n| n == "Ken O'Brien"),
+        "{label}: apostrophe: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.contains('Ó')),
+        "{label}: unicode: {names:?}"
+    );
 
     // -- Truncation and paging -------------------------------------------
     let page = d
         .query("SELECT * FROM access_log", 10, CancellationToken::new())
         .await
         .unwrap();
-    assert_eq!(page.rows.len(), 10, "{label}: must return exactly the limit");
-    assert!(page.truncated, "{label}: 5000 rows exist, so this is truncated");
+    assert_eq!(
+        page.rows.len(),
+        10,
+        "{label}: must return exactly the limit"
+    );
+    assert!(
+        page.truncated,
+        "{label}: 5000 rows exist, so this is truncated"
+    );
 
     let exact = d
         .query("SELECT * FROM authors", 5, CancellationToken::new())
@@ -292,7 +323,10 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
         ],
     )
     .await;
-    assert!(result.is_err(), "{label}: a missing row must abort the batch");
+    assert!(
+        result.is_err(),
+        "{label}: a missing row must abort the batch"
+    );
     assert_eq!(
         scalar(d, "SELECT name FROM authors WHERE id = 1").await,
         original,
@@ -354,8 +388,17 @@ async fn clickhouse_live() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    for expected in ["authors", "books", "book_stores", "access_log", "type_gallery"] {
-        assert!(names.contains(&expected.to_string()), "missing {expected} in {names:?}");
+    for expected in [
+        "authors",
+        "books",
+        "book_stores",
+        "access_log",
+        "type_gallery",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing {expected} in {names:?}"
+        );
     }
 
     // -- The read-only property, which is the point ----------------------
@@ -372,7 +415,10 @@ async fn clickhouse_live() {
     // The sorting key is still surfaced, just as an index the user can see.
     let stores = d.describe_table(&table("book_stores")).await.unwrap();
     assert!(
-        stores.indexes.iter().any(|i| i.columns == vec!["book_id", "store_id"]),
+        stores
+            .indexes
+            .iter()
+            .any(|i| i.columns == vec!["book_id", "store_id"]),
         "the compound sorting key should be visible: {:#?}",
         stores.indexes
     );
@@ -384,7 +430,10 @@ async fn clickhouse_live() {
 
     // -- Columns and nullability -----------------------------------------
     assert!(
-        books.columns.iter().any(|c| c.name == "title" && !c.nullable),
+        books
+            .columns
+            .iter()
+            .any(|c| c.name == "title" && !c.nullable),
         "non-nullable columns should be detected"
     );
     assert!(
@@ -394,7 +443,11 @@ async fn clickhouse_live() {
 
     // -- Querying and decoding -------------------------------------------
     let rs = d
-        .query("SELECT id, name, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(rs.rows.len(), 5);
@@ -488,7 +541,10 @@ async fn clickhouse_live() {
         .await
         .unwrap()
         .expect("ClickHouse exposes create_table_query");
-    assert!(ddl.contains("MergeTree"), "the ENGINE clause must survive: {ddl}");
+    assert!(
+        ddl.contains("MergeTree"),
+        "the ENGINE clause must survive: {ddl}"
+    );
 
     // -- Errors and cancellation -----------------------------------------
     let err = d
@@ -536,8 +592,17 @@ async fn mongodb_live() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    for expected in ["authors", "books", "book_stores", "access_log", "type_gallery"] {
-        assert!(names.contains(&expected.to_string()), "missing {expected} in {names:?}");
+    for expected in [
+        "authors",
+        "books",
+        "book_stores",
+        "access_log",
+        "type_gallery",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing {expected} in {names:?}"
+        );
     }
 
     // -- It says plainly that it is not SQL ------------------------------
@@ -589,7 +654,11 @@ async fn mongodb_live() {
         )
         .await
         .unwrap();
-    assert_eq!(filtered.rows.len(), 1, "the filter document was not applied");
+    assert_eq!(
+        filtered.rows.len(),
+        1,
+        "the filter document was not applied"
+    );
 
     let projected = d
         .query(
@@ -601,7 +670,10 @@ async fn mongodb_live() {
         .unwrap();
     let projected_fields: Vec<&str> = projected.columns.iter().map(|c| c.name.as_str()).collect();
     assert!(projected_fields.contains(&"name"));
-    assert!(!projected_fields.contains(&"bio"), "projection was ignored: {projected_fields:?}");
+    assert!(
+        !projected_fields.contains(&"bio"),
+        "projection was ignored: {projected_fields:?}"
+    );
 
     let aggregated = d
         .query(
@@ -614,7 +686,11 @@ async fn mongodb_live() {
     assert_eq!(aggregated.rows.len(), 1, "aggregation returned nothing");
 
     let counted = d
-        .query(r#"db.authors.countDocuments({})"#, 10, CancellationToken::new())
+        .query(
+            r#"db.authors.countDocuments({})"#,
+            10,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(counted.rows[0][0], Value::Int(5));
@@ -628,7 +704,11 @@ async fn mongodb_live() {
         )
         .await
         .unwrap();
-    let i = dec.columns.iter().position(|c| c.name == "a_decimal").unwrap();
+    let i = dec
+        .columns
+        .iter()
+        .position(|c| c.name == "a_decimal")
+        .unwrap();
     match &dec.rows[0][i] {
         // Decimal128 through f64 would round this.
         Value::Decimal(s) => assert!(
@@ -682,11 +762,19 @@ async fn mongodb_live() {
         offset: 0,
     };
     let asc = d
-        .browse(&table("access_log"), &sorted(false), CancellationToken::new())
+        .browse(
+            &table("access_log"),
+            &sorted(false),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let desc = d
-        .browse(&table("access_log"), &sorted(true), CancellationToken::new())
+        .browse(
+            &table("access_log"),
+            &sorted(true),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_ne!(asc.rows[0], desc.rows[0], "sort direction was ignored");
@@ -726,7 +814,11 @@ async fn mongodb_live() {
         )
         .await
         .unwrap();
-    assert_eq!(matching.rows.len(), 1, "the contains filter did not translate");
+    assert_eq!(
+        matching.rows.len(),
+        1,
+        "the contains filter did not translate"
+    );
 
     // -- Read-only, and honest about it -----------------------------------
     assert!(
@@ -749,7 +841,10 @@ async fn mongodb_live() {
     );
     // The implicit _id index cannot be recreated, so backup must skip it.
     assert!(
-        books.indexes.iter().any(|i| i.name == "_id_" && i.is_constraint),
+        books
+            .indexes
+            .iter()
+            .any(|i| i.name == "_id_" && i.is_constraint),
         "the _id index should be marked constraint-backed"
     );
 
@@ -817,7 +912,10 @@ async fn backup_round_trip(d: &dyn Driver, schema: Option<&str>, label: &str) {
 
     assert_eq!(result.rows, 5, "{label}: backed up row count");
     let script = std::fs::read_to_string(&dump).unwrap();
-    assert!(script.contains("INSERT INTO"), "{label}: dump has no inserts");
+    assert!(
+        script.contains("INSERT INTO"),
+        "{label}: dump has no inserts"
+    );
     // The apostrophe must be escaped, or the restore is a syntax error.
     assert!(
         script.contains("O''Brien") || script.contains("O\\'Brien"),
@@ -826,9 +924,16 @@ async fn backup_round_trip(d: &dyn Driver, schema: Option<&str>, label: &str) {
 
     // Restoring over the existing table must fail on the CREATE, proving the
     // dump really does recreate schema rather than only inserting data.
-    let restored = backup::restore(d, &script, &RestoreOptions { stop_on_error: false }, |_, _| {})
-        .await
-        .unwrap();
+    let restored = backup::restore(
+        d,
+        &script,
+        &RestoreOptions {
+            stop_on_error: false,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
     assert!(
         restored.failed > 0,
         "{label}: restoring over an existing table should have collided"
@@ -866,7 +971,11 @@ async fn mysql_keeps_unsigned_bigint_exact() {
 
     // BIGINT UNSIGNED at its maximum. Wrapped into an i64 this reads as -1,
     // which is a silent and entirely plausible-looking lie.
-    let value = scalar(&*d, "SELECT a_ubigint FROM type_gallery WHERE a_ubigint IS NOT NULL").await;
+    let value = scalar(
+        &*d,
+        "SELECT a_ubigint FROM type_gallery WHERE a_ubigint IS NOT NULL",
+    )
+    .await;
     assert_eq!(value, Value::Decimal("18446744073709551615".into()));
     d.close().await;
 }
@@ -875,7 +984,12 @@ async fn mysql_keeps_unsigned_bigint_exact() {
 async fn mysql_keeps_decimal_precision() {
     let d = engine_or_skip!(Engine::MySql, 53306, "faro_test");
 
-    match scalar(&*d, "SELECT a_decimal FROM type_gallery WHERE a_decimal IS NOT NULL").await {
+    match scalar(
+        &*d,
+        "SELECT a_decimal FROM type_gallery WHERE a_decimal IS NOT NULL",
+    )
+    .await
+    {
         Value::Decimal(s) => assert!(
             s.starts_with("12345678901234567890.09876543"),
             "precision lost: {s}"
@@ -890,11 +1004,19 @@ async fn mysql_decodes_blobs_and_json() {
     let d = engine_or_skip!(Engine::MySql, 53306, "faro_test");
 
     assert_eq!(
-        scalar(&*d, "SELECT a_blob FROM type_gallery WHERE a_blob IS NOT NULL").await,
+        scalar(
+            &*d,
+            "SELECT a_blob FROM type_gallery WHERE a_blob IS NOT NULL"
+        )
+        .await,
         Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef])
     );
     assert!(matches!(
-        scalar(&*d, "SELECT a_json FROM type_gallery WHERE a_json IS NOT NULL").await,
+        scalar(
+            &*d,
+            "SELECT a_json FROM type_gallery WHERE a_json IS NOT NULL"
+        )
+        .await,
         Value::Json(_)
     ));
     d.close().await;
@@ -905,7 +1027,11 @@ async fn postgres_decodes_arrays_and_uuids() {
     let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
 
     assert!(matches!(
-        scalar(&*d, "SELECT a_int_arr FROM type_gallery WHERE a_int_arr IS NOT NULL").await,
+        scalar(
+            &*d,
+            "SELECT a_int_arr FROM type_gallery WHERE a_int_arr IS NOT NULL"
+        )
+        .await,
         Value::Array(_)
     ));
     assert!(matches!(
@@ -922,7 +1048,10 @@ async fn mysql_native_ddl_is_used_for_backup() {
     // SHOW CREATE TABLE keeps AUTO_INCREMENT and the charset, which a
     // column-by-column rebuild cannot express.
     let ddl = d
-        .table_ddl(&TableRef { schema: None, name: "authors".into() })
+        .table_ddl(&TableRef {
+            schema: None,
+            name: "authors".into(),
+        })
         .await
         .unwrap()
         .expect("MySQL should expose its own DDL");

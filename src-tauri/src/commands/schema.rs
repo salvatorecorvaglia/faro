@@ -11,7 +11,12 @@ pub async fn list_schemas(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<SchemaInfo>> {
-    state.registry.get(&connection_id).await?.list_schemas().await
+    state
+        .registry
+        .get(&connection_id)
+        .await?
+        .list_schemas()
+        .await
 }
 
 #[tauri::command]

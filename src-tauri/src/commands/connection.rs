@@ -26,15 +26,17 @@ pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionConf
 }
 
 #[tauri::command]
-pub async fn list_connection_status(
-    state: State<'_, AppState>,
-) -> Result<Vec<ConnectionStatus>> {
+pub async fn list_connection_status(state: State<'_, AppState>) -> Result<Vec<ConnectionStatus>> {
     let configs = state.store.list_connections()?;
     let mut out = Vec::with_capacity(configs.len());
     for config in configs {
         let connected = state.registry.is_connected(&config.id).await;
         let has_password = secrets::get_password(&config.secret_key()).is_some();
-        out.push(ConnectionStatus { config, connected, has_password });
+        out.push(ConnectionStatus {
+            config,
+            connected,
+            has_password,
+        });
     }
     Ok(out)
 }
@@ -89,7 +91,9 @@ pub async fn connect(state: State<'_, AppState>, id: String) -> Result<()> {
         .ok_or_else(|| FaroError::NotConnected(id.clone()))?;
 
     if !config.engine.is_supported() {
-        return Err(FaroError::UnsupportedEngine(config.engine.display_name().into()));
+        return Err(FaroError::UnsupportedEngine(
+            config.engine.display_name().into(),
+        ));
     }
 
     let password = secrets::get_password(&config.secret_key());
@@ -111,7 +115,9 @@ pub async fn test_connection(
     password: Option<String>,
 ) -> Result<()> {
     if !config.engine.is_supported() {
-        return Err(FaroError::UnsupportedEngine(config.engine.display_name().into()));
+        return Err(FaroError::UnsupportedEngine(
+            config.engine.display_name().into(),
+        ));
     }
 
     // An edit of an existing connection may send no password because the user

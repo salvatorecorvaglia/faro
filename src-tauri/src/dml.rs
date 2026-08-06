@@ -351,7 +351,10 @@ mod tests {
 
     fn detail(pk: Vec<&str>, columns: Vec<ColumnDetail>) -> TableDetail {
         TableDetail {
-            table: TableRef { schema: None, name: "books".into() },
+            table: TableRef {
+                schema: None,
+                name: "books".into(),
+            },
             kind: TableKind::Table,
             columns,
             primary_key: pk.into_iter().map(String::from).collect(),
@@ -373,15 +376,24 @@ mod tests {
     }
 
     fn table() -> TableRef {
-        TableRef { schema: None, name: "books".into() }
+        TableRef {
+            schema: None,
+            name: "books".into(),
+        }
     }
 
     fn cell(column: &str, text: &str) -> CellEdit {
-        CellEdit { column: column.into(), value: EditValue::Text(text.into()) }
+        CellEdit {
+            column: column.into(),
+            value: EditValue::Text(text.into()),
+        }
     }
 
     fn null_cell(column: &str) -> CellEdit {
-        CellEdit { column: column.into(), value: EditValue::Null }
+        CellEdit {
+            column: column.into(),
+            value: EditValue::Null,
+        }
     }
 
     // -- The central safety property -------------------------------------
@@ -402,7 +414,9 @@ mod tests {
     fn a_view_is_never_editable() {
         let mut d = standard();
         d.kind = TableKind::View;
-        let changes = vec![PendingChange::Delete { key: vec![cell("id", "1")] }];
+        let changes = vec![PendingChange::Delete {
+            key: vec![cell("id", "1")],
+        }];
         assert!(build_statements(&table(), &d, &changes, &TestDialect).is_err());
     }
 
@@ -414,7 +428,9 @@ mod tests {
                 key: vec![cell("id", "1")],
                 cells: vec![cell("title", "x")],
             },
-            PendingChange::Delete { key: vec![cell("id", "2")] },
+            PendingChange::Delete {
+                key: vec![cell("id", "2")],
+            },
         ];
 
         let stmts = build_statements(&table(), &d, &changes, &TestDialect).unwrap();
@@ -482,7 +498,10 @@ mod tests {
             cells: vec![cell("id", "8")],
         }];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
-        assert_eq!(stmts[0].sql, r#"UPDATE "books" SET "id" = 8 WHERE "id" = 7"#);
+        assert_eq!(
+            stmts[0].sql,
+            r#"UPDATE "books" SET "id" = 8 WHERE "id" = 7"#
+        );
     }
 
     #[test]
@@ -522,20 +541,29 @@ mod tests {
     fn insert_omits_defaulted_columns_so_the_database_supplies_them() {
         let changes = vec![PendingChange::Insert {
             cells: vec![
-                CellEdit { column: "id".into(), value: EditValue::Default },
+                CellEdit {
+                    column: "id".into(),
+                    value: EditValue::Default,
+                },
                 cell("title", "New book"),
             ],
         }];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
 
-        assert_eq!(stmts[0].sql, r#"INSERT INTO "books" ("title") VALUES ('New book')"#);
+        assert_eq!(
+            stmts[0].sql,
+            r#"INSERT INTO "books" ("title") VALUES ('New book')"#
+        );
         assert_eq!(stmts[0].expect, None);
     }
 
     #[test]
     fn an_insert_with_every_column_defaulted_is_rejected() {
         let changes = vec![PendingChange::Insert {
-            cells: vec![CellEdit { column: "id".into(), value: EditValue::Default }],
+            cells: vec![CellEdit {
+                column: "id".into(),
+                value: EditValue::Default,
+            }],
         }];
         assert!(build_statements(&table(), &standard(), &changes, &TestDialect).is_err());
     }
@@ -545,8 +573,12 @@ mod tests {
         // Removing a row and adding one with the same key in a single batch
         // must not collide on the unique index.
         let changes = vec![
-            PendingChange::Insert { cells: vec![cell("title", "new")] },
-            PendingChange::Delete { key: vec![cell("id", "1")] },
+            PendingChange::Insert {
+                cells: vec![cell("title", "new")],
+            },
+            PendingChange::Delete {
+                key: vec![cell("id", "1")],
+            },
         ];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
 
@@ -569,7 +601,11 @@ mod tests {
             cells: vec![null_cell("title")],
         }];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
-        assert!(stmts[0].sql.contains(r#""title" = NULL"#), "{}", stmts[0].sql);
+        assert!(
+            stmts[0].sql.contains(r#""title" = NULL"#),
+            "{}",
+            stmts[0].sql
+        );
     }
 
     #[test]
@@ -587,7 +623,9 @@ mod tests {
     fn a_null_key_matches_with_is_null_not_equals() {
         // `= NULL` is never true; IS NULL at least matches zero rows honestly
         // and trips the row-count guard.
-        let changes = vec![PendingChange::Delete { key: vec![null_cell("id")] }];
+        let changes = vec![PendingChange::Delete {
+            key: vec![null_cell("id")],
+        }];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
         assert_eq!(stmts[0].sql, r#"DELETE FROM "books" WHERE "id" IS NULL"#);
     }
@@ -596,8 +634,14 @@ mod tests {
 
     #[test]
     fn integers_are_unquoted() {
-        assert_eq!(literal(&EditValue::Text("42".into()), "int4", &TestDialect), "42");
-        assert_eq!(literal(&EditValue::Text("-7".into()), "bigint", &TestDialect), "-7");
+        assert_eq!(
+            literal(&EditValue::Text("42".into()), "int4", &TestDialect),
+            "42"
+        );
+        assert_eq!(
+            literal(&EditValue::Text("-7".into()), "bigint", &TestDialect),
+            "-7"
+        );
     }
 
     #[test]
@@ -613,10 +657,16 @@ mod tests {
     #[test]
     fn booleans_accept_the_usual_spellings() {
         for t in ["true", "TRUE", "t", "yes", "1"] {
-            assert_eq!(literal(&EditValue::Text(t.into()), "boolean", &TestDialect), "TRUE");
+            assert_eq!(
+                literal(&EditValue::Text(t.into()), "boolean", &TestDialect),
+                "TRUE"
+            );
         }
         for f in ["false", "F", "no", "0"] {
-            assert_eq!(literal(&EditValue::Text(f.into()), "boolean", &TestDialect), "FALSE");
+            assert_eq!(
+                literal(&EditValue::Text(f.into()), "boolean", &TestDialect),
+                "FALSE"
+            );
         }
     }
 
@@ -662,7 +712,11 @@ mod tests {
 
     #[test]
     fn an_injection_attempt_in_a_numeric_column_is_quoted_not_inlined() {
-        let out = literal(&EditValue::Text("1; DROP TABLE books".into()), "int4", &TestDialect);
+        let out = literal(
+            &EditValue::Text("1; DROP TABLE books".into()),
+            "int4",
+            &TestDialect,
+        );
         assert_eq!(out, "'1; DROP TABLE books'");
     }
 
@@ -686,6 +740,9 @@ mod tests {
         // "numeric" contains no "int", but this guards the ordering of the
         // checks in classify.
         assert_eq!(classify("decimal"), TypeClass::Number);
-        assert_eq!(literal(&EditValue::Text("1.5".into()), "decimal", &TestDialect), "1.5");
+        assert_eq!(
+            literal(&EditValue::Text("1.5".into()), "decimal", &TestDialect),
+            "1.5"
+        );
     }
 }

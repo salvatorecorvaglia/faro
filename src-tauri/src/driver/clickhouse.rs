@@ -126,15 +126,16 @@ impl ClickHouseDriver {
         // types, then the data — everything a generic client needs and nothing
         // the typed `clickhouse` crate can express.
         let body = self
-            .post(&format!("{sql}\nFORMAT JSONCompactEachRowWithNamesAndTypes"))
+            .post(&format!(
+                "{sql}\nFORMAT JSONCompactEachRowWithNamesAndTypes"
+            ))
             .await?;
 
         let mut lines = body.lines().filter(|l| !l.trim().is_empty());
 
         let names: Vec<String> = match lines.next() {
-            Some(line) => serde_json::from_str(line).map_err(|e| {
-                FaroError::Other(format!("could not read the column names: {e}"))
-            })?,
+            Some(line) => serde_json::from_str(line)
+                .map_err(|e| FaroError::Other(format!("could not read the column names: {e}")))?,
             None => Vec::new(),
         };
         let types: Vec<String> = match lines.next() {
@@ -159,10 +160,8 @@ impl ClickHouseDriver {
                 // The extra row proves truncation; it is not returned.
                 break;
             }
-            let cells: Vec<serde_json::Value> =
-                serde_json::from_str(line).map_err(|e| {
-                    FaroError::Other(format!("could not read a result row: {e}"))
-                })?;
+            let cells: Vec<serde_json::Value> = serde_json::from_str(line)
+                .map_err(|e| FaroError::Other(format!("could not read a result row: {e}")))?;
             rows.push(
                 columns
                     .iter()
@@ -201,7 +200,10 @@ fn parse_error(body: &str) -> FaroError {
         .and_then(|rest| rest.split('.').next())
         .map(|c| c.trim().to_string());
 
-    FaroError::Database { message: trimmed.to_string(), code }
+    FaroError::Database {
+        message: trimmed.to_string(),
+        code,
+    }
 }
 
 fn text_of(value: Option<&Value>) -> String {
@@ -285,7 +287,10 @@ impl Driver for ClickHouseDriver {
     }
 
     async fn describe_table(&self, table: &TableRef) -> Result<TableDetail> {
-        let db = table.schema.clone().unwrap_or_else(|| self.database.clone());
+        let db = table
+            .schema
+            .clone()
+            .unwrap_or_else(|| self.database.clone());
         let d_lit = self.literal(&db);
         let t_lit = self.literal(&table.name);
 
@@ -335,7 +340,11 @@ impl Driver for ClickHouseDriver {
 
         Ok(TableDetail {
             table: table.clone(),
-            kind: if engine.contains("View") { TableKind::View } else { TableKind::Table },
+            kind: if engine.contains("View") {
+                TableKind::View
+            } else {
+                TableKind::Table
+            },
             columns: col_rows
                 .iter()
                 .map(|r| {
@@ -369,7 +378,10 @@ impl Driver for ClickHouseDriver {
     }
 
     async fn table_ddl(&self, table: &TableRef) -> Result<Option<String>> {
-        let db = table.schema.clone().unwrap_or_else(|| self.database.clone());
+        let db = table
+            .schema
+            .clone()
+            .unwrap_or_else(|| self.database.clone());
         let rows = self
             .meta_rows(&format!(
                 "SELECT create_table_query FROM system.tables
@@ -560,13 +572,19 @@ mod tests {
     #[test]
     fn databases_are_schemas() {
         assert!(ClickHouseDialect.supports_schemas());
-        assert_eq!(ClickHouseDialect.qualify(Some("app"), "events"), "`app`.`events`");
+        assert_eq!(
+            ClickHouseDialect.qualify(Some("app"), "events"),
+            "`app`.`events`"
+        );
     }
 
     #[test]
     fn byte_literals_use_unhex() {
         // X'..' and 0x.. are both syntax errors here.
-        assert_eq!(ClickHouseDialect.quote_bytes(&[0xde, 0xad]), "unhex('dead')");
+        assert_eq!(
+            ClickHouseDialect.quote_bytes(&[0xde, 0xad]),
+            "unhex('dead')"
+        );
     }
 
     #[test]
@@ -638,14 +656,20 @@ mod tests {
             Value::Timestamp("2026-08-05 13:45:00".into())
         );
         assert!(matches!(
-            decode_value(Some(&json(r#""0192e8f0-0000-0000-0000-000000000000""#)), "UUID"),
+            decode_value(
+                Some(&json(r#""0192e8f0-0000-0000-0000-000000000000""#)),
+                "UUID"
+            ),
             Value::Uuid(_)
         ));
     }
 
     #[test]
     fn floats_stay_floats_and_small_ints_stay_ints() {
-        assert_eq!(decode_value(Some(&json("1.5")), "Float64"), Value::Float(1.5));
+        assert_eq!(
+            decode_value(Some(&json("1.5")), "Float64"),
+            Value::Float(1.5)
+        );
         assert_eq!(decode_value(Some(&json("7")), "UInt8"), Value::Int(7));
     }
 

@@ -124,7 +124,10 @@ fn write_json(path: &Path, result: &ResultSet) -> Result<u64> {
         .map(|row| {
             let mut obj = serde_json::Map::new();
             for (i, col) in result.columns.iter().enumerate() {
-                let value = row.get(i).map(json_value).unwrap_or(serde_json::Value::Null);
+                let value = row
+                    .get(i)
+                    .map(json_value)
+                    .unwrap_or(serde_json::Value::Null);
                 obj.insert(unique_key(&obj, &col.name), value);
             }
             obj
@@ -146,7 +149,9 @@ fn json_value(value: &Value) -> serde_json::Value {
         Value::Null => J::Null,
         Value::Bool(b) => J::Bool(*b),
         Value::Int(i) => J::Number((*i).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f).map(J::Number).unwrap_or(J::Null),
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
         Value::Json(j) => j.clone(),
         Value::Array(items) => J::Array(items.iter().map(json_value).collect()),
         other => J::String(cell_text(other)),
@@ -179,8 +184,16 @@ fn write_sql(
         None => format!("\"{}\"", s.replace('"', "\"\"")),
     };
 
-    let columns: Vec<String> = result.columns.iter().map(|c| quote_ident(&c.name)).collect();
-    let prefix = format!("INSERT INTO {} ({}) VALUES ", quote_ident(table), columns.join(", "));
+    let columns: Vec<String> = result
+        .columns
+        .iter()
+        .map(|c| quote_ident(&c.name))
+        .collect();
+    let prefix = format!(
+        "INSERT INTO {} ({}) VALUES ",
+        quote_ident(table),
+        columns.join(", ")
+    );
 
     for row in &result.rows {
         let values: Vec<String> = row
@@ -214,7 +227,9 @@ fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Resul
                 .map_err(|e| FaroError::Io(e.to_string()))?;
         }
         // Freeze the header so it stays visible while scrolling a long export.
-        sheet.set_freeze_panes(1, 0).map_err(|e| FaroError::Io(e.to_string()))?;
+        sheet
+            .set_freeze_panes(1, 0)
+            .map_err(|e| FaroError::Io(e.to_string()))?;
         row_cursor = 1;
     }
 
@@ -249,9 +264,19 @@ fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Resul
 pub fn suggested_filename(base: &str, format: ExportFormat) -> String {
     let cleaned: String = base
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let stem = if cleaned.trim_matches('_').is_empty() { "export" } else { cleaned.trim_matches('_') };
+    let stem = if cleaned.trim_matches('_').is_empty() {
+        "export"
+    } else {
+        cleaned.trim_matches('_')
+    };
     format!("{stem}.{}", format.extension())
 }
 
@@ -263,9 +288,18 @@ mod tests {
     fn sample() -> ResultSet {
         ResultSet {
             columns: vec![
-                ColumnInfo { name: "id".into(), type_name: "int4".into() },
-                ColumnInfo { name: "name".into(), type_name: "text".into() },
-                ColumnInfo { name: "amount".into(), type_name: "numeric".into() },
+                ColumnInfo {
+                    name: "id".into(),
+                    type_name: "int4".into(),
+                },
+                ColumnInfo {
+                    name: "name".into(),
+                    type_name: "text".into(),
+                },
+                ColumnInfo {
+                    name: "amount".into(),
+                    type_name: "numeric".into(),
+                },
             ],
             rows: vec![
                 vec![
@@ -286,7 +320,11 @@ mod tests {
     }
 
     fn opts(format: ExportFormat) -> ExportOptions {
-        ExportOptions { format, include_header: true, table_name: Some("people".into()) }
+        ExportOptions {
+            format,
+            include_header: true,
+            table_name: Some("people".into()),
+        }
     }
 
     fn tmp(name: &str) -> std::path::PathBuf {
@@ -327,7 +365,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        assert!(text.contains("12345678901234567890.12"), "precision lost: {text}");
+        assert!(
+            text.contains("12345678901234567890.12"),
+            "precision lost: {text}"
+        );
     }
 
     #[test]
@@ -377,7 +418,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
 
-        assert!(text.contains(r#"INSERT INTO "people" ("id", "name", "amount")"#), "{text}");
+        assert!(
+            text.contains(r#"INSERT INTO "people" ("id", "name", "amount")"#),
+            "{text}"
+        );
         assert!(text.contains("'O''Brien, \"quoted\"'"), "{text}");
         assert!(text.contains("NULL"), "{text}");
         assert_eq!(text.lines().count(), 3);
@@ -403,8 +447,12 @@ mod tests {
             truncated: false,
             elapsed_ms: 0,
         };
-        for format in [ExportFormat::Csv, ExportFormat::Json, ExportFormat::Sql, ExportFormat::Xlsx]
-        {
+        for format in [
+            ExportFormat::Csv,
+            ExportFormat::Json,
+            ExportFormat::Sql,
+            ExportFormat::Xlsx,
+        ] {
             let path = tmp(&format!("empty.{}", format.extension()));
             let rows = write_file(&path, &empty, &opts(format), None).unwrap();
             assert_eq!(rows, 0);
@@ -415,7 +463,10 @@ mod tests {
 
     #[test]
     fn suggested_filenames_are_path_safe() {
-        assert_eq!(suggested_filename("authors", ExportFormat::Csv), "authors.csv");
+        assert_eq!(
+            suggested_filename("authors", ExportFormat::Csv),
+            "authors.csv"
+        );
         assert_eq!(
             suggested_filename("public.my table/x", ExportFormat::Json),
             "public_my_table_x.json"
@@ -427,7 +478,10 @@ mod tests {
     #[test]
     fn bytes_export_as_hex_rather_than_raw_binary() {
         let r = ResultSet {
-            columns: vec![ColumnInfo { name: "b".into(), type_name: "bytea".into() }],
+            columns: vec![ColumnInfo {
+                name: "b".into(),
+                type_name: "bytea".into(),
+            }],
             rows: vec![vec![Value::Bytes(vec![0xde, 0xad])]],
             truncated: false,
             elapsed_ms: 0,

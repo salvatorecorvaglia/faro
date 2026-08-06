@@ -9,8 +9,9 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo,
-    ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
+    TableRef, Value,
 };
 
 pub struct SqlServerDialect;
@@ -133,11 +134,7 @@ impl SqlServerDriver {
     /// is what proves truncation, and stopping there is what keeps the row cap
     /// cheap — `into_first_result()` would materialize every row of a large
     /// table before the cap could be applied.
-    async fn fetch(
-        pool: &Pool<ConnectionManager>,
-        sql: &str,
-        limit: u64,
-    ) -> Result<ResultSet> {
+    async fn fetch(pool: &Pool<ConnectionManager>, sql: &str, limit: u64) -> Result<ResultSet> {
         use futures::TryStreamExt;
 
         let started = Instant::now();
@@ -233,7 +230,10 @@ fn map_err(e: tiberius::error::Error) -> FaroError {
             message: token.message().to_string(),
             code: Some(token.code().to_string()),
         },
-        _ => FaroError::Database { message: e.to_string(), code: None },
+        _ => FaroError::Database {
+            message: e.to_string(),
+            code: None,
+        },
     }
 }
 
@@ -317,7 +317,11 @@ impl Driver for SqlServerDriver {
                 TableInfo {
                     schema: Some(schema.clone()),
                     name: as_text(r.first()),
-                    kind: if kind == "VIEW" { TableKind::View } else { TableKind::Table },
+                    kind: if kind == "VIEW" {
+                        TableKind::View
+                    } else {
+                        TableKind::Table
+                    },
                     estimated_rows: Some(as_int(r.get(2))),
                 }
             })
@@ -466,7 +470,11 @@ impl Driver for SqlServerDriver {
 
         Ok(TableDetail {
             table: table.clone(),
-            kind: if is_view { TableKind::View } else { TableKind::Table },
+            kind: if is_view {
+                TableKind::View
+            } else {
+                TableKind::Table
+            },
             columns: col_rows
                 .iter()
                 .map(|r| {
@@ -635,9 +643,7 @@ fn decode_value(cell: &ColumnData<'static>) -> Value {
             .as_ref()
             .map(|s| Value::Text(s.to_string()))
             .unwrap_or(Value::Null),
-        ColumnData::Guid(v) => v
-            .map(|g| Value::Uuid(g.to_string()))
-            .unwrap_or(Value::Null),
+        ColumnData::Guid(v) => v.map(|g| Value::Uuid(g.to_string())).unwrap_or(Value::Null),
         ColumnData::Binary(v) => v
             .as_ref()
             .map(|b| Value::Bytes(b.to_vec()))
@@ -728,7 +734,10 @@ mod tests {
         // OFFSET/FETCH is a syntax error without ORDER BY.
         let out = SqlServerDialect.paginate("SELECT * FROM t", 10, 20);
         assert!(out.contains("ORDER BY (SELECT NULL)"), "{out}");
-        assert!(out.ends_with("OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"), "{out}");
+        assert!(
+            out.ends_with("OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -740,7 +749,9 @@ mod tests {
     #[test]
     fn a_nested_order_by_does_not_count_as_top_level() {
         // Skipping our own ORDER BY here would make OFFSET/FETCH a syntax error.
-        assert!(!has_top_level_order_by("SELECT * FROM (SELECT 1 ORDER BY a) q"));
+        assert!(!has_top_level_order_by(
+            "SELECT * FROM (SELECT 1 ORDER BY a) q"
+        ));
         assert!(has_top_level_order_by("SELECT * FROM t ORDER BY a"));
         assert!(!has_top_level_order_by("SELECT * FROM t"));
     }
@@ -753,6 +764,9 @@ mod tests {
 
     #[test]
     fn schema_qualification_uses_brackets() {
-        assert_eq!(SqlServerDialect.qualify(Some("dbo"), "users"), "[dbo].[users]");
+        assert_eq!(
+            SqlServerDialect.qualify(Some("dbo"), "users"),
+            "[dbo].[users]"
+        );
     }
 }

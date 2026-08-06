@@ -9,8 +9,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct SqliteDialect;
@@ -98,7 +98,11 @@ impl SqliteDriver {
             .await
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        Ok(Self { pool, meta, dialect: SqliteDialect })
+        Ok(Self {
+            pool,
+            meta,
+            dialect: SqliteDialect,
+        })
     }
 }
 
@@ -112,7 +116,10 @@ impl Driver for SqliteDriver {
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>> {
         // One implicit namespace; returning it keeps the tree shape uniform
         // with the server engines instead of special-casing the UI.
-        Ok(vec![SchemaInfo { name: "main".into(), is_system: false }])
+        Ok(vec![SchemaInfo {
+            name: "main".into(),
+            is_system: false,
+        }])
     }
 
     async fn list_tables(&self, _schema: Option<&str>) -> Result<Vec<TableInfo>> {
@@ -134,7 +141,11 @@ impl Driver for SqliteDriver {
                 TableInfo {
                     schema: None,
                     name: r.get("name"),
-                    kind: if kind == "view" { TableKind::View } else { TableKind::Table },
+                    kind: if kind == "view" {
+                        TableKind::View
+                    } else {
+                        TableKind::Table
+                    },
                     // SQLite keeps no row estimate, and COUNT(*) per table would
                     // stall the tree on a large file.
                     estimated_rows: None,
@@ -202,7 +213,10 @@ impl Driver for SqliteDriver {
                 None => fks.push(ForeignKey {
                     name: format!("fk_{}_{}", table.name, id),
                     columns: vec![from],
-                    referenced_table: TableRef { schema: None, name: ref_table },
+                    referenced_table: TableRef {
+                        schema: None,
+                        name: ref_table,
+                    },
                     referenced_columns: to.into_iter().collect(),
                 }),
             }
@@ -248,7 +262,11 @@ impl Driver for SqliteDriver {
 
         Ok(TableDetail {
             table: table.clone(),
-            kind: if kind == "view" { TableKind::View } else { TableKind::Table },
+            kind: if kind == "view" {
+                TableKind::View
+            } else {
+                TableKind::Table
+            },
             columns,
             primary_key,
             foreign_keys: fks,
@@ -307,7 +325,12 @@ impl Driver for SqliteDriver {
             .map(|row| (0..columns.len()).map(|i| decode_value(row, i)).collect())
             .collect();
 
-        Ok(ResultSet { columns, rows: data, truncated, elapsed_ms })
+        Ok(ResultSet {
+            columns,
+            rows: data,
+            truncated,
+            elapsed_ms,
+        })
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {

@@ -80,7 +80,7 @@ db.type_gallery.insertMany([
     _id: 1,
     a_int: NumberInt(2147483647),
     a_long: NumberLong('9223372036854775807'),
-    a_double: 2.718281828459045,
+    a_double: Math.E,
     // Past f64's exact range: must survive as text, not be rounded.
     a_decimal: NumberDecimal('12345678901234567890.0987654321'),
     a_bool: true,
@@ -102,7 +102,7 @@ const logs = [];
 for (let i = 1; i <= 5000; i++) {
   logs.push({
     ts: new Date('2026-08-05T12:00:00Z'),
-    path: '/page/' + i,
+    path: `/page/${i}`,
     status: 200 + (i % 5),
     duration_ms: Math.random() * 500,
   });

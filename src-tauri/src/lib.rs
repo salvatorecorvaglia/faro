@@ -20,7 +20,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { store, registry: Registry::new() })
+        .manage(AppState {
+            store,
+            registry: Registry::new(),
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::list_connection_status,

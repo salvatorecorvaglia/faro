@@ -69,9 +69,11 @@ pub fn inspect_backup(path: String) -> Result<BackupFileInfo> {
         bytes: script.len() as u64,
         // Counted rather than parsed: a `CREATE TABLE` present means the dump
         // carries schema, which decides whether the target must be empty.
-        has_schema: statements
-            .iter()
-            .any(|s| s.trim_start().to_ascii_uppercase().starts_with("CREATE TABLE")),
+        has_schema: statements.iter().any(|s| {
+            s.trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE TABLE")
+        }),
         first_lines: script.lines().take(6).map(String::from).collect(),
     })
 }

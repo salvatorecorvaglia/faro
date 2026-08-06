@@ -30,7 +30,11 @@ async fn open() -> Option<Box<dyn Driver>> {
         color: None,
         read_only: false,
     };
-    Some(driver::connect(&config, None).await.expect("connect failed"))
+    Some(
+        driver::connect(&config, None)
+            .await
+            .expect("connect failed"),
+    )
 }
 
 /// Skip rather than fail when the fixture has not been generated.
@@ -65,7 +69,10 @@ async fn distinguishes_views_from_tables() {
     let d = driver_or_skip!();
     let tables = d.list_tables(None).await.unwrap();
 
-    let view = tables.iter().find(|t| t.name == "books_with_authors").unwrap();
+    let view = tables
+        .iter()
+        .find(|t| t.name == "books_with_authors")
+        .unwrap();
     assert_eq!(view.kind, TableKind::View);
 
     let table = tables.iter().find(|t| t.name == "books").unwrap();
@@ -76,7 +83,10 @@ async fn distinguishes_views_from_tables() {
 async fn describes_columns_and_primary_key() {
     let d = driver_or_skip!();
     let detail = d
-        .describe_table(&TableRef { schema: None, name: "books".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "books".into(),
+        })
         .await
         .unwrap();
 
@@ -93,7 +103,10 @@ async fn describes_columns_and_primary_key() {
 async fn reads_composite_primary_key_in_order() {
     let d = driver_or_skip!();
     let detail = d
-        .describe_table(&TableRef { schema: None, name: "book_stores".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "book_stores".into(),
+        })
         .await
         .unwrap();
 
@@ -105,7 +118,10 @@ async fn reads_composite_primary_key_in_order() {
 async fn table_without_primary_key_is_not_editable() {
     let d = driver_or_skip!();
     let detail = d
-        .describe_table(&TableRef { schema: None, name: "access_log".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "access_log".into(),
+        })
         .await
         .unwrap();
 
@@ -120,7 +136,10 @@ async fn table_without_primary_key_is_not_editable() {
 async fn reads_foreign_keys() {
     let d = driver_or_skip!();
     let detail = d
-        .describe_table(&TableRef { schema: None, name: "books".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "books".into(),
+        })
         .await
         .unwrap();
 
@@ -145,7 +164,9 @@ async fn opening_a_database_does_not_rewrite_its_journal_mode() {
     // ...open it through the driver, exercising a query on each pool...
     {
         let d = driver_or_skip!();
-        d.query("SELECT 1", 1, CancellationToken::new()).await.unwrap();
+        d.query("SELECT 1", 1, CancellationToken::new())
+            .await
+            .unwrap();
         d.list_tables(None).await.unwrap();
         d.close().await;
     }
@@ -203,14 +224,20 @@ async fn catalog_reads_are_not_blocked_by_a_running_query() {
     let catalog = d.schema_snapshot(None);
 
     let (_, snapshot) = tokio::join!(query, catalog);
-    assert!(!snapshot.unwrap().is_empty(), "catalog read starved behind the query");
+    assert!(
+        !snapshot.unwrap().is_empty(),
+        "catalog read starved behind the query"
+    );
 }
 
 #[tokio::test]
 async fn missing_table_is_an_error_not_an_empty_result() {
     let d = driver_or_skip!();
     let result = d
-        .describe_table(&TableRef { schema: None, name: "no_such_table".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "no_such_table".into(),
+        })
         .await;
     assert!(result.is_err());
 }
@@ -259,7 +286,9 @@ async fn preserves_unicode_and_embedded_quotes() {
         .collect();
 
     assert!(names.iter().any(|n| n == "Ken O'Brien"));
-    assert!(names.iter().any(|n| n.contains("🎉") || n.starts_with("Ólafur")));
+    assert!(names
+        .iter()
+        .any(|n| n.contains("🎉") || n.starts_with("Ólafur")));
 }
 
 #[tokio::test]
@@ -270,7 +299,11 @@ async fn reports_truncation_when_more_rows_exist() {
         .await
         .unwrap();
 
-    assert_eq!(rs.rows.len(), 10, "must return exactly the limit, not limit+1");
+    assert_eq!(
+        rs.rows.len(),
+        10,
+        "must return exactly the limit, not limit+1"
+    );
     assert!(rs.truncated, "5000 rows exist, so this page is truncated");
 }
 
@@ -389,10 +422,7 @@ async fn session_state_survives_across_statements() {
         .await
         .expect("temp table vanished — the pool is handing out multiple sessions");
 
-    let rs = d
-        .query("SELECT a FROM t_session", 10, token)
-        .await
-        .unwrap();
+    let rs = d.query("SELECT a FROM t_session", 10, token).await.unwrap();
     assert_eq!(rs.rows.len(), 1);
     assert_eq!(rs.rows[0][0], Value::Int(1));
 }
@@ -441,7 +471,10 @@ async fn run_dispatches_between_rows_and_affected() {
         .run("INSERT INTO t_run VALUES (1)", 10, token)
         .await
         .unwrap();
-    assert!(matches!(affected, faro_lib::model::QueryOutcome::Affected(_)));
+    assert!(matches!(
+        affected,
+        faro_lib::model::QueryOutcome::Affected(_)
+    ));
 }
 
 #[tokio::test]

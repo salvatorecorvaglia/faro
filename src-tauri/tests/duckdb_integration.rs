@@ -27,8 +27,8 @@ impl Fixture {
             .join("scripts/seed/duckdb.sql");
         let script = std::fs::read_to_string(&seed).ok()?;
 
-        let path = std::env::temp_dir()
-            .join(format!("faro_duck_{tag}_{}.duckdb", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("faro_duck_{tag}_{}.duckdb", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         // Built with the crate rather than a CLI, so no external tool is needed.
@@ -37,7 +37,10 @@ impl Fixture {
             .unwrap_or_else(|e| panic!("seeding DuckDB failed: {e}"));
         drop(conn);
 
-        Some(Self { path, extra: vec![] })
+        Some(Self {
+            path,
+            extra: vec![],
+        })
     }
 
     fn temp(&mut self, name: &str) -> std::path::PathBuf {
@@ -70,7 +73,9 @@ async fn open(f: &Fixture) -> Box<dyn Driver> {
         color: None,
         read_only: false,
     };
-    driver::connect(&config, None).await.expect("connect failed")
+    driver::connect(&config, None)
+        .await
+        .expect("connect failed")
 }
 
 macro_rules! fixture_or_skip {
@@ -87,11 +92,18 @@ macro_rules! fixture_or_skip {
 
 async fn scalar(d: &dyn Driver, sql: &str) -> Value {
     let rs = d.query(sql, 1, CancellationToken::new()).await.unwrap();
-    rs.rows.first().and_then(|r| r.first()).cloned().unwrap_or(Value::Null)
+    rs.rows
+        .first()
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn cell(column: &str, text: &str) -> CellEdit {
-    CellEdit { column: column.into(), value: EditValue::Text(text.into()) }
+    CellEdit {
+        column: column.into(),
+        value: EditValue::Text(text.into()),
+    }
 }
 
 // -- Connecting and browsing ------------------------------------------------
@@ -110,8 +122,17 @@ async fn connects_and_lists_tables() {
         .map(|t| t.name)
         .collect();
 
-    for expected in ["authors", "books", "book_stores", "access_log", "type_gallery"] {
-        assert!(names.contains(&expected.to_string()), "missing {expected} in {names:?}");
+    for expected in [
+        "authors",
+        "books",
+        "book_stores",
+        "access_log",
+        "type_gallery",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing {expected} in {names:?}"
+        );
     }
 }
 
@@ -140,16 +161,25 @@ async fn describes_columns_and_primary_keys() {
     let d = open(&f).await;
 
     let books = d
-        .describe_table(&TableRef { schema: None, name: "books".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "books".into(),
+        })
         .await
         .unwrap();
     assert_eq!(books.primary_key, vec!["id"]);
     assert!(books.is_editable());
-    assert!(books.columns.iter().any(|c| c.name == "title" && !c.nullable));
+    assert!(books
+        .columns
+        .iter()
+        .any(|c| c.name == "title" && !c.nullable));
 
     // Composite key order matters: generated DML depends on it.
     let stores = d
-        .describe_table(&TableRef { schema: None, name: "book_stores".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "book_stores".into(),
+        })
         .await
         .unwrap();
     assert_eq!(stores.primary_key, vec!["book_id", "store_id"]);
@@ -161,7 +191,10 @@ async fn a_table_without_a_primary_key_is_not_editable() {
     let d = open(&f).await;
 
     let log = d
-        .describe_table(&TableRef { schema: None, name: "access_log".into() })
+        .describe_table(&TableRef {
+            schema: None,
+            name: "access_log".into(),
+        })
         .await
         .unwrap();
     assert!(log.primary_key.is_empty());
@@ -186,7 +219,11 @@ async fn decodes_values_and_preserves_null() {
     let d = open(&f).await;
 
     let rs = d
-        .query("SELECT id, name, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -204,7 +241,11 @@ async fn preserves_unicode_and_embedded_quotes() {
     let d = open(&f).await;
 
     let rs = d
-        .query("SELECT name FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT name FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let names: Vec<String> = rs
@@ -341,7 +382,10 @@ async fn apply(
     table: &str,
     changes: &[PendingChange],
 ) -> faro_lib::error::Result<u64> {
-    let table_ref = TableRef { schema: None, name: table.into() };
+    let table_ref = TableRef {
+        schema: None,
+        name: table.into(),
+    };
     let detail = d.describe_table(&table_ref).await.unwrap();
     let statements = dml::build_statements(&table_ref, &detail, changes, d.dialect())?;
     d.apply_transaction(&statements).await
@@ -413,7 +457,10 @@ async fn the_row_count_guard_fires_on_an_over_broad_statement() {
     }];
 
     let err = d.apply_transaction(&unguarded).await.unwrap_err();
-    assert!(err.to_string().contains("does not identify a single row"), "{err}");
+    assert!(
+        err.to_string().contains("does not identify a single row"),
+        "{err}"
+    );
 
     assert_eq!(
         scalar(&*d, "SELECT COUNT(*) FROM authors WHERE bio = 'clobbered'").await,
@@ -435,7 +482,10 @@ async fn a_duckdb_database_backs_up_and_restores() {
         &*src,
         &dump,
         &BackupOptions {
-            tables: vec![TableRef { schema: None, name: "authors".into() }],
+            tables: vec![TableRef {
+                schema: None,
+                name: "authors".into(),
+            }],
             include_schema: true,
             include_data: true,
             drop_existing: false,
@@ -464,9 +514,16 @@ async fn a_duckdb_database_backs_up_and_restores() {
     let dst = driver::connect(&config, None).await.unwrap();
 
     let script = std::fs::read_to_string(&dump).unwrap();
-    let restored = backup::restore(&*dst, &script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap();
+    let restored = backup::restore(
+        &*dst,
+        &script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(restored.failed, 0, "{:#?}", restored.errors);
 
     assert_eq!(

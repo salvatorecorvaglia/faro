@@ -128,7 +128,10 @@ mod tests {
     #[tokio::test]
     async fn get_unknown_connection_is_not_connected_error() {
         let reg = Registry::new();
-        assert!(matches!(reg.get("nope").await, Err(FaroError::NotConnected(_))));
+        assert!(matches!(
+            reg.get("nope").await,
+            Err(FaroError::NotConnected(_))
+        ));
         assert!(!reg.is_connected("nope").await);
     }
 

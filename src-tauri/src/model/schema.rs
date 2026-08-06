@@ -115,7 +115,10 @@ mod tests {
 
     fn detail(kind: TableKind, pk: Vec<&str>) -> TableDetail {
         TableDetail {
-            table: TableRef { schema: None, name: "t".into() },
+            table: TableRef {
+                schema: None,
+                name: "t".into(),
+            },
             kind,
             columns: vec![],
             primary_key: pk.into_iter().map(String::from).collect(),

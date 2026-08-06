@@ -62,12 +62,7 @@ impl_apply_guarded!(apply_guarded_pg, sqlx::PgPool);
 impl_apply_guarded!(apply_guarded_sqlite, sqlx::SqlitePool);
 impl_apply_guarded!(apply_guarded_mysql, sqlx::MySqlPool);
 
-pub(crate) fn guard_error(
-    index: usize,
-    count: usize,
-    expected: u64,
-    affected: u64,
-) -> FaroError {
+pub(crate) fn guard_error(index: usize, count: usize, expected: u64, affected: u64) -> FaroError {
     FaroError::Other(guard_message(index, count, expected, affected))
 }
 

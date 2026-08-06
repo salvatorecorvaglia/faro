@@ -64,8 +64,10 @@ impl Value {
             Value::Bytes(b) => quote_bytes(b),
             Value::Json(j) => quote_sql_string(&j.to_string()),
             Value::Array(items) => {
-                let inner: Vec<String> =
-                    items.iter().map(|v| v.to_sql_literal(quote_bytes)).collect();
+                let inner: Vec<String> = items
+                    .iter()
+                    .map(|v| v.to_sql_literal(quote_bytes))
+                    .collect();
                 format!("ARRAY[{}]", inner.join(", "))
             }
             Value::Text(s)
@@ -88,7 +90,10 @@ mod tests {
     use super::*;
 
     fn hex(b: &[u8]) -> String {
-        format!("X'{}'", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+        format!(
+            "X'{}'",
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        )
     }
 
     #[test]

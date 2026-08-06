@@ -8,9 +8,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::error::{FaroError, Result};
-use crate::model::{
-    ConnectionConfig, Engine, HistoryEntry, NewHistoryEntry, SavedQuery, SslMode,
-};
+use crate::model::{ConnectionConfig, Engine, HistoryEntry, NewHistoryEntry, SavedQuery, SslMode};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -28,14 +26,18 @@ pub fn default_path() -> Result<PathBuf> {
 impl Store {
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.migrate()?;
         Ok(store)
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        let store = Self { conn: Mutex::new(Connection::open_in_memory()?) };
+        let store = Self {
+            conn: Mutex::new(Connection::open_in_memory()?),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -44,7 +46,9 @@ impl Store {
     /// older schema and then migrate it.
     #[cfg(test)]
     fn from_connection(conn: Connection) -> Self {
-        Self { conn: Mutex::new(conn) }
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -55,8 +59,9 @@ impl Store {
     /// without breaking an existing install.
     fn migrate(&self) -> Result<()> {
         let conn = self.lock();
-        let version: i32 =
-            conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
 
         if version < 1 {
             conn.execute_batch(
@@ -200,7 +205,11 @@ impl Store {
     pub fn connection_exists(&self, id: &str) -> Result<bool> {
         let conn = self.lock();
         let found: Option<i64> = conn
-            .query_row("SELECT 1 FROM connections WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT 1 FROM connections WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(found.is_some())
     }
@@ -467,7 +476,12 @@ mod tests {
     #[test]
     fn engine_and_ssl_survive_a_round_trip() {
         let store = Store::open_in_memory().unwrap();
-        for engine in [Engine::MySql, Engine::Sqlite, Engine::SqlServer, Engine::MongoDb] {
+        for engine in [
+            Engine::MySql,
+            Engine::Sqlite,
+            Engine::SqlServer,
+            Engine::MongoDb,
+        ] {
             let mut c = sample("x");
             c.engine = engine;
             c.ssl_mode = SslMode::Require;
@@ -486,7 +500,12 @@ mod tests {
         c.file_path = Some("/tmp/x.db".into());
         store.upsert_connection(&c).unwrap();
         assert_eq!(
-            store.get_connection("s").unwrap().unwrap().file_path.as_deref(),
+            store
+                .get_connection("s")
+                .unwrap()
+                .unwrap()
+                .file_path
+                .as_deref(),
             Some("/tmp/x.db")
         );
     }
@@ -580,7 +599,9 @@ mod tests {
     #[test]
     fn round_trips_a_saved_query() {
         let store = Store::open_in_memory().unwrap();
-        store.upsert_saved_query(&saved("q1", "Daily counts", Some("Reports"))).unwrap();
+        store
+            .upsert_saved_query(&saved("q1", "Daily counts", Some("Reports")))
+            .unwrap();
 
         let got = store.get_saved_query("q1").unwrap().unwrap();
         assert_eq!(got.name, "Daily counts");
@@ -593,7 +614,9 @@ mod tests {
     #[test]
     fn upsert_edits_rather_than_duplicating_and_keeps_created_at() {
         let store = Store::open_in_memory().unwrap();
-        store.upsert_saved_query(&saved("q1", "Original", None)).unwrap();
+        store
+            .upsert_saved_query(&saved("q1", "Original", None))
+            .unwrap();
         let first = store.get_saved_query("q1").unwrap().unwrap();
 
         let mut edited = saved("q1", "Renamed", None);
@@ -604,18 +627,31 @@ mod tests {
         assert_eq!(all.len(), 1, "same id must not create a second row");
         assert_eq!(all[0].name, "Renamed");
         assert_eq!(all[0].sql, "SELECT 2");
-        assert_eq!(all[0].created_at, first.created_at, "created_at must survive an edit");
+        assert_eq!(
+            all[0].created_at, first.created_at,
+            "created_at must survive an edit"
+        );
     }
 
     #[test]
     fn saved_queries_group_folders_first_then_loose_queries() {
         let store = Store::open_in_memory().unwrap();
-        store.upsert_saved_query(&saved("b", "zebra", None)).unwrap();
-        store.upsert_saved_query(&saved("c", "alpha", Some("Reports"))).unwrap();
-        store.upsert_saved_query(&saved("a", "apple", None)).unwrap();
+        store
+            .upsert_saved_query(&saved("b", "zebra", None))
+            .unwrap();
+        store
+            .upsert_saved_query(&saved("c", "alpha", Some("Reports")))
+            .unwrap();
+        store
+            .upsert_saved_query(&saved("a", "apple", None))
+            .unwrap();
 
-        let names: Vec<String> =
-            store.list_saved_queries().unwrap().into_iter().map(|q| q.name).collect();
+        let names: Vec<String> = store
+            .list_saved_queries()
+            .unwrap()
+            .into_iter()
+            .map(|q| q.name)
+            .collect();
         // Foldered first (as file trees group), then loose ones, each A–Z.
         assert_eq!(names, vec!["alpha", "apple", "zebra"]);
     }
@@ -623,11 +659,19 @@ mod tests {
     #[test]
     fn saved_queries_sort_case_insensitively_within_a_folder() {
         let store = Store::open_in_memory().unwrap();
-        store.upsert_saved_query(&saved("a", "banana", Some("F"))).unwrap();
-        store.upsert_saved_query(&saved("b", "Apple", Some("F"))).unwrap();
+        store
+            .upsert_saved_query(&saved("a", "banana", Some("F")))
+            .unwrap();
+        store
+            .upsert_saved_query(&saved("b", "Apple", Some("F")))
+            .unwrap();
 
-        let names: Vec<String> =
-            store.list_saved_queries().unwrap().into_iter().map(|q| q.name).collect();
+        let names: Vec<String> = store
+            .list_saved_queries()
+            .unwrap()
+            .into_iter()
+            .map(|q| q.name)
+            .collect();
         // Without NOCASE, "Apple" and "banana" would order by byte value.
         assert_eq!(names, vec!["Apple", "banana"]);
     }
@@ -638,7 +682,9 @@ mod tests {
         // a nasty surprise; a dangling connection_id is the lesser evil.
         let store = Store::open_in_memory().unwrap();
         store.upsert_connection(&sample("c1")).unwrap();
-        store.upsert_saved_query(&saved("q1", "Keeper", None)).unwrap();
+        store
+            .upsert_saved_query(&saved("q1", "Keeper", None))
+            .unwrap();
 
         store.delete_connection("c1").unwrap();
 
@@ -676,7 +722,9 @@ mod tests {
     fn records_failures_too() {
         // Failed queries are often exactly what someone wants to revisit.
         let store = Store::open_in_memory().unwrap();
-        store.add_history(&history("SELECT bad", Some("no such column"))).unwrap();
+        store
+            .add_history(&history("SELECT bad", Some("no such column")))
+            .unwrap();
 
         let all = store.list_history(None, 10).unwrap();
         assert!(!all[0].succeeded);
@@ -699,8 +747,12 @@ mod tests {
     #[test]
     fn history_search_matches_a_substring_of_the_sql() {
         let store = Store::open_in_memory().unwrap();
-        store.add_history(&history("SELECT * FROM authors", None)).unwrap();
-        store.add_history(&history("SELECT * FROM books", None)).unwrap();
+        store
+            .add_history(&history("SELECT * FROM authors", None))
+            .unwrap();
+        store
+            .add_history(&history("SELECT * FROM books", None))
+            .unwrap();
 
         let found = store.list_history(Some("authors"), 10).unwrap();
         assert_eq!(found.len(), 1);

@@ -105,7 +105,10 @@ mod tests {
         // Naively appending LIMIT would produce "... LIMIT 5 LIMIT 10".
         let sql = "SELECT * FROM t LIMIT 5";
         let out = paginate_limit_offset(sql, 10, 0);
-        assert_eq!(out, "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10");
+        assert_eq!(
+            out,
+            "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10"
+        );
     }
 
     #[test]

@@ -55,7 +55,9 @@ async fn open(fixture: &Fixture) -> Box<dyn Driver> {
         color: None,
         read_only: false,
     };
-    driver::connect(&config, None).await.expect("connect failed")
+    driver::connect(&config, None)
+        .await
+        .expect("connect failed")
 }
 
 macro_rules! fixture_or_skip {
@@ -71,12 +73,19 @@ macro_rules! fixture_or_skip {
 }
 
 fn cell(column: &str, text: &str) -> CellEdit {
-    CellEdit { column: column.into(), value: EditValue::Text(text.into()) }
+    CellEdit {
+        column: column.into(),
+        value: EditValue::Text(text.into()),
+    }
 }
 
 async fn scalar(d: &dyn Driver, sql: &str) -> Value {
     let rs = d.query(sql, 1, CancellationToken::new()).await.unwrap();
-    rs.rows.first().and_then(|r| r.first()).cloned().unwrap_or(Value::Null)
+    rs.rows
+        .first()
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 async fn count(d: &dyn Driver, table: &str) -> i64 {
@@ -86,8 +95,15 @@ async fn count(d: &dyn Driver, table: &str) -> i64 {
     }
 }
 
-async fn apply(d: &dyn Driver, table: &str, changes: &[PendingChange]) -> faro_lib::error::Result<u64> {
-    let table_ref = TableRef { schema: None, name: table.into() };
+async fn apply(
+    d: &dyn Driver,
+    table: &str,
+    changes: &[PendingChange],
+) -> faro_lib::error::Result<u64> {
+    let table_ref = TableRef {
+        schema: None,
+        name: table.into(),
+    };
     let detail = d.describe_table(&table_ref).await.unwrap();
     let statements = dml::build_statements(&table_ref, &detail, changes, d.dialect())?;
     d.apply_transaction(&statements).await
@@ -128,7 +144,10 @@ async fn an_insert_and_delete_round_trip() {
         "authors",
         &[PendingChange::Insert {
             cells: vec![
-                CellEdit { column: "id".into(), value: EditValue::Default },
+                CellEdit {
+                    column: "id".into(),
+                    value: EditValue::Default,
+                },
                 cell("name", "Temp Author"),
             ],
         }],
@@ -145,7 +164,9 @@ async fn an_insert_and_delete_round_trip() {
     apply(
         &*d,
         "authors",
-        &[PendingChange::Delete { key: vec![cell("id", &new_id.to_string())] }],
+        &[PendingChange::Delete {
+            key: vec![cell("id", &new_id.to_string())],
+        }],
     )
     .await
     .unwrap();
@@ -162,13 +183,19 @@ async fn writing_null_clears_the_column() {
         "authors",
         &[PendingChange::Update {
             key: vec![cell("id", "1")],
-            cells: vec![CellEdit { column: "bio".into(), value: EditValue::Null }],
+            cells: vec![CellEdit {
+                column: "bio".into(),
+                value: EditValue::Null,
+            }],
         }],
     )
     .await
     .unwrap();
 
-    assert_eq!(scalar(&*d, "SELECT bio FROM authors WHERE id = 1").await, Value::Null);
+    assert_eq!(
+        scalar(&*d, "SELECT bio FROM authors WHERE id = 1").await,
+        Value::Null
+    );
 }
 
 #[tokio::test]
@@ -211,12 +238,20 @@ async fn a_composite_key_addresses_exactly_one_row() {
     .unwrap();
 
     assert_eq!(
-        scalar(&*d, "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1").await,
+        scalar(
+            &*d,
+            "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1"
+        )
+        .await,
         Value::Int(99)
     );
     // The sibling row must be untouched.
     assert_eq!(
-        scalar(&*d, "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 2").await,
+        scalar(
+            &*d,
+            "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 2"
+        )
+        .await,
         Value::Int(0)
     );
 }
@@ -294,7 +329,10 @@ async fn updating_a_vanished_row_reports_it_clearly() {
     .unwrap_err();
 
     let msg = err.to_string();
-    assert!(msg.contains("no longer matches"), "unhelpful message: {msg}");
+    assert!(
+        msg.contains("no longer matches"),
+        "unhelpful message: {msg}"
+    );
     assert!(msg.contains("Nothing has been saved"), "{msg}");
 }
 
@@ -313,7 +351,10 @@ async fn the_guard_fires_when_a_statement_would_hit_many_rows() {
     }];
 
     let err = d.apply_transaction(&unguarded).await.unwrap_err();
-    assert!(err.to_string().contains("does not identify a single row"), "{err}");
+    assert!(
+        err.to_string().contains("does not identify a single row"),
+        "{err}"
+    );
 
     // Every row must be untouched.
     assert_eq!(count(&*d, "authors").await, before);
@@ -393,8 +434,11 @@ async fn a_type_error_is_reported_by_the_database_not_silently_coerced() {
     .await
     .unwrap();
 
-    let stored =
-        scalar(&*d, "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1").await;
+    let stored = scalar(
+        &*d,
+        "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1",
+    )
+    .await;
     assert_eq!(
         stored,
         Value::Text("not a number".into()),
@@ -414,7 +458,11 @@ async fn deletes_run_before_inserts_so_a_key_can_be_reused() {
         "book_stores",
         &[
             PendingChange::Insert {
-                cells: vec![cell("book_id", "1"), cell("store_id", "1"), cell("quantity", "7")],
+                cells: vec![
+                    cell("book_id", "1"),
+                    cell("store_id", "1"),
+                    cell("quantity", "7"),
+                ],
             },
             PendingChange::Delete {
                 key: vec![cell("book_id", "1"), cell("store_id", "1")],
@@ -425,7 +473,11 @@ async fn deletes_run_before_inserts_so_a_key_can_be_reused() {
     .unwrap();
 
     assert_eq!(
-        scalar(&*d, "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1").await,
+        scalar(
+            &*d,
+            "SELECT quantity FROM book_stores WHERE book_id = 1 AND store_id = 1"
+        )
+        .await,
         Value::Int(7)
     );
 }

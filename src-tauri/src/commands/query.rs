@@ -53,7 +53,11 @@ pub async fn run_query(
     for stmt in statements {
         match driver.run(&stmt, limit, token.clone()).await {
             Ok(outcome) => {
-                results.push(StatementResult { sql: stmt, outcome: Some(outcome), error: None });
+                results.push(StatementResult {
+                    sql: stmt,
+                    outcome: Some(outcome),
+                    error: None,
+                });
             }
             Err(e) => {
                 results.push(StatementResult {
@@ -69,9 +73,18 @@ pub async fn run_query(
     state.registry.end_query(&connection_id, &query_id).await;
     let total_elapsed_ms = started.elapsed().as_millis() as u64;
 
-    record_history(&state, &connection_id, &sql_text, &results, total_elapsed_ms);
+    record_history(
+        &state,
+        &connection_id,
+        &sql_text,
+        &results,
+        total_elapsed_ms,
+    );
 
-    Ok(RunResult { statements: results, total_elapsed_ms })
+    Ok(RunResult {
+        statements: results,
+        total_elapsed_ms,
+    })
 }
 
 /// Write one history row for the whole submission.
@@ -99,8 +112,11 @@ fn record_history(
         connection_id: Some(connection_id.to_string()),
         connection_name,
         duration_ms: elapsed_ms as i64,
-        row_count: results.iter().filter_map(|r| r.outcome.as_ref()).map(|o| o.row_count()).sum::<u64>()
-            as i64,
+        row_count: results
+            .iter()
+            .filter_map(|r| r.outcome.as_ref())
+            .map(|o| o.row_count())
+            .sum::<u64>() as i64,
         error: results.iter().find_map(|r| r.error.clone()),
     };
 

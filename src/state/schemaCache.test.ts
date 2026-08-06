@@ -17,7 +17,7 @@ describe('toCompletionSchema', () => {
 
   it('registers both bare and qualified names so either prefix completes', () => {
     const out = toCompletionSchema([t('users', ['id'], 'public')]);
-    expect(out['users']).toEqual(['id']);
+    expect(out.users).toEqual(['id']);
     expect(out['public.users']).toEqual(['id']);
   });
 

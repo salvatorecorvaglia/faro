@@ -22,8 +22,8 @@ impl Fixture {
         if !source.exists() {
             return None;
         }
-        let db = std::env::temp_dir()
-            .join(format!("faro_transfer_{tag}_{}.db", std::process::id()));
+        let db =
+            std::env::temp_dir().join(format!("faro_transfer_{tag}_{}.db", std::process::id()));
         let _ = std::fs::remove_file(&db);
         std::fs::copy(&source, &db).ok()?;
         Some(Self { db, files: vec![] })
@@ -59,7 +59,9 @@ async fn open(f: &Fixture) -> Box<dyn Driver> {
         color: None,
         read_only: false,
     };
-    driver::connect(&config, None).await.expect("connect failed")
+    driver::connect(&config, None)
+        .await
+        .expect("connect failed")
 }
 
 macro_rules! fixture_or_skip {
@@ -89,12 +91,21 @@ async fn a_table_round_trips_through_csv() {
 
     // Export every author.
     let source = d
-        .query("SELECT id, name, email, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name, email, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let path = f.file("authors.csv");
-    let written = export::write_file(&path, &source, &opts(ExportFormat::Csv, "authors"), Some(d.dialect()))
-        .unwrap();
+    let written = export::write_file(
+        &path,
+        &source,
+        &opts(ExportFormat::Csv, "authors"),
+        Some(d.dialect()),
+    )
+    .unwrap();
     assert_eq!(written, 5);
 
     // Read it back and confirm the file describes what left the database.
@@ -136,7 +147,11 @@ async fn a_table_round_trips_through_csv() {
     d.apply_transaction(&statements).await.unwrap();
 
     let copied = d
-        .query("SELECT id, name FROM authors_copy ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name FROM authors_copy ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(copied.rows.len(), 5);
@@ -151,8 +166,14 @@ async fn a_table_round_trips_through_csv() {
             _ => None,
         })
         .collect();
-    assert!(names.iter().any(|n| n == "Ken O'Brien"), "apostrophe lost: {names:?}");
-    assert!(names.iter().any(|n| n.contains('Ó')), "unicode lost: {names:?}");
+    assert!(
+        names.iter().any(|n| n == "Ken O'Brien"),
+        "apostrophe lost: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.contains('Ó')),
+        "unicode lost: {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -162,7 +183,11 @@ async fn null_survives_a_csv_round_trip_as_null() {
 
     // `bio` is NULL for one author; it must come back NULL, not as "".
     let source = d
-        .query("SELECT id, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let null_count = source.rows.iter().filter(|r| r[1] == Value::Null).count();
@@ -173,7 +198,10 @@ async fn null_survives_a_csv_round_trip_as_null() {
 
     let (_, rows) = import::read_rows(&path, ImportFormat::Csv, true).unwrap();
     let empties = rows.iter().filter(|r| r[1].is_empty()).count();
-    assert_eq!(empties, null_count, "NULLs did not come back as empty fields");
+    assert_eq!(
+        empties, null_count,
+        "NULLs did not come back as empty fields"
+    );
 }
 
 #[tokio::test]
@@ -189,7 +217,11 @@ async fn exporting_a_table_reads_past_the_first_page() {
     let mut offset = 0u64;
     loop {
         let page = d
-            .query(&dialect.paginate(base, 2001, offset), 2000, CancellationToken::new())
+            .query(
+                &dialect.paginate(base, 2001, offset),
+                2000,
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let more = page.truncated;
@@ -208,8 +240,13 @@ async fn exporting_a_table_reads_past_the_first_page() {
     assert_eq!(combined.rows.len(), 5000, "paged export lost rows");
 
     let path = f.file("access.csv");
-    let written =
-        export::write_file(&path, &combined, &opts(ExportFormat::Csv, "access_log"), None).unwrap();
+    let written = export::write_file(
+        &path,
+        &combined,
+        &opts(ExportFormat::Csv, "access_log"),
+        None,
+    )
+    .unwrap();
     assert_eq!(written, 5000);
 
     let (_, rows) = import::read_rows(&path, ImportFormat::Csv, true).unwrap();
@@ -222,7 +259,11 @@ async fn json_export_round_trips_through_the_importer() {
     let d = open(&f).await;
 
     let source = d
-        .query("SELECT id, name FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let path = f.file("authors.json");
@@ -240,12 +281,21 @@ async fn sql_export_is_valid_sql_the_database_accepts() {
     let d = open(&f).await;
 
     let source = d
-        .query("SELECT id, name, email, bio FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name, email, bio FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let path = f.file("authors.sql");
-    export::write_file(&path, &source, &opts(ExportFormat::Sql, "authors_copy"), Some(d.dialect()))
-        .unwrap();
+    export::write_file(
+        &path,
+        &source,
+        &opts(ExportFormat::Sql, "authors_copy"),
+        Some(d.dialect()),
+    )
+    .unwrap();
 
     d.execute(
         "CREATE TABLE authors_copy (id INTEGER PRIMARY KEY, name TEXT, email TEXT, bio TEXT)",
@@ -264,7 +314,11 @@ async fn sql_export_is_valid_sql_the_database_accepts() {
     }
 
     let copied = d
-        .query("SELECT COUNT(*) FROM authors_copy", 1, CancellationToken::new())
+        .query(
+            "SELECT COUNT(*) FROM authors_copy",
+            1,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(copied.rows[0][0], Value::Int(5));
@@ -276,7 +330,11 @@ async fn xlsx_export_reads_back_through_calamine() {
     let d = open(&f).await;
 
     let source = d
-        .query("SELECT id, name FROM authors ORDER BY id", 100, CancellationToken::new())
+        .query(
+            "SELECT id, name FROM authors ORDER BY id",
+            100,
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     let path = f.file("authors.xlsx");

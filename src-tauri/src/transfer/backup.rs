@@ -97,7 +97,10 @@ pub async fn write_backup(
             // Views hold no data of their own and their definitions are
             // engine-specific text Faro does not currently read back.
             .filter(|t| t.kind == TableKind::Table)
-            .map(|t| TableRef { schema: t.schema, name: t.name })
+            .map(|t| TableRef {
+                schema: t.schema,
+                name: t.name,
+            })
             .collect()
     } else {
         options.tables.clone()
@@ -235,7 +238,11 @@ async fn write_table_data(
     loop {
         let paged = dialect.paginate(&base, FETCH_BATCH + 1, offset);
         let page = driver
-            .query(&paged, FETCH_BATCH, tokio_util::sync::CancellationToken::new())
+            .query(
+                &paged,
+                FETCH_BATCH,
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await?;
 
         if page.rows.is_empty() {
@@ -355,10 +362,7 @@ fn order_by_dependency(details: Vec<TableDetail>) -> Vec<TableDetail> {
     order.extend((0..count).filter(|&i| !placed[i]));
 
     let mut slots: Vec<Option<TableDetail>> = details.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .filter_map(|i| slots[i].take())
-        .collect()
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
 /// Parenthesise a `DEFAULT` unless it is already a bare literal.
@@ -383,9 +387,7 @@ fn wrap_default(default: &str) -> String {
     }
     // A number, with optional sign and decimal point.
     let numeric_body = t.strip_prefix('-').unwrap_or(t);
-    if !numeric_body.is_empty()
-        && numeric_body.chars().all(|c| c.is_ascii_digit() || c == '.')
-    {
+    if !numeric_body.is_empty() && numeric_body.chars().all(|c| c.is_ascii_digit() || c == '.') {
         return t.to_string();
     }
     // A keyword literal.
@@ -411,7 +413,11 @@ pub fn secondary_objects_sql(detail: &TableDetail, dialect: &dyn Dialect) -> Vec
         if index.is_primary || index.is_constraint || index.columns.is_empty() {
             continue;
         }
-        let columns: Vec<String> = index.columns.iter().map(|c| dialect.quote_ident(c)).collect();
+        let columns: Vec<String> = index
+            .columns
+            .iter()
+            .map(|c| dialect.quote_ident(c))
+            .collect();
         out.push(format!(
             "CREATE {}INDEX {} ON {} ({});",
             if index.is_unique { "UNIQUE " } else { "" },
@@ -488,7 +494,9 @@ pub async fn restore(
         .collect();
 
     if statements.is_empty() {
-        return Err(FaroError::Other("the file contains no SQL statements".into()));
+        return Err(FaroError::Other(
+            "the file contains no SQL statements".into(),
+        ));
     }
 
     let total = statements.len();
@@ -515,7 +523,11 @@ pub async fn restore(
         on_progress(index + 1, total);
     }
 
-    Ok(RestoreResult { statements: total, failed, errors })
+    Ok(RestoreResult {
+        statements: total,
+        failed,
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -550,7 +562,10 @@ mod tests {
 
     fn detail() -> TableDetail {
         TableDetail {
-            table: TableRef { schema: None, name: "books".into() },
+            table: TableRef {
+                schema: None,
+                name: "books".into(),
+            },
             kind: TableKind::Table,
             columns: vec![
                 col("id", "integer", false, None),
@@ -561,7 +576,10 @@ mod tests {
             foreign_keys: vec![ForeignKey {
                 name: "books_author_fk".into(),
                 columns: vec!["author_id".into()],
-                referenced_table: TableRef { schema: None, name: "authors".into() },
+                referenced_table: TableRef {
+                    schema: None,
+                    name: "authors".into(),
+                },
                 referenced_columns: vec!["id".into()],
             }],
             indexes: vec![
@@ -596,7 +614,10 @@ mod tests {
     #[test]
     fn nullable_columns_omit_not_null() {
         let sql = create_table_sql(&detail(), &TestDialect);
-        assert!(sql.contains(r#""created" timestamptz DEFAULT (now())"#), "{sql}");
+        assert!(
+            sql.contains(r#""created" timestamptz DEFAULT (now())"#),
+            "{sql}"
+        );
         assert!(!sql.contains("timestamptz NOT NULL"), "{sql}");
     }
 
@@ -623,17 +644,26 @@ mod tests {
         // The PRIMARY KEY clause already created it; a second CREATE would fail.
         let out = secondary_objects_sql(&detail(), &TestDialect);
         assert!(!out.iter().any(|s| s.contains("books_pkey")), "{out:#?}");
-        assert!(out.iter().any(|s| s.contains("books_title_idx")), "{out:#?}");
+        assert!(
+            out.iter().any(|s| s.contains("books_title_idx")),
+            "{out:#?}"
+        );
     }
 
     #[test]
     fn secondary_objects_emit_indexes_and_foreign_keys() {
         let out = secondary_objects_sql(&detail(), &TestDialect);
+        assert!(
+            out.iter()
+                .any(|s| s == r#"CREATE INDEX "books_title_idx" ON "books" ("title");"#),
+            "{out:#?}"
+        );
         assert!(out
             .iter()
-            .any(|s| s == r#"CREATE INDEX "books_title_idx" ON "books" ("title");"#), "{out:#?}");
-        assert!(out.iter().any(|s| s.contains("ADD CONSTRAINT \"books_author_fk\" FOREIGN KEY")));
-        assert!(out.iter().any(|s| s.contains(r#"REFERENCES "authors" ("id")"#)));
+            .any(|s| s.contains("ADD CONSTRAINT \"books_author_fk\" FOREIGN KEY")));
+        assert!(out
+            .iter()
+            .any(|s| s.contains(r#"REFERENCES "authors" ("id")"#)));
     }
 
     #[test]
@@ -641,12 +671,18 @@ mod tests {
         let mut d = detail();
         d.indexes[1].is_unique = true;
         let out = secondary_objects_sql(&d, &TestDialect);
-        assert!(out.iter().any(|s| s.starts_with("CREATE UNIQUE INDEX")), "{out:#?}");
+        assert!(
+            out.iter().any(|s| s.starts_with("CREATE UNIQUE INDEX")),
+            "{out:#?}"
+        );
     }
 
     fn named(name: &str, refs: &[&str]) -> TableDetail {
         TableDetail {
-            table: TableRef { schema: None, name: name.into() },
+            table: TableRef {
+                schema: None,
+                name: name.into(),
+            },
             kind: TableKind::Table,
             columns: vec![col("id", "integer", false, None)],
             primary_key: vec!["id".into()],
@@ -655,7 +691,10 @@ mod tests {
                 .map(|r| ForeignKey {
                     name: format!("{name}_{r}_fk"),
                     columns: vec!["id".into()],
-                    referenced_table: TableRef { schema: None, name: (*r).into() },
+                    referenced_table: TableRef {
+                        schema: None,
+                        name: (*r).into(),
+                    },
                     referenced_columns: vec!["id".into()],
                 })
                 .collect(),
@@ -734,7 +773,10 @@ mod tests {
             is_constraint: true,
         });
         let out = secondary_objects_sql(&d, &TestDialect);
-        assert!(!out.iter().any(|s| s.contains("sqlite_autoindex")), "{out:#?}");
+        assert!(
+            !out.iter().any(|s| s.contains("sqlite_autoindex")),
+            "{out:#?}"
+        );
     }
 
     #[test]
@@ -742,7 +784,10 @@ mod tests {
         // SQLite reports `DEFAULT (datetime('now'))` without its parentheses,
         // then rejects the value if they are not put back.
         assert_eq!(wrap_default("datetime('now')"), "(datetime('now'))");
-        assert_eq!(wrap_default("nextval('s'::regclass)"), "(nextval('s'::regclass))");
+        assert_eq!(
+            wrap_default("nextval('s'::regclass)"),
+            "(nextval('s'::regclass))"
+        );
 
         // Literals are already valid and stay as they are.
         assert_eq!(wrap_default("1"), "1");

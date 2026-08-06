@@ -127,7 +127,11 @@ pub async fn import_file(
     // Validate targets against the real table before reading the file, so a
     // bad mapping fails immediately rather than after a long parse.
     for mapping in &options.mappings {
-        if !detail.columns.iter().any(|c| c.name == mapping.target_column) {
+        if !detail
+            .columns
+            .iter()
+            .any(|c| c.name == mapping.target_column)
+        {
             return Err(FaroError::Other(format!(
                 "no column named \"{}\" on {}",
                 mapping.target_column, table.name
@@ -188,7 +192,11 @@ pub async fn import_file(
 
     let affected = driver.apply_transaction(&statements).await?;
     Ok(TransferResult {
-        rows: if affected > 0 { affected } else { rows.len() as u64 },
+        rows: if affected > 0 {
+            affected
+        } else {
+            rows.len() as u64
+        },
         path,
     })
 }

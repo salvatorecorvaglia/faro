@@ -53,7 +53,7 @@ describe('staging', () => {
   it('stages a cell edit', () => {
     const e = setCell(emptyEdits(), 0, 'name', { kind: 'text', value: 'Ada L' }, text('Ada'));
     expect(hasChanges(e)).toBe(true);
-    expect(e.updates[0]!['name']).toEqual({ kind: 'text', value: 'Ada L' });
+    expect(e.updates[0]!.name).toEqual({ kind: 'text', value: 'Ada L' });
   });
 
   it('drops an edit that returns the original value', () => {
@@ -70,7 +70,7 @@ describe('staging', () => {
     const toEmpty = setCell(emptyEdits(), 1, 'bio', { kind: 'text', value: '' }, text('hi'));
     expect(hasChanges(toNull)).toBe(true);
     expect(hasChanges(toEmpty)).toBe(true);
-    expect(toNull.updates[1]!['bio']).not.toEqual(toEmpty.updates[1]!['bio']);
+    expect(toNull.updates[1]!.bio).not.toEqual(toEmpty.updates[1]!.bio);
   });
 
   it('clears a NULL edit when the cell was already NULL', () => {
@@ -95,13 +95,13 @@ describe('staging', () => {
     const e = addRow(emptyEdits(), columns);
     expect(e.inserts).toHaveLength(1);
     // Defaults let an auto-increment key work without the user inventing one.
-    expect(e.inserts[0]!['id']).toEqual({ kind: 'default' });
+    expect(e.inserts[0]!.id).toEqual({ kind: 'default' });
   });
 
   it('edits and removes a staged insert', () => {
     let e = addRow(emptyEdits(), columns);
     e = setInsertCell(e, 0, 'name', { kind: 'text', value: 'New' });
-    expect(e.inserts[0]!['name']).toEqual({ kind: 'text', value: 'New' });
+    expect(e.inserts[0]!.name).toEqual({ kind: 'text', value: 'New' });
 
     e = removeInsert(e, 0);
     expect(e.inserts).toHaveLength(0);

@@ -41,5 +41,8 @@ pub async fn apply_changes(
 
     let rows_affected = driver.apply_transaction(&statements).await?;
 
-    Ok(ApplyResult { statements_run: statements.len(), rows_affected })
+    Ok(ApplyResult {
+        statements_run: statements.len(),
+        rows_affected,
+    })
 }

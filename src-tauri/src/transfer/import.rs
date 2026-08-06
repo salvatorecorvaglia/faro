@@ -91,7 +91,11 @@ const SAMPLE_ROWS: usize = 20;
 ///
 /// Everything is read as text; coercion to the column's real type happens at
 /// insert time, where the declared type is known.
-pub fn read_rows(path: &Path, format: ImportFormat, has_header: bool) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+pub fn read_rows(
+    path: &Path,
+    format: ImportFormat,
+    has_header: bool,
+) -> Result<(Vec<String>, Vec<Vec<String>>)> {
     match format {
         ImportFormat::Csv => read_delimited(path, b',', has_header),
         ImportFormat::Tsv => read_delimited(path, b'\t', has_header),
@@ -168,9 +172,9 @@ fn read_json(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>)> {
     let text = std::fs::read_to_string(path)?;
     let parsed: serde_json::Value = serde_json::from_str(&text)?;
 
-    let array = parsed
-        .as_array()
-        .ok_or_else(|| FaroError::Other("expected the JSON file to contain an array of objects".into()))?;
+    let array = parsed.as_array().ok_or_else(|| {
+        FaroError::Other("expected the JSON file to contain an array of objects".into())
+    })?;
 
     // Union of keys across all objects, in first-seen order, so a row missing
     // an optional field does not drop that column for everyone.
@@ -205,8 +209,8 @@ fn read_json(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>)> {
 fn read_xlsx(path: &Path, has_header: bool) -> Result<(Vec<String>, Vec<Vec<String>>)> {
     use calamine::{open_workbook_auto, Reader};
 
-    let mut workbook =
-        open_workbook_auto(path).map_err(|e| FaroError::Io(format!("could not open workbook: {e}")))?;
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|e| FaroError::Io(format!("could not open workbook: {e}")))?;
 
     let sheet_name = workbook
         .sheet_names()
@@ -295,10 +299,22 @@ mod tests {
 
     #[test]
     fn detects_format_from_the_extension() {
-        assert_eq!(ImportFormat::from_path(Path::new("a.csv")), Some(ImportFormat::Csv));
-        assert_eq!(ImportFormat::from_path(Path::new("a.TSV")), Some(ImportFormat::Tsv));
-        assert_eq!(ImportFormat::from_path(Path::new("a.json")), Some(ImportFormat::Json));
-        assert_eq!(ImportFormat::from_path(Path::new("a.xlsx")), Some(ImportFormat::Xlsx));
+        assert_eq!(
+            ImportFormat::from_path(Path::new("a.csv")),
+            Some(ImportFormat::Csv)
+        );
+        assert_eq!(
+            ImportFormat::from_path(Path::new("a.TSV")),
+            Some(ImportFormat::Tsv)
+        );
+        assert_eq!(
+            ImportFormat::from_path(Path::new("a.json")),
+            Some(ImportFormat::Json)
+        );
+        assert_eq!(
+            ImportFormat::from_path(Path::new("a.xlsx")),
+            Some(ImportFormat::Xlsx)
+        );
         assert_eq!(ImportFormat::from_path(Path::new("a.txt")), None);
         assert_eq!(ImportFormat::from_path(Path::new("noext")), None);
     }

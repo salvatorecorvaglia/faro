@@ -242,7 +242,9 @@ fn build_where(
 /// Neutralize LIKE wildcards so a user searching for "50%" does not match
 /// everything starting with "50".
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]
@@ -354,14 +356,21 @@ SELECT f()
     }
 
     fn filter(column: &str, op: FilterOp, value: &str) -> ColumnFilter {
-        ColumnFilter { column: column.into(), op, value: value.into() }
+        ColumnFilter {
+            column: column.into(),
+            op,
+            value: value.into(),
+        }
     }
 
     #[test]
     fn builds_conjunction_of_filters() {
         let known = ["a", "b"];
         let out = build_where(
-            &[filter("a", FilterOp::Equals, "1"), filter("b", FilterOp::IsNull, "")],
+            &[
+                filter("a", FilterOp::Equals, "1"),
+                filter("b", FilterOp::IsNull, ""),
+            ],
             &known,
             &TestDialect,
         );
@@ -386,15 +395,22 @@ SELECT f()
     #[test]
     fn escapes_quotes_in_filter_values() {
         let known = ["a"];
-        let out =
-            build_where(&[filter("a", FilterOp::Equals, "x' OR '1'='1")], &known, &TestDialect);
+        let out = build_where(
+            &[filter("a", FilterOp::Equals, "x' OR '1'='1")],
+            &known,
+            &TestDialect,
+        );
         assert_eq!(out, r#""a" = 'x'' OR ''1''=''1'"#);
     }
 
     #[test]
     fn escapes_like_wildcards_in_search_text() {
         let known = ["a"];
-        let out = build_where(&[filter("a", FilterOp::Contains, "50%")], &known, &TestDialect);
+        let out = build_where(
+            &[filter("a", FilterOp::Contains, "50%")],
+            &known,
+            &TestDialect,
+        );
         assert!(out.contains(r"'%50\%%'"), "got {out}");
     }
 
@@ -419,7 +435,10 @@ SELECT f()
     }
 
     fn table() -> TableRef {
-        TableRef { schema: None, name: "books".into() }
+        TableRef {
+            schema: None,
+            name: "books".into(),
+        }
     }
 
     #[test]
@@ -452,7 +471,10 @@ SELECT f()
         o.filters = vec![filter("id", FilterOp::GreaterThan, "5")];
         o.sort_column = Some("id".into());
         let sql = build_browse_sql(&table(), &o, &["id"], &TestDialect, 1000);
-        assert_eq!(sql, r#"SELECT * FROM "books" WHERE "id" > '5' ORDER BY "id" ASC"#);
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "books" WHERE "id" > '5' ORDER BY "id" ASC"#
+        );
     }
 
     #[test]
@@ -476,7 +498,10 @@ SELECT f()
 
     #[test]
     fn schema_qualifies_when_the_dialect_supports_it() {
-        let t = TableRef { schema: Some("public".into()), name: "books".into() };
+        let t = TableRef {
+            schema: Some("public".into()),
+            name: "books".into(),
+        };
         let sql = build_browse_sql(&t, &opts(), &["id"], &TestDialect, 1000);
         assert_eq!(sql, r#"SELECT * FROM "public"."books""#);
     }

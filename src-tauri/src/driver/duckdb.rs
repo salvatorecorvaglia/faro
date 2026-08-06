@@ -9,8 +9,9 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo,
-    ResultSet, SchemaInfo, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, TableColumns, TableDetail, TableInfo, TableKind, TableRef,
+    Value,
 };
 
 pub struct DuckDbDialect;
@@ -78,7 +79,10 @@ impl DuckDbDriver {
         .map_err(|e| FaroError::Connection(e.to_string()))?
         .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        Ok(Self { conn: Arc::new(Mutex::new(conn)), dialect: DuckDbDialect })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            dialect: DuckDbDialect,
+        })
     }
 
     /// Run a closure against the connection on a blocking thread.
@@ -149,7 +153,10 @@ impl DuckDbDriver {
             columns = stmt
                 .column_names()
                 .into_iter()
-                .map(|name| ColumnInfo { name, type_name: String::new() })
+                .map(|name| ColumnInfo {
+                    name,
+                    type_name: String::new(),
+                })
                 .collect();
         }
 
@@ -163,7 +170,10 @@ impl DuckDbDriver {
 }
 
 fn map_err(e: duckdb::Error) -> FaroError {
-    FaroError::Database { message: e.to_string(), code: None }
+    FaroError::Database {
+        message: e.to_string(),
+        code: None,
+    }
 }
 
 #[async_trait]
@@ -178,7 +188,10 @@ impl Driver for DuckDbDriver {
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>> {
         // One namespace, matching how the dialect qualifies names.
-        Ok(vec![SchemaInfo { name: "main".into(), is_system: false }])
+        Ok(vec![SchemaInfo {
+            name: "main".into(),
+            is_system: false,
+        }])
     }
 
     async fn list_tables(&self, _schema: Option<&str>) -> Result<Vec<TableInfo>> {
@@ -561,7 +574,10 @@ mod tests {
     #[test]
     fn parses_the_constraint_column_list() {
         assert_eq!(parse_column_list("[id]"), vec!["id"]);
-        assert_eq!(parse_column_list("[book_id, store_id]"), vec!["book_id", "store_id"]);
+        assert_eq!(
+            parse_column_list("[book_id, store_id]"),
+            vec!["book_id", "store_id"]
+        );
         assert_eq!(parse_column_list("[]"), Vec::<String>::new());
         // Quoted forms appear on some builds.
         assert_eq!(parse_column_list("['a', 'b']"), vec!["a", "b"]);

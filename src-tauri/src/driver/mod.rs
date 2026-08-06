@@ -61,7 +61,10 @@ pub trait Driver: Send + Sync {
         let tables = self.list_tables(schema).await?;
         let mut out = Vec::with_capacity(tables.len());
         for t in tables {
-            let table = TableRef { schema: t.schema.clone(), name: t.name.clone() };
+            let table = TableRef {
+                schema: t.schema.clone(),
+                name: t.name.clone(),
+            };
             // Skip tables that fail to describe (dropped mid-walk, or no
             // permission) rather than losing autocomplete for the whole schema.
             if let Ok(detail) = self.describe_table(&table).await {
@@ -79,12 +82,7 @@ pub trait Driver: Send + Sync {
     ///
     /// Implementations must honour `cancel` so a runaway query can be aborted
     /// from the UI rather than blocking a pool slot until it finishes.
-    async fn query(
-        &self,
-        sql: &str,
-        limit: u64,
-        cancel: CancellationToken,
-    ) -> Result<ResultSet>;
+    async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet>;
 
     /// Run a statement that returns no rows.
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult>;
@@ -122,12 +120,7 @@ pub trait Driver: Send + Sync {
     ///
     /// The default classifies by leading keyword, which covers the common cases;
     /// engines with better introspection can override.
-    async fn run(
-        &self,
-        sql: &str,
-        limit: u64,
-        cancel: CancellationToken,
-    ) -> Result<QueryOutcome> {
+    async fn run(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<QueryOutcome> {
         if returns_rows(sql) {
             self.query(sql, limit, cancel).await.map(QueryOutcome::Rows)
         } else {
@@ -157,7 +150,15 @@ pub fn returns_rows(sql: &str) -> bool {
 
     matches!(
         head.as_str(),
-        "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" | "PRAGMA" | "VALUES" | "TABLE"
+        "SELECT"
+            | "WITH"
+            | "SHOW"
+            | "EXPLAIN"
+            | "DESCRIBE"
+            | "DESC"
+            | "PRAGMA"
+            | "VALUES"
+            | "TABLE"
     )
 }
 
@@ -172,9 +173,9 @@ pub async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Resul
         Engine::Postgres | Engine::CockroachDb | Engine::Redshift => Ok(Box::new(
             postgres::PostgresDriver::connect(config, password).await?,
         )),
-        Engine::MySql | Engine::MariaDb => {
-            Ok(Box::new(mysql::MySqlDriver::connect(config, password).await?))
-        }
+        Engine::MySql | Engine::MariaDb => Ok(Box::new(
+            mysql::MySqlDriver::connect(config, password).await?,
+        )),
         Engine::SqlServer => Ok(Box::new(
             mssql::SqlServerDriver::connect(config, password).await?,
         )),

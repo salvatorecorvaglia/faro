@@ -64,7 +64,10 @@ pub fn delete_password(key: &str) -> Result<()> {
             let _ = e.delete_credential();
         }
     } else {
-        memory_store().lock().expect("secrets mutex poisoned").remove(key);
+        memory_store()
+            .lock()
+            .expect("secrets mutex poisoned")
+            .remove(key);
     }
     Ok(())
 }

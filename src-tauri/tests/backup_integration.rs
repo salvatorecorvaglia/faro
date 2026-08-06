@@ -39,7 +39,11 @@ impl Fixture {
         // create one, so make it explicitly.
         std::fs::File::create(&target).ok()?;
 
-        Some(Self { source, target, dump })
+        Some(Self {
+            source,
+            target,
+            dump,
+        })
     }
 }
 
@@ -65,7 +69,9 @@ async fn open(path: &std::path::Path) -> Box<dyn Driver> {
         color: None,
         read_only: false,
     };
-    driver::connect(&config, None).await.expect("connect failed")
+    driver::connect(&config, None)
+        .await
+        .expect("connect failed")
 }
 
 macro_rules! fixture_or_skip {
@@ -112,7 +118,13 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
     // Record what the source holds.
     let expected: Vec<(String, i64)> = {
         let mut out = Vec::new();
-        for t in ["authors", "books", "book_stores", "access_log", "type_gallery"] {
+        for t in [
+            "authors",
+            "books",
+            "book_stores",
+            "access_log",
+            "type_gallery",
+        ] {
             out.push((t.to_string(), count(&*src, t).await));
         }
         out
@@ -122,23 +134,46 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
         .await
         .unwrap();
 
-    assert!(result.tables >= 5, "expected every table, got {}", result.tables);
-    assert!(result.rows > 5000, "expected the 5000-row log table, got {}", result.rows);
+    assert!(
+        result.tables >= 5,
+        "expected every table, got {}",
+        result.tables
+    );
+    assert!(
+        result.rows > 5000,
+        "expected the 5000-row log table, got {}",
+        result.rows
+    );
     assert!(result.bytes > 0);
     src.close().await;
 
     // Restore into the empty database.
     let dst = open(&f.target).await;
     let script = std::fs::read_to_string(&f.dump).unwrap();
-    let restored = backup::restore(&*dst, &script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap();
+    let restored = backup::restore(
+        &*dst,
+        &script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(restored.failed, 0, "restore reported failures: {:#?}", restored.errors);
+    assert_eq!(
+        restored.failed, 0,
+        "restore reported failures: {:#?}",
+        restored.errors
+    );
 
     // Every table must come back with the same number of rows.
     for (table, n) in expected {
-        assert_eq!(count(&*dst, &table).await, n, "row count differs for {table}");
+        assert_eq!(
+            count(&*dst, &table).await,
+            n,
+            "row count differs for {table}"
+        );
     }
 }
 
@@ -146,14 +181,23 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
 async fn restored_values_match_including_awkward_ones() {
     let f = fixture_or_skip!("values");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {}).await.unwrap();
+    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+        .await
+        .unwrap();
     src.close().await;
 
     let dst = open(&f.target).await;
     let script = std::fs::read_to_string(&f.dump).unwrap();
-    backup::restore(&*dst, &script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap();
+    backup::restore(
+        &*dst,
+        &script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
 
     let rs = dst
         .query(
@@ -173,8 +217,14 @@ async fn restored_values_match_including_awkward_ones() {
         })
         .collect();
 
-    assert!(names.iter().any(|n| n == "Ken O'Brien"), "apostrophe lost: {names:?}");
-    assert!(names.iter().any(|n| n.contains('Ó')), "unicode lost: {names:?}");
+    assert!(
+        names.iter().any(|n| n == "Ken O'Brien"),
+        "apostrophe lost: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.contains('Ó')),
+        "unicode lost: {names:?}"
+    );
     // The NULL bio must still be NULL, not the string "NULL".
     assert!(
         rs.rows.iter().any(|r| r[1] == Value::Null),
@@ -186,14 +236,23 @@ async fn restored_values_match_including_awkward_ones() {
 async fn blobs_survive_the_round_trip() {
     let f = fixture_or_skip!("blobs");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {}).await.unwrap();
+    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+        .await
+        .unwrap();
     src.close().await;
 
     let dst = open(&f.target).await;
     let script = std::fs::read_to_string(&f.dump).unwrap();
-    backup::restore(&*dst, &script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap();
+    backup::restore(
+        &*dst,
+        &script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
 
     let rs = dst
         .query(
@@ -211,25 +270,43 @@ async fn blobs_survive_the_round_trip() {
 async fn the_restored_schema_carries_keys_and_indexes() {
     let f = fixture_or_skip!("schema");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {}).await.unwrap();
+    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+        .await
+        .unwrap();
     src.close().await;
 
     let dst = open(&f.target).await;
     let script = std::fs::read_to_string(&f.dump).unwrap();
-    backup::restore(&*dst, &script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap();
+    backup::restore(
+        &*dst,
+        &script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
 
     let books = dst
-        .describe_table(&faro_lib::model::TableRef { schema: None, name: "books".into() })
+        .describe_table(&faro_lib::model::TableRef {
+            schema: None,
+            name: "books".into(),
+        })
         .await
         .unwrap();
     assert_eq!(books.primary_key, vec!["id"]);
-    assert!(books.is_editable(), "the restored table lost its primary key");
+    assert!(
+        books.is_editable(),
+        "the restored table lost its primary key"
+    );
 
     // The composite key must come back in order, or generated DML would be wrong.
     let stores = dst
-        .describe_table(&faro_lib::model::TableRef { schema: None, name: "book_stores".into() })
+        .describe_table(&faro_lib::model::TableRef {
+            schema: None,
+            name: "book_stores".into(),
+        })
         .await
         .unwrap();
     assert_eq!(stores.primary_key, vec!["book_id", "store_id"]);
@@ -248,15 +325,23 @@ async fn selecting_tables_limits_what_is_dumped() {
     let src = open(&f.source).await;
 
     let mut o = options();
-    o.tables = vec![faro_lib::model::TableRef { schema: None, name: "authors".into() }];
-    let result = backup::write_backup(&*src, &f.dump, &o, |_| {}).await.unwrap();
+    o.tables = vec![faro_lib::model::TableRef {
+        schema: None,
+        name: "authors".into(),
+    }];
+    let result = backup::write_backup(&*src, &f.dump, &o, |_| {})
+        .await
+        .unwrap();
 
     assert_eq!(result.tables, 1);
     assert_eq!(result.rows, 5);
 
     let script = std::fs::read_to_string(&f.dump).unwrap();
     assert!(script.contains("authors"));
-    assert!(!script.contains("access_log"), "an unselected table leaked into the dump");
+    assert!(
+        !script.contains("access_log"),
+        "an unselected table leaked into the dump"
+    );
 }
 
 #[tokio::test]
@@ -266,12 +351,17 @@ async fn a_schema_only_backup_has_no_inserts() {
 
     let mut o = options();
     o.include_data = false;
-    let result = backup::write_backup(&*src, &f.dump, &o, |_| {}).await.unwrap();
+    let result = backup::write_backup(&*src, &f.dump, &o, |_| {})
+        .await
+        .unwrap();
     assert_eq!(result.rows, 0);
 
     let script = std::fs::read_to_string(&f.dump).unwrap();
     assert!(script.contains("CREATE TABLE"));
-    assert!(!script.contains("INSERT INTO"), "data leaked into a schema-only dump");
+    assert!(
+        !script.contains("INSERT INTO"),
+        "data leaked into a schema-only dump"
+    );
 }
 
 #[tokio::test]
@@ -300,9 +390,16 @@ async fn restore_stops_at_the_first_error_by_default() {
     let dst = open(&f.target).await;
 
     let script = "CREATE TABLE ok (a int);\nTHIS IS NOT SQL;\nCREATE TABLE after (b int);";
-    let err = backup::restore(&*dst, script, &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .unwrap_err();
+    let err = backup::restore(
+        &*dst,
+        script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap_err();
 
     assert!(err.to_string().contains("statement 2"), "{err}");
 
@@ -315,7 +412,11 @@ async fn restore_stops_at_the_first_error_by_default() {
         )
         .await
         .unwrap();
-    assert_eq!(exists.rows[0][0], Value::Int(0), "restore continued past the error");
+    assert_eq!(
+        exists.rows[0][0],
+        Value::Int(0),
+        "restore continued past the error"
+    );
 }
 
 #[tokio::test]
@@ -324,9 +425,16 @@ async fn restore_can_be_told_to_continue_past_errors() {
     let dst = open(&f.target).await;
 
     let script = "CREATE TABLE ok (a int);\nTHIS IS NOT SQL;\nCREATE TABLE after (b int);";
-    let result = backup::restore(&*dst, script, &RestoreOptions { stop_on_error: false }, |_, _| {})
-        .await
-        .unwrap();
+    let result = backup::restore(
+        &*dst,
+        script,
+        &RestoreOptions {
+            stop_on_error: false,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.failed, 1);
     assert_eq!(result.errors.len(), 1);
@@ -347,13 +455,22 @@ async fn an_empty_script_is_rejected_rather_than_silently_doing_nothing() {
     let f = fixture_or_skip!("emptyscript");
     let dst = open(&f.target).await;
 
-    assert!(backup::restore(&*dst, "", &RestoreOptions { stop_on_error: true }, |_, _| {})
-        .await
-        .is_err());
+    assert!(backup::restore(
+        &*dst,
+        "",
+        &RestoreOptions {
+            stop_on_error: true
+        },
+        |_, _| {}
+    )
+    .await
+    .is_err());
     assert!(backup::restore(
         &*dst,
         "-- just a comment\n",
-        &RestoreOptions { stop_on_error: true },
+        &RestoreOptions {
+            stop_on_error: true
+        },
         |_, _| {}
     )
     .await

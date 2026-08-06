@@ -8,8 +8,9 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo,
-    ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
+    TableRef, Value,
 };
 
 pub struct MySqlDialect;
@@ -90,7 +91,12 @@ impl MySqlDriver {
             .and_then(|r| r.get::<Option<String>, _>(0))
             .unwrap_or_else(|| config.database.clone());
 
-        Ok(Self { pool, meta, dialect: MySqlDialect, database })
+        Ok(Self {
+            pool,
+            meta,
+            dialect: MySqlDialect,
+            database,
+        })
     }
 }
 
@@ -105,7 +111,10 @@ impl Driver for MySqlDriver {
         // The connected database is the only namespace Faro browses. Listing
         // every database on the server would invite writing across them by
         // accident.
-        Ok(vec![SchemaInfo { name: self.database.clone(), is_system: false }])
+        Ok(vec![SchemaInfo {
+            name: self.database.clone(),
+            is_system: false,
+        }])
     }
 
     async fn list_tables(&self, _schema: Option<&str>) -> Result<Vec<TableInfo>> {
@@ -221,7 +230,10 @@ impl Driver for MySqlDriver {
                 None => foreign_keys.push(ForeignKey {
                     name,
                     columns: vec![column],
-                    referenced_table: TableRef { schema: None, name: ref_table },
+                    referenced_table: TableRef {
+                        schema: None,
+                        name: ref_table,
+                    },
                     referenced_columns: vec![ref_column],
                 }),
             }
@@ -289,7 +301,11 @@ impl Driver for MySqlDriver {
 
         Ok(TableDetail {
             table: table.clone(),
-            kind: if is_view { TableKind::View } else { TableKind::Table },
+            kind: if is_view {
+                TableKind::View
+            } else {
+                TableKind::Table
+            },
             columns: col_rows
                 .into_iter()
                 .map(|r| {
@@ -393,7 +409,12 @@ impl Driver for MySqlDriver {
             .map(|row| (0..columns.len()).map(|i| decode_value(row, i)).collect())
             .collect();
 
-        Ok(ResultSet { columns, rows: data, truncated, elapsed_ms })
+        Ok(ResultSet {
+            columns,
+            rows: data,
+            truncated,
+            elapsed_ms,
+        })
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {
@@ -520,6 +541,9 @@ mod tests {
     #[test]
     fn pagination_wraps_the_original_query() {
         let out = MySqlDialect.paginate("SELECT * FROM t LIMIT 5", 10, 0);
-        assert_eq!(out, "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10");
+        assert_eq!(
+            out,
+            "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10"
+        );
     }
 }

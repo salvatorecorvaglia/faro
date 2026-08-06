@@ -31,7 +31,11 @@ async fn open() -> Option<Box<dyn Driver>> {
         color: None,
         read_only: false,
     };
-    Some(driver::connect(&config, None).await.expect("connect failed"))
+    Some(
+        driver::connect(&config, None)
+            .await
+            .expect("connect failed"),
+    )
 }
 
 macro_rules! driver_or_skip {
@@ -117,7 +121,11 @@ async fn like_wildcards_in_a_search_term_are_escaped() {
         )
         .await
         .unwrap();
-    assert_eq!(escaped.rows.len(), 0, "no path contains a literal percent sign");
+    assert_eq!(
+        escaped.rows.len(),
+        0,
+        "no path contains a literal percent sign"
+    );
 
     let unescaped = d
         .query(
@@ -127,7 +135,10 @@ async fn like_wildcards_in_a_search_term_are_escaped() {
         )
         .await
         .unwrap();
-    assert!(!unescaped.rows.is_empty(), "a bare % should match everything");
+    assert!(
+        !unescaped.rows.is_empty(),
+        "a bare % should match everything"
+    );
 }
 
 #[tokio::test]
