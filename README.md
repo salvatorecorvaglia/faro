@@ -1,6 +1,6 @@
 # Faro ⚓
 
-**A fast, clean, cross-platform SQL client**
+**Fast, clean, cross-platform database client**
 
 **Faro** is a lightweight, high-performance desktop application that provides a unified, intuitive interface to connect, query, edit, import/export, and manage relational, analytical, and document databases without requiring external command-line utilities.
 
