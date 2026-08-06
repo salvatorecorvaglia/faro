@@ -1,8 +1,6 @@
 # Contributing to Faro ⚓
 
-First off, thank you for taking the time to contribute to **Faro**! Contributions from the community help make Faro a better, faster, and more versatile database client for everyone.
-
-This document outlines the workflow, coding standards, testing strategies, and guidelines for contributing to Faro.
+Thank you for your interest in contributing to **Faro**! We welcome contributions, bug reports, feature requests, and security improvements from the community.
 
 ---
 
