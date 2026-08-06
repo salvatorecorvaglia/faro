@@ -1,0 +1,72 @@
+# Test databases for Faro.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   ./scripts/seed.sh
+#
+# Ports are offset from the defaults so this never collides with a database the
+# developer already runs locally.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: faro
+      POSTGRES_PASSWORD: faro
+      POSTGRES_DB: faro_test
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faro -d faro_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: faro
+      MYSQL_DATABASE: faro_test
+      MYSQL_USER: faro
+      MYSQL_PASSWORD: faro
+    ports:
+      - "53306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ufaro", "-pfaro"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: faro
+      MARIADB_DATABASE: faro_test
+      MARIADB_USER: faro
+      MARIADB_PASSWORD: faro
+    ports:
+      - "53307:3306"
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Faro!Passw0rd"
+      MSSQL_PID: Developer
+    ports:
+      - "51433:1433"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    environment:
+      CLICKHOUSE_USER: faro
+      CLICKHOUSE_PASSWORD: faro
+      CLICKHOUSE_DB: faro_test
+    ports:
+      - "58123:8123"
+
+  mongo:
+    image: mongo:8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: faro
+      MONGO_INITDB_ROOT_PASSWORD: faro
+    ports:
+      - "57017:27017"

@@ -1,0 +1,63 @@
+# Dependencies & Build Outputs
+node_modules/
+dist/
+dist-isolation/
+.vite/
+*.tsbuildinfo
+
+# OS Files
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# Environment & Local Overrides
+.env
+.env.local
+.env.*.local
+*.local
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.zed/
+
+# Test Artifacts & Coverage
+coverage/
+*.db
+*.sqlite
+*.sqlite3
+tests/fixtures/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Tauri Mobile Icons (Faro is desktop-only)
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# AI Tools & Agents
+.openai/
+.chatgpt/
+gpt-config.json
+openai.config.json
+.anthropic/
+.claude/
+claude.config.json
+claude-settings.json
+.prompts/
+.prompt-cache/
+.ai/
+.gemini/
+.antigravity/
+.antigravitycli/
+.copilot/
+.codex/
+.cagent/
+.cursor/
+CLAUDE.md

@@ -1,0 +1,106 @@
+[package]
+name = "faro"
+version = "0.1.0"
+description = "A fast, clean, cross-platform SQL client"
+edition = "2021"
+# Floor set by the spreadsheet crates; Cargo's MSRV-aware resolver silently
+# picks older releases of them if this is lower.
+rust-version = "1.85"
+
+[lib]
+name = "faro_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-dialog = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+futures = "0.3"
+
+# sqlx 0.9 splits runtime and TLS into separate features. `sqlite-bundled`
+# compiles SQLite in, so Faro does not depend on a system libsqlite3.
+# The mysql driver also serves MariaDB.
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "postgres",
+  "mysql",
+  "sqlite-bundled",
+  "chrono",
+  "uuid",
+  "rust_decimal",
+  "json",
+] }
+
+# Pinned to 0.39: it shares libsqlite3-sys 0.37 with sqlx-sqlite. rusqlite 0.40
+# requires 0.38, and two crates cannot both link the native sqlite3 library.
+rusqlite = { version = "0.39", features = ["bundled"] }
+# The default "v1" feature pulls in the native store for each platform:
+# Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
+keyring = "4"
+
+sqlparser = "0.62"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rust_decimal = "1"
+dirs = "6"
+# `bundled` compiles DuckDB in; there is no system libduckdb to link against on
+# a typical machine. It is the reason this crate is behind a feature.
+duckdb = { version = "1", features = ["bundled"], optional = true }
+
+# MongoDB. `bson` is re-exported by the driver but named explicitly because the
+# query parser converts JSON into BSON directly.
+# `bson-2` picks the BSON major version, and `compat-3-3-0` is the crate's
+# forward-compatibility opt-in; it refuses to build without both.
+mongodb = { version = "3", default-features = false, features = [
+  "rustls-tls",
+  "bson-2",
+  "compat-3-3-0",
+] }
+bson = "2"
+
+# ClickHouse speaks HTTP. The `clickhouse` crate maps rows onto serde structs,
+# which cannot express the arbitrary result shapes a SQL client needs, so Faro
+# talks to the HTTP interface directly.
+# reqwest 0.13 calls the rustls feature "rustls", not "rustls-tls"; `query` is
+# what allows the ClickHouse settings to be passed as URL parameters.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "query"] }
+
+# SQL Server. tiberius is not sqlx: it has no pool of its own and needs a
+# tokio-util compat layer over the socket, so bb8 supplies the pooling.
+tiberius = { version = "0.12", default-features = false, features = ["rustls", "tds73", "chrono"] }
+bb8 = "0.9"
+bb8-tiberius = "0.16"
+
+csv = "1.4"
+# Spreadsheet write and read. Pinned to current majors — older releases are
+# what Cargo's MSRV-aware resolver picks if rust-version is left too low.
+rust_xlsxwriter = "0.97"
+calamine = "0.36"
+
+[features]
+# DuckDB is on by default so shipped builds include it, but it compiles a large
+# bundled C++ amalgamation. `--no-default-features` skips it for a fast
+# iteration loop.
+default = ["duckdb-engine"]
+duckdb-engine = ["duckdb"]
+
+# Tauri's custom-protocol is enabled by the CLI for production builds.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

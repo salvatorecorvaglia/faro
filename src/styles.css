@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+/*
+ * Faro's palette. Defined as CSS variables rather than Tailwind utilities so
+ * the same tokens can be used by CodeMirror's theme, which is configured in JS.
+ */
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f7f8fa;
+  --bg-inset: #eef0f4;
+  --border: #dfe3ea;
+  --border-strong: #c6ccd8;
+  --text: #16191f;
+  --text-muted: #646c7a;
+  --text-faint: #99a1b0;
+  --accent: #2f6feb;
+  --accent-soft: #e6efff;
+  --danger: #d1373a;
+  --warning: #b06a00;
+  --success: #1f7a45;
+  --null: #a0a6b4;
+  --row-alt: #fafbfc;
+  --selection: #cfe0ff;
+
+  --syntax-keyword: #8b3dbd;
+  --syntax-string: #1f7a45;
+  --syntax-number: #b3541e;
+  --syntax-comment: #8a93a3;
+  --syntax-function: #2f6feb;
+  --syntax-type: #0d7377;
+  --syntax-operator: #646c7a;
+}
+
+:root.dark {
+  --bg: #0f1319;
+  --bg-subtle: #151a22;
+  --bg-inset: #1c222c;
+  --border: #262d38;
+  --border-strong: #38414f;
+  --text: #e6eaf0;
+  --text-muted: #949cab;
+  --text-faint: #656d7b;
+  --accent: #5b9bff;
+  --accent-soft: #17263f;
+  --danger: #ef6b6e;
+  --warning: #e0a34a;
+  --success: #56c88a;
+  --null: #5b6373;
+  --row-alt: #121720;
+  --selection: #24385c;
+
+  --syntax-keyword: #c792ea;
+  --syntax-string: #7ed99a;
+  --syntax-number: #f0a86a;
+  --syntax-comment: #5f6979;
+  --syntax-function: #6cb6ff;
+  --syntax-type: #4fd1c5;
+  --syntax-operator: #949cab;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  /* The app is a tool window, not a document; text selection outside inputs
+     and result cells reads as accidental. */
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+textarea,
+[contenteditable],
+.selectable {
+  user-select: text;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+/* Slim, unobtrusive scrollbars — a data grid otherwise loses real estate. */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Keyboard focus stays visible; mouse focus does not add noise. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none whitespace-nowrap;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .btn-ghost {
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--bg-inset);
+    color: var(--text);
+  }
+  .btn-outline {
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+  .btn-outline:hover:not(:disabled) {
+    background: var(--bg-inset);
+  }
+
+  .input {
+    @apply w-full rounded-md px-2.5 py-1.5 text-[12px] transition-colors;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .label {
+    @apply mb-1 block text-[11px] font-medium;
+    color: var(--text-muted);
+  }
+
+  .panel {
+    background: var(--bg-subtle);
+  }
+}

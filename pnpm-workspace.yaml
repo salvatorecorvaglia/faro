@@ -1,0 +1,14 @@
+# esbuild ships prebuilt binaries and needs its install script to pick the one
+# for this platform. Vite will not start without it.
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@codemirror/view@6.43.8'
+
+# CodeMirror breaks if two copies of @codemirror/view load: the packages
+# exchange class instances, and duplicate module identities fail instanceof
+# checks at runtime. Forcing one version keeps the editor working, not just the
+# types happy.
+overrides:
+  '@codemirror/view': 6.43.8
+  '@codemirror/state': 6.7.1
