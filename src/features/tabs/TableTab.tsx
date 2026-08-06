@@ -301,7 +301,10 @@ export function TableTab({ tab }: { tab: Tab }) {
       )}
 
       {!dirty && detail && !editable && !noticeDismissed && (
-        <ReadOnlyNotice reason={readOnlyReason(detail.kind, engine)} onDismiss={() => setNoticeDismissed(true)} />
+        <ReadOnlyNotice
+          reason={readOnlyReason(detail.kind, engine)}
+          onDismiss={() => setNoticeDismissed(true)}
+        />
       )}
 
       <ExportDialog

@@ -23,7 +23,11 @@ const GROUPS: { title: string; shortcuts: Shortcut[] }[] = [
   {
     title: 'Everywhere',
     shortcuts: [
-      { keys: `${MOD} K`, action: 'Command palette', note: 'queries, history, tables, connections' },
+      {
+        keys: `${MOD} K`,
+        action: 'Command palette',
+        note: 'queries, history, tables, connections',
+      },
       { keys: '?', action: 'This list' },
       { keys: `${MOD} T`, action: 'New query tab' },
       { keys: `${MOD} W`, action: 'Close tab' },
@@ -92,8 +96,8 @@ export function ShortcutSheet({ open, onClose }: { open: boolean; onClose: () =>
         ))}
 
         <p className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
-          Results are capped at 1 000 rows per page. When more exist, the footer says so
-          rather than letting a partial result look complete.
+          Results are capped at 1 000 rows per page. When more exist, the footer says so rather than
+          letting a partial result look complete.
         </p>
       </div>
     </Modal>

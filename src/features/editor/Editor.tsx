@@ -195,10 +195,7 @@ function languageExtension(
   // connection updates it; built once at mount it would go stale.
   const hint = placeholder(placeholderText ?? editorPlaceholder(engine));
   if (!isSqlEngine(engine)) return [json(), hint];
-  return [
-    sql({ dialect: dialectFor(engine), schema, upperCaseKeywords: false }),
-    hint,
-  ];
+  return [sql({ dialect: dialectFor(engine), schema, upperCaseKeywords: false }), hint];
 }
 
 function dialectFor(engine: Engine | null) {

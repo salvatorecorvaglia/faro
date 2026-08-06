@@ -5,7 +5,7 @@
 // some documents, a field holding more than one BSON type, nested documents,
 // arrays, and a Decimal128 past f64's exact range.
 
-const db = db.getSiblingDB('faro_test');
+db = db.getSiblingDB('faro_test');
 
 db.authors.drop();
 db.books.drop();
@@ -50,8 +50,20 @@ db.books.insertMany([
     in_stock: true,
     metadata: { edition: 2 },
   },
-  { _id: 3, author_id: 3, title: 'The Dispossessed', price: NumberDecimal('18.99'), in_stock: true },
-  { _id: 4, author_id: 3, title: 'A Wizard of Earthsea', price: NumberDecimal('15.25'), in_stock: true },
+  {
+    _id: 3,
+    author_id: 3,
+    title: 'The Dispossessed',
+    price: NumberDecimal('18.99'),
+    in_stock: true,
+  },
+  {
+    _id: 4,
+    author_id: 3,
+    title: 'A Wizard of Earthsea',
+    price: NumberDecimal('15.25'),
+    in_stock: true,
+  },
   { _id: 5, author_id: 4, title: "Quotes 'n' Things", in_stock: false },
 ]);
 
