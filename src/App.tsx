@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { IconDatabase, IconLighthouse } from '@/components/icons';
 import { SplitGroup, SplitHandle, SplitPanel } from '@/components/panels';
+import { UpdaterToast } from '@/components/UpdaterToast';
 import { EmptyState } from '@/components/ui';
 import { Sidebar } from '@/features/connections/Sidebar';
 import { SaveQueryDialog } from '@/features/library/SaveQueryDialog';
@@ -10,12 +11,15 @@ import { ShortcutSheet } from '@/features/palette/ShortcutSheet';
 import { QueryTab } from '@/features/tabs/QueryTab';
 import { TabBar } from '@/features/tabs/TabBar';
 import { TableTab } from '@/features/tabs/TableTab';
+import { useUpdater } from '@/hooks/useUpdater';
 import { starterQuery } from '@/lib/engine';
 import { useConnections } from '@/state/connections';
 import { useLibrary } from '@/state/library';
 import { useTabs } from '@/state/tabs';
 
 export default function App() {
+  useUpdater();
+
   const tabs = useTabs((s) => s.tabs);
   const activeId = useTabs((s) => s.activeId);
   const openQueryTab = useTabs((s) => s.openQueryTab);
@@ -154,6 +158,8 @@ export default function App() {
         sql={active?.sql ?? ''}
         connectionId={active?.connectionId ?? null}
       />
+
+      <UpdaterToast />
     </>
   );
 }

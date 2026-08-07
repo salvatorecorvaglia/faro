@@ -1,45 +1,69 @@
-# Dependencies & Build Outputs
+# Dependencies & Package Managers
 node_modules/
+.pnpm-store/
+
+# Build Outputs
 dist/
 dist-isolation/
 .vite/
 *.tsbuildinfo
 
-# OS Files
-.DS_Store
-.DS_Store?
-Thumbs.db
-ehthumbs.db
-[Dd]esktop.ini
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/
 
-# Environment & Local Overrides
-.env
-.env.local
-.env.*.local
-*.local
+# Tauri Mobile Icons (Faro is desktop-only)
+src-tauri/icons/android/
+src-tauri/icons/ios/
 
-# IDEs & Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.zed/
+# Tauri updater private keys
+*.key
+*.pub
+**/tauri-updater.key
+**/tauri-updater.pub
 
 # Test Artifacts & Coverage
 coverage/
+.vitest/
+.biome_cache/
 *.db
 *.sqlite
 *.sqlite3
 tests/fixtures/
 
-# Rust / Tauri
-src-tauri/target/
-src-tauri/gen/
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
 
-# Tauri Mobile Icons (Faro is desktop-only)
-src-tauri/icons/android/
-src-tauri/icons/ios/
+# Environment & Local Overrides
+.env
+.env.*
+.env.local
+.env.*.local
+*.local
+!.env.example
+
+# IDEs & Editors
+.vscode/
+.idea/
+.zed/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+.Spotlight-V100
+.Trashes
 
 # AI Tools & Agents
 .openai/
@@ -60,4 +84,6 @@ claude-settings.json
 .codex/
 .cagent/
 .cursor/
+.windsurf/
+.cline/
 CLAUDE.md
