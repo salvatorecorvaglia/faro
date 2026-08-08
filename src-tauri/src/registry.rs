@@ -12,9 +12,21 @@ use tokio_util::sync::CancellationToken;
 use crate::driver::Driver;
 use crate::error::{FaroError, Result};
 
+/// An open connection and the properties of it that outlive any one command.
+///
+/// `read_only` and `name` live here rather than being re-read from the `Store`
+/// on every call: the store is a mutex-guarded SQLite file, and a write guard
+/// has to consult the flag before it can refuse anything.
+struct Open {
+    driver: Arc<dyn Driver>,
+    read_only: bool,
+    /// The connection's display name, for error messages that name it.
+    name: String,
+}
+
 #[derive(Default)]
 pub struct Registry {
-    drivers: RwLock<HashMap<String, Arc<dyn Driver>>>,
+    drivers: RwLock<HashMap<String, Open>>,
     running: RwLock<HashMap<String, CancellationToken>>,
 }
 
@@ -23,11 +35,22 @@ impl Registry {
         Self::default()
     }
 
-    pub async fn insert(&self, connection_id: String, driver: Arc<dyn Driver>) {
+    pub async fn insert(
+        &self,
+        connection_id: String,
+        driver: Arc<dyn Driver>,
+        read_only: bool,
+        name: String,
+    ) {
+        let entry = Open {
+            driver,
+            read_only,
+            name,
+        };
         // Replacing an entry drops the old pool; close it first so its sockets
         // are released rather than left to the Drop impl at an unknown time.
-        if let Some(old) = self.drivers.write().await.insert(connection_id, driver) {
-            old.close().await;
+        if let Some(old) = self.drivers.write().await.insert(connection_id, entry) {
+            old.driver.close().await;
         }
     }
 
@@ -36,8 +59,34 @@ impl Registry {
             .read()
             .await
             .get(connection_id)
-            .cloned()
+            .map(|o| o.driver.clone())
             .ok_or_else(|| FaroError::NotConnected(connection_id.to_string()))
+    }
+
+    /// The driver for a connection that is allowed to be written to.
+    ///
+    /// Every command that modifies data goes through this rather than `get`, so
+    /// "open read-only" is enforced in one place instead of being re-checked —
+    /// and eventually forgotten — at each call site. Engines that can enforce it
+    /// themselves also do, but this is what makes the promise hold everywhere.
+    pub async fn get_writable(&self, connection_id: &str) -> Result<Arc<dyn Driver>> {
+        let drivers = self.drivers.read().await;
+        let open = drivers
+            .get(connection_id)
+            .ok_or_else(|| FaroError::NotConnected(connection_id.to_string()))?;
+
+        if open.read_only {
+            return Err(FaroError::read_only(&open.name, None));
+        }
+        Ok(open.driver.clone())
+    }
+
+    pub async fn is_read_only(&self, connection_id: &str) -> bool {
+        self.drivers
+            .read()
+            .await
+            .get(connection_id)
+            .is_some_and(|o| o.read_only)
     }
 
     pub async fn is_connected(&self, connection_id: &str) -> bool {
@@ -52,8 +101,8 @@ impl Registry {
     pub async fn remove(&self, connection_id: &str) {
         // Cancel first: a query holding a pool slot would otherwise delay close.
         self.cancel_for_connection(connection_id).await;
-        if let Some(driver) = self.drivers.write().await.remove(connection_id) {
-            driver.close().await;
+        if let Some(open) = self.drivers.write().await.remove(connection_id) {
+            open.driver.close().await;
         }
     }
 

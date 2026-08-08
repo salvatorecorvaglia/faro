@@ -75,6 +75,72 @@ fn cell_text(value: &Value) -> String {
     }
 }
 
+/// Rows read per query while walking a table.
+///
+/// Large enough to be efficient, small enough that one query's buffer stays
+/// bounded. The accumulated result is not bounded — XLSX and JSON both need the
+/// whole set before they can produce a valid file.
+const READ_BATCH: u64 = 5_000;
+
+/// Read an entire table into one `ResultSet`, a page at a time.
+///
+/// Split out of the `export_table` command so the paging can be tested without a
+/// Tauri `State`: getting this wrong produces a file that looks complete and is
+/// not, which is the kind of bug that has to be caught by a test rather than by
+/// a user noticing later.
+///
+/// Ordering by the primary key is what makes the pages a partition of the table
+/// rather than five arbitrary samples of it — see `sql::order_by_key`.
+pub async fn read_table_paged(
+    driver: &dyn crate::driver::Driver,
+    table: &crate::model::TableRef,
+) -> Result<ResultSet> {
+    let dialect = driver.dialect();
+    let qualified = dialect.qualify(table.schema.as_deref(), &table.name);
+    let detail = driver.describe_table(table).await?;
+    let order = crate::sql::order_by_key(&detail.primary_key, dialect);
+
+    let base = format!("SELECT * FROM {qualified}{order}");
+    let mut combined: Option<ResultSet> = None;
+    let mut offset = 0u64;
+
+    loop {
+        let paged = dialect.paginate(&base, READ_BATCH + 1, offset);
+        let page = driver
+            .query(
+                &paged,
+                READ_BATCH,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
+
+        let more = page.truncated;
+        let count = page.rows.len() as u64;
+
+        match &mut combined {
+            None => combined = Some(page),
+            Some(acc) => acc.rows.extend(page.rows),
+        }
+
+        if !more || count == 0 {
+            break;
+        }
+        offset += count;
+    }
+
+    let mut result = combined.unwrap_or(ResultSet {
+        columns: vec![],
+        rows: vec![],
+        truncated: false,
+        elapsed_ms: 0,
+    });
+    // The flag came from the first page, where it meant "more pages follow".
+    // Every page has now been read, so the set is complete; leaving it set would
+    // tell the caller it was looking at a partial table.
+    result.truncated = false;
+    Ok(result)
+}
+
 pub fn write_file(
     path: &Path,
     result: &ResultSet,

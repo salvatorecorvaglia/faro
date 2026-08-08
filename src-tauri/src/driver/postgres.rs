@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
-use sqlx::{AssertSqlSafe, Column, Row, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -8,9 +8,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
-    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
-    TableRef, Value,
+    ColumnDetail, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
+    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct PostgresDialect;
@@ -61,6 +60,12 @@ impl PostgresDriver {
         }
         if let Some(pw) = password {
             opts = opts.password(pw);
+        }
+        if config.read_only {
+            // Enforced by the server as well as by Faro. The Faro-side guard
+            // classifies statements by leading keyword and so cannot catch a
+            // write hidden inside a function call; this can.
+            opts = opts.options([("default_transaction_read_only", "on")]);
         }
 
         // One connection for user SQL, so the user gets one coherent session.
@@ -365,51 +370,12 @@ impl Driver for PostgresDriver {
             .collect())
     }
 
+    /// Run a statement and cap the rows as they arrive.
+    ///
+    /// The SQL is passed through untouched — see `driver::fetch` for why it is
+    /// not wrapped in a paginating subquery.
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
-        // Fetch one extra row: its presence is how we know the result was
-        // truncated, without paying for a COUNT(*).
-        let paged = self.dialect.paginate(sql, limit + 1, 0);
-        let started = Instant::now();
-
-        // AssertSqlSafe: running user-authored SQL is the entire purpose of a
-        // SQL client. The statement is the user's own, executed against their
-        // own credentials, so sqlx's injection guard does not apply here.
-        // Generated SQL (browse filters, DML) is built with quoted identifiers
-        // and escaped literals in the layers above.
-        let rows: Vec<PgRow> = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(FaroError::Cancelled),
-            res = sqlx::query(AssertSqlSafe(paged)).fetch_all(&self.pool) => res?,
-        };
-
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        let truncated = rows.len() as u64 > limit;
-
-        let columns = rows
-            .first()
-            .map(|r| {
-                r.columns()
-                    .iter()
-                    .map(|c| ColumnInfo {
-                        name: c.name().to_string(),
-                        type_name: c.type_info().name().to_string(),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let data = rows
-            .iter()
-            .take(limit as usize)
-            .map(|row| (0..columns.len()).map(|i| decode_value(row, i)).collect())
-            .collect();
-
-        Ok(ResultSet {
-            columns,
-            rows: data,
-            truncated,
-            elapsed_ms,
-        })
+        super::fetch::fetch_capped_pg(&self.pool, sql, limit, cancel).await
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {
@@ -446,7 +412,7 @@ impl Driver for PostgresDriver {
 /// Postgres type names are matched by their pg_type name rather than OID so the
 /// arms stay readable. Anything unmatched falls back to its text rendering, then
 /// to `Unsupported` carrying the type name — never a silent NULL.
-fn decode_value(row: &PgRow, idx: usize) -> Value {
+pub(super) fn decode_value(row: &PgRow, idx: usize) -> Value {
     let raw = match row.try_get_raw(idx) {
         Ok(r) => r,
         Err(_) => return Value::Null,

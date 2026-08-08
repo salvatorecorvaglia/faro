@@ -53,6 +53,8 @@ pub struct ClickHouseDriver {
     user: String,
     password: String,
     database: String,
+    /// Mirrors the connection setting; sent to ClickHouse on every request.
+    read_only: bool,
     dialect: ClickHouseDialect,
 }
 
@@ -80,6 +82,7 @@ impl ClickHouseDriver {
             } else {
                 config.database.clone()
             },
+            read_only: config.read_only,
             dialect: ClickHouseDialect,
         };
 
@@ -90,12 +93,18 @@ impl ClickHouseDriver {
 
     /// POST a statement and return the raw response body.
     async fn post(&self, sql: &str) -> Result<String> {
+        // ClickHouse's own read-only mode, alongside Faro's guard. Level 2 rather
+        // than 1: level 1 also forbids the settings sent on every request below,
+        // which would make a read-only connection unable to run anything at all.
+        let readonly = if self.read_only { "2" } else { "0" };
+
         let response = self
             .http
             .post(&self.url)
             .basic_auth(&self.user, Some(&self.password))
             .query(&[
                 ("database", self.database.as_str()),
+                ("readonly", readonly),
                 // Both keep exact values out of JSON's float representation:
                 // a Decimal or an Int64 near its limit would otherwise be
                 // rounded on the way through.
@@ -426,7 +435,14 @@ impl Driver for ClickHouseDriver {
     }
 
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
-        let paged = self.dialect.paginate(sql, limit + 1, 0);
+        // `fetch` already stops one row past the limit, so the wrapping only
+        // keeps the surplus rows on the server. Statements that cannot be a
+        // derived table — `SHOW`, `DESCRIBE`, `EXPLAIN` — are run as written.
+        let paged = if super::is_wrappable(sql) {
+            self.dialect.paginate(sql, limit + 1, 0)
+        } else {
+            sql.trim().trim_end_matches(';').to_string()
+        };
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(FaroError::Cancelled),

@@ -23,6 +23,26 @@ pub trait Dialect: Send + Sync {
         true
     }
 
+    /// Whether `CREATE TABLE` and friends can be rolled back.
+    ///
+    /// Separate from `supports_transactions` because MySQL and MariaDB have
+    /// perfectly good transactions that DDL simply ignores: each `CREATE`,
+    /// `DROP` or `ALTER` triggers an implicit commit, so a restore wrapped in a
+    /// transaction there would report atomicity it cannot deliver. Better to
+    /// know that and say so than to open a transaction for appearances.
+    fn ddl_is_transactional(&self) -> bool {
+        true
+    }
+
+    /// How this engine opens a transaction.
+    ///
+    /// Every engine here accepts bare `COMMIT` and `ROLLBACK`, but T-SQL spells
+    /// the opener `BEGIN TRANSACTION` — a bare `BEGIN` there starts a statement
+    /// block instead, which would silently not be a transaction at all.
+    fn begin_statement(&self) -> &'static str {
+        "BEGIN"
+    }
+
     /// Whether the query language is SQL at all.
     ///
     /// False for MongoDB, whose queries are documents rather than statements.

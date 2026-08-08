@@ -103,7 +103,10 @@ pub async fn connect(state: State<'_, AppState>, id: String) -> Result<()> {
     // user's first query: sqlx pools connect lazily.
     driver.ping().await?;
 
-    state.registry.insert(id, Arc::from(driver)).await;
+    state
+        .registry
+        .insert(id, Arc::from(driver), config.read_only, config.name.clone())
+        .await;
     Ok(())
 }
 

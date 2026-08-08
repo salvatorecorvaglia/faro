@@ -9,10 +9,12 @@
 
 use faro_lib::dml;
 use faro_lib::driver::{self, Driver};
+use faro_lib::error::FaroError;
 use faro_lib::model::{
     CellEdit, ConnectionConfig, EditValue, Engine, GuardedStatement, PendingChange, SslMode,
     TableRef, Value,
 };
+use faro_lib::registry::Registry;
 use tokio_util::sync::CancellationToken;
 
 /// Copy the fixture so each test owns its data.
@@ -490,4 +492,97 @@ async fn an_empty_change_set_is_a_no_op() {
 
     assert_eq!(apply(&*d, "authors", &[]).await.unwrap(), 0);
     assert_eq!(count(&*d, "authors").await, before);
+}
+
+// -- Read-only connections ---------------------------------------------------
+
+/// Open the fixture with `read_only` set, as the connection dialog's checkbox does.
+async fn open_read_only(f: &Fixture) -> Box<dyn Driver> {
+    let config = ConnectionConfig {
+        id: "test".into(),
+        name: "Production".into(),
+        engine: Engine::Sqlite,
+        host: String::new(),
+        port: 0,
+        username: String::new(),
+        database: String::new(),
+        file_path: Some(f.path.to_string_lossy().into_owned()),
+        ssl_mode: SslMode::Prefer,
+        color: None,
+        read_only: true,
+    };
+    driver::connect(&config, None)
+        .await
+        .expect("connect failed")
+}
+
+#[tokio::test]
+async fn the_registry_refuses_to_hand_out_a_read_only_connection_for_writing() {
+    let f = fixture_or_skip!("ro_registry");
+    let d = open_read_only(&f).await;
+
+    // This is the guard every write command goes through, so it is the single
+    // point where "Open read-only" either holds or does not.
+    let registry = Registry::new();
+    registry
+        .insert(
+            "c1".into(),
+            std::sync::Arc::from(d),
+            true,
+            "Production".into(),
+        )
+        .await;
+
+    assert!(
+        registry.get("c1").await.is_ok(),
+        "reads must still be allowed"
+    );
+
+    // `Arc<dyn Driver>` is not Debug, so unwrap the Result by hand.
+    let Err(err) = registry.get_writable("c1").await else {
+        panic!("a read-only connection must not be handed out for writing");
+    };
+    assert!(matches!(err, FaroError::ReadOnly(_)), "got {err:?}");
+    // The message has to name the connection and say how to change it, or the
+    // user is left guessing why an edit did nothing.
+    let text = err.to_string();
+    assert!(text.contains("Production"), "{text}");
+    assert!(text.contains("Open read-only"), "{text}");
+}
+
+#[tokio::test]
+async fn a_writable_connection_is_handed_out_normally() {
+    let f = fixture_or_skip!("ro_writable");
+    let d = open(&f).await;
+
+    let registry = Registry::new();
+    registry
+        .insert("c1".into(), std::sync::Arc::from(d), false, "Local".into())
+        .await;
+
+    assert!(registry.get_writable("c1").await.is_ok());
+    assert!(!registry.is_read_only("c1").await);
+}
+
+#[tokio::test]
+async fn the_engine_refuses_writes_on_a_read_only_connection_too() {
+    let f = fixture_or_skip!("ro_engine");
+    let d = open_read_only(&f).await;
+
+    // Defence in depth: even if a write slipped past Faro's own guard, SQLite
+    // itself was opened read-only and rejects it. Reads keep working.
+    let before = count(&*d, "authors").await;
+    assert!(before > 0, "the fixture should have authors to read");
+
+    let err = d
+        .execute("DELETE FROM authors WHERE id = 1", CancellationToken::new())
+        .await
+        .expect_err("the engine should reject a write on a read-only connection");
+    assert!(
+        err.to_string().to_lowercase().contains("readonly")
+            || err.to_string().to_lowercase().contains("read-only"),
+        "expected a read-only error, got: {err}"
+    );
+
+    assert_eq!(count(&*d, "authors").await, before, "the row was deleted");
 }

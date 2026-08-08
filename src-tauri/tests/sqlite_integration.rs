@@ -308,6 +308,61 @@ async fn reports_truncation_when_more_rows_exist() {
 }
 
 #[tokio::test]
+async fn runs_statements_that_cannot_be_a_derived_table() {
+    let d = driver_or_skip!();
+
+    // PRAGMA returns rows but is not a query expression. It used to be wrapped
+    // in `SELECT * FROM (...) AS faro_q LIMIT n`, which SQLite rejects outright,
+    // so a user could never run one.
+    let rs = d
+        .query("PRAGMA table_info(authors)", 100, CancellationToken::new())
+        .await
+        .expect("PRAGMA should run, not fail as an invalid derived table");
+
+    assert!(!rs.rows.is_empty(), "authors has columns to describe");
+    let names: Vec<String> = rs.columns.iter().map(|c| c.name.clone()).collect();
+    assert!(
+        names.iter().any(|n| n == "name"),
+        "expected PRAGMA table_info columns, got {names:?}"
+    );
+
+    // EXPLAIN is the same shape of problem.
+    d.query(
+        "EXPLAIN SELECT * FROM authors",
+        100,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("EXPLAIN should run");
+}
+
+#[tokio::test]
+async fn a_join_with_duplicate_column_names_still_runs() {
+    let d = driver_or_skip!();
+
+    // `SELECT *` across two tables that both have `id` produces a result with
+    // duplicate column names. SQLite tolerates that in a derived table but MySQL
+    // does not, so the wrapping made this ordinary query fail there. Kept here
+    // because it is the cheapest place to assert the columns survive intact.
+    let rs = d
+        .query(
+            "SELECT * FROM books b JOIN authors a ON a.id = b.author_id",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a join with duplicate column names should run");
+
+    let ids = rs.columns.iter().filter(|c| c.name == "id").count();
+    assert_eq!(
+        ids,
+        2,
+        "both id columns should be reported, got {:?}",
+        rs.columns.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn does_not_report_truncation_on_an_exact_fit() {
     let d = driver_or_skip!();
     // Exactly 5 authors, fetched with a limit of 5: the extra probe row finds

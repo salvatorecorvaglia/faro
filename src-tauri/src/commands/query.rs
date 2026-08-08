@@ -46,6 +46,27 @@ pub async fn run_query(
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
     let statements = sql::split_statements(&sql_text);
 
+    // A read-only connection runs reads and nothing else.
+    //
+    // The whole script is checked before any of it runs: refusing halfway would
+    // leave the earlier statements applied, which is exactly the outcome the
+    // setting exists to prevent. Classification is by leading keyword, the same
+    // guess `Driver::run` uses to route a statement — imprecise at the edges
+    // (`SELECT ... INTO` writes), which is why the engines that can enforce
+    // read-only themselves are also told to.
+    if state.registry.is_read_only(&connection_id).await {
+        if let Some(write) = statements.iter().find(|s| !crate::driver::returns_rows(s)) {
+            let name = state
+                .store
+                .get_connection(&connection_id)
+                .ok()
+                .flatten()
+                .map(|c| c.name)
+                .unwrap_or_else(|| connection_id.clone());
+            return Err(crate::error::FaroError::read_only(&name, Some(write)));
+        }
+    }
+
     let token = state.registry.begin_query(&connection_id, &query_id).await;
     let started = std::time::Instant::now();
 

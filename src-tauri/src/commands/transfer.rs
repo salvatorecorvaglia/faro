@@ -7,11 +7,6 @@ use crate::model::{ResultSet, TableRef};
 use crate::transfer::export::{self, ExportOptions};
 use crate::transfer::import::{self, ImportFormat, ImportOptions, ImportPreview};
 
-/// How many rows to read per page when exporting a whole table, and how many
-/// to insert per statement when importing. Large enough to be efficient, small
-/// enough that memory stays bounded on a big table.
-const BATCH: u64 = 5_000;
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferResult {
@@ -44,49 +39,15 @@ pub async fn export_table(
     mut options: ExportOptions,
 ) -> Result<TransferResult> {
     let driver = state.registry.get(&connection_id).await?;
-    let dialect = driver.dialect();
-    let qualified = dialect.qualify(table.schema.as_deref(), &table.name);
 
     if options.table_name.is_none() {
         options.table_name = Some(table.name.clone());
     }
 
-    let base = format!("SELECT * FROM {qualified}");
-    let mut combined: Option<ResultSet> = None;
-    let mut offset = 0u64;
-
-    // Accumulate pages into one result. Formats like XLSX and JSON need the
-    // whole set to produce a valid file, so streaming per page is not an
-    // option; the batching keeps the query side bounded.
-    loop {
-        let paged = dialect.paginate(&base, BATCH + 1, offset);
-        let page = driver
-            .query(&paged, BATCH, tokio_util::sync::CancellationToken::new())
-            .await?;
-
-        let more = page.truncated;
-        let count = page.rows.len() as u64;
-
-        match &mut combined {
-            None => combined = Some(page),
-            Some(acc) => acc.rows.extend(page.rows),
-        }
-
-        if !more || count == 0 {
-            break;
-        }
-        offset += count;
-    }
-
-    let result = combined.unwrap_or(ResultSet {
-        columns: vec![],
-        rows: vec![],
-        truncated: false,
-        elapsed_ms: 0,
-    });
+    let result = export::read_table_paged(&*driver, &table).await?;
 
     let target = PathBuf::from(&path);
-    let rows = export::write_file(&target, &result, &options, Some(dialect))?;
+    let rows = export::write_file(&target, &result, &options, Some(driver.dialect()))?;
     Ok(TransferResult { rows, path })
 }
 
@@ -114,7 +75,7 @@ pub async fn import_file(
     path: String,
     options: ImportOptions,
 ) -> Result<TransferResult> {
-    let driver = state.registry.get(&connection_id).await?;
+    let driver = state.registry.get_writable(&connection_id).await?;
     let detail = driver.describe_table(&table).await?;
     let dialect = driver.dialect();
 

@@ -260,9 +260,17 @@ function ConnectionNode({
               >
                 <IconDownload size={12} />
               </button>
+              {/* Restore writes, so it is unavailable on a read-only
+                  connection. The backend refuses it too; hiding the affordance
+                  saves the user picking a file first. */}
               <button
                 className="btn btn-ghost px-1"
-                title="Restore a dump into this database"
+                disabled={conn.readOnly}
+                title={
+                  conn.readOnly
+                    ? 'This connection is open read-only'
+                    : 'Restore a dump into this database'
+                }
                 onClick={(e) => {
                   e.stopPropagation();
                   onRestore();

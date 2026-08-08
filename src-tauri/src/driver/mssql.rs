@@ -61,6 +61,11 @@ impl Dialect for SqlServerDialect {
         }
         s
     }
+
+    /// A bare `BEGIN` opens a statement block in T-SQL, not a transaction.
+    fn begin_statement(&self) -> &'static str {
+        "BEGIN TRANSACTION"
+    }
 }
 
 /// SQL Server, via tiberius.
@@ -134,6 +139,14 @@ impl SqlServerDriver {
     /// is what proves truncation, and stopping there is what keeps the row cap
     /// cheap — `into_first_result()` would materialize every row of a large
     /// table before the cap could be applied.
+    ///
+    /// Open question worth revisiting with a live server: breaking early drops a
+    /// `QueryStream` that still has tokens pending, and this pooled connection
+    /// then goes back to bb8. `QueryStream` has no `Drop` impl, so nothing
+    /// explicitly drains it. In practice this appears to be fine — bb8-tiberius'
+    /// own `is_valid` issues `SELECT 1` and drops that stream unread too — but
+    /// "appears to be fine" is not the same as verified, and a desynchronized
+    /// connection would show up as one query returning another's rows.
     async fn fetch(pool: &Pool<ConnectionManager>, sql: &str, limit: u64) -> Result<ResultSet> {
         use futures::TryStreamExt;
 
@@ -574,47 +587,27 @@ impl Driver for SqlServerDriver {
             .await
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        client
-            .simple_query("BEGIN TRANSACTION")
-            .await
-            .map_err(map_err)?
-            .into_results()
-            .await
-            .map_err(map_err)?;
+        control(&mut client, "BEGIN TRANSACTION").await?;
 
         let mut total = 0u64;
         for (index, stmt) in statements.iter().enumerate() {
             let affected: u64 = match client.execute(&stmt.sql, &[]).await {
                 Ok(r) => r.rows_affected().iter().sum(),
-                Err(e) => {
-                    let _ = client.simple_query("ROLLBACK").await;
-                    return Err(map_err(e));
-                }
+                Err(e) => return Err(rollback(&mut client, map_err(e)).await),
             };
 
             if let Some(expected) = stmt.expect {
                 if affected != expected {
                     // The same safety net as the other drivers: a statement that
                     // touched the wrong number of rows aborts the whole batch.
-                    let _ = client.simple_query("ROLLBACK").await;
-                    return Err(super::tx::guard_error(
-                        index,
-                        statements.len(),
-                        expected,
-                        affected,
-                    ));
+                    let guard = super::tx::guard_error(index, statements.len(), expected, affected);
+                    return Err(rollback(&mut client, guard).await);
                 }
             }
             total += affected;
         }
 
-        client
-            .simple_query("COMMIT")
-            .await
-            .map_err(map_err)?
-            .into_results()
-            .await
-            .map_err(map_err)?;
+        control(&mut client, "COMMIT").await?;
 
         Ok(total)
     }
@@ -626,6 +619,46 @@ impl Driver for SqlServerDriver {
     async fn close(&self) {
         // bb8 closes its connections when the pool is dropped; there is no
         // explicit shutdown reachable through a shared reference.
+    }
+}
+
+/// Run a transaction-control statement and consume its result stream.
+///
+/// Draining is not optional. `simple_query` sends the request and hands back a
+/// `QueryStream`; the statement is not complete until that stream is consumed,
+/// and dropping it unread leaves the response tokens sitting in the socket for
+/// whoever borrows this pooled connection next.
+async fn control(
+    client: &mut bb8::PooledConnection<'_, ConnectionManager>,
+    sql: &'static str,
+) -> Result<()> {
+    client
+        .simple_query(sql)
+        .await
+        .map_err(map_err)?
+        .into_results()
+        .await
+        .map_err(map_err)?;
+    Ok(())
+}
+
+/// Roll the transaction back, preserving `cause` as the error the user sees.
+///
+/// A failing rollback is reported alongside the original cause rather than
+/// swallowed: it means the connection is in an unknown state with a transaction
+/// possibly still open and holding locks, which the user needs to know about.
+/// The cause comes first because it is what they were trying to do.
+async fn rollback(
+    client: &mut bb8::PooledConnection<'_, ConnectionManager>,
+    cause: FaroError,
+) -> FaroError {
+    match control(client, "ROLLBACK").await {
+        Ok(()) => cause,
+        Err(e) => FaroError::Other(format!(
+            "{cause}\n\nThe rollback then failed too ({e}). \
+             This connection may still hold an open transaction — \
+             disconnect and reconnect before making further changes."
+        )),
     }
 }
 

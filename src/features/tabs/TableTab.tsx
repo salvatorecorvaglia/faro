@@ -34,7 +34,16 @@ const PAGE_SIZE = 1000;
  * has none would be wrong. The key is a sparse sorting index rather than a
  * unique constraint, which is the actual reason rows cannot be addressed.
  */
-function readOnlyReason(kind: TableDetail['kind'], engine: Engine | null): string {
+function readOnlyReason(
+  kind: TableDetail['kind'],
+  engine: Engine | null,
+  connectionReadOnly: boolean,
+): string {
+  // Checked first: it is the user's own choice, so it explains the state better
+  // than anything about the table would, and it is the one they can undo.
+  if (connectionReadOnly) {
+    return 'This connection is open read-only. Turn off “Open read-only” in the connection settings to make changes.';
+  }
   if (kind !== 'table') return 'Views are read-only.';
   if (engine === 'clickhouse') {
     return 'ClickHouse tables are read-only here: a MergeTree primary key sorts rows rather than uniquely identifying them, so an edit could not be limited to one row.';
@@ -55,10 +64,14 @@ function readOnlyReason(kind: TableDetail['kind'], engine: Engine | null): strin
  */
 export function TableTab({ tab }: { tab: Tab }) {
   const update = useTabs((s) => s.update);
-  const engine =
-    (useConnections((s) => s.items.find((c) => c.id === tab.connectionId)?.engine) as
-      | Engine
-      | undefined) ?? null;
+  const conn = useConnections((s) => s.items.find((c) => c.id === tab.connectionId));
+  const engine = (conn?.engine as Engine | undefined) ?? null;
+  /**
+   * The backend refuses writes on a read-only connection regardless, but a grid
+   * that lets you stage twenty edits and only objects at Apply is a worse way to
+   * find out. The button states should tell the truth up front.
+   */
+  const connectionReadOnly = conn?.readOnly ?? false;
   const [detail, setDetail] = useState<TableDetail | null>(null);
   const [offset, setOffset] = useState(0);
   const [sort, setSort] = useState<SortState | null>(null);
@@ -74,7 +87,8 @@ export function TableTab({ tab }: { tab: Tab }) {
   const tabRef = useRef(tab);
   tabRef.current = tab;
 
-  const editable = detail?.primaryKey.length ? detail.kind === 'table' : false;
+  const editable =
+    !connectionReadOnly && (detail?.primaryKey.length ? detail.kind === 'table' : false);
   const dirty = hasChanges(edits);
 
   const load = useCallback(
@@ -302,7 +316,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
       {!dirty && detail && !editable && !noticeDismissed && (
         <ReadOnlyNotice
-          reason={readOnlyReason(detail.kind, engine)}
+          reason={readOnlyReason(detail.kind, engine, connectionReadOnly)}
           onDismiss={() => setNoticeDismissed(true)}
         />
       )}

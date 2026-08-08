@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
-use sqlx::{AssertSqlSafe, Column, Row, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::str::FromStr;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -9,8 +9,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
-    IndexInfo, ResultSet, SchemaInfo, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
+    SchemaInfo, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct SqliteDialect;
@@ -292,45 +292,13 @@ impl Driver for SqliteDriver {
             }))
     }
 
+    /// Run a statement and cap the rows as they arrive.
+    ///
+    /// Passing the SQL through untouched is what lets a user run `PRAGMA
+    /// table_info(t)` — no engine accepts a `PRAGMA` as a derived table, so the
+    /// old wrapping made every one of them a syntax error. See `driver::fetch`.
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
-        let paged = self.dialect.paginate(sql, limit + 1, 0);
-        let started = Instant::now();
-
-        // See the note in the Postgres driver: user SQL is the product.
-        let rows: Vec<SqliteRow> = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(FaroError::Cancelled),
-            res = sqlx::query(AssertSqlSafe(paged)).fetch_all(&self.pool) => res?,
-        };
-
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        let truncated = rows.len() as u64 > limit;
-
-        let columns = rows
-            .first()
-            .map(|r| {
-                r.columns()
-                    .iter()
-                    .map(|c| ColumnInfo {
-                        name: c.name().to_string(),
-                        type_name: c.type_info().name().to_string(),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let data = rows
-            .iter()
-            .take(limit as usize)
-            .map(|row| (0..columns.len()).map(|i| decode_value(row, i)).collect())
-            .collect();
-
-        Ok(ResultSet {
-            columns,
-            rows: data,
-            truncated,
-            elapsed_ms,
-        })
+        super::fetch::fetch_capped_sqlite(&self.pool, sql, limit, cancel).await
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {
@@ -366,7 +334,7 @@ impl Driver for SqliteDriver {
 ///
 /// SQLite is dynamically typed: the *value's* storage class matters more than
 /// the column's declared type, so this switches on what actually came back.
-fn decode_value(row: &SqliteRow, idx: usize) -> Value {
+pub(super) fn decode_value(row: &SqliteRow, idx: usize) -> Value {
     let raw = match row.try_get_raw(idx) {
         Ok(r) => r,
         Err(_) => return Value::Null,

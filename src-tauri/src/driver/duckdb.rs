@@ -68,9 +68,17 @@ impl DuckDbDriver {
             return Err(FaroError::Connection(format!("no such file: {path}")));
         }
 
+        let read_only = config.read_only;
         let conn = tokio::task::spawn_blocking(move || {
             if path == ":memory:" {
+                // An in-memory database starts empty, so opening it read-only
+                // would make it permanently useless rather than protected.
                 Connection::open_in_memory()
+            } else if read_only {
+                // Enforced by DuckDB itself, so a write Faro's own guard missed
+                // still cannot land.
+                let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
+                Connection::open_with_flags(&path, config)
             } else {
                 Connection::open(&path)
             }
@@ -354,9 +362,16 @@ impl Driver for DuckDbDriver {
         if cancel.is_cancelled() {
             return Err(FaroError::Cancelled);
         }
-        // Fetch one extra row so truncation is known without a COUNT(*).
-        let paged = self.dialect.paginate(sql, limit + 1, 0);
-        self.with_conn(move |c| Self::fetch(c, &paged, limit)).await
+        // `fetch` already stops one row past the limit, so the wrapping is only
+        // there to keep the surplus rows on the engine's side. Statements that
+        // cannot be a derived table — `PRAGMA`, `DESCRIBE`, `SHOW`, `EXPLAIN` —
+        // are run as written; the row cap still applies as they are decoded.
+        let sql = if super::is_wrappable(sql) {
+            self.dialect.paginate(sql, limit + 1, 0)
+        } else {
+            sql.to_string()
+        };
+        self.with_conn(move |c| Self::fetch(c, &sql, limit)).await
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {

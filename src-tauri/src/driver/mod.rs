@@ -4,6 +4,7 @@ mod clickhouse;
 pub mod dialect;
 #[cfg(feature = "duckdb-engine")]
 mod duckdb;
+mod fetch;
 mod mongo;
 mod mssql;
 mod mysql;
@@ -134,22 +135,25 @@ pub trait Driver: Send + Sync {
     async fn close(&self);
 }
 
+/// The statement's leading keyword, upper-cased, ignoring leading whitespace and
+/// opening parentheses.
+fn leading_keyword(sql: &str) -> String {
+    sql.trim_start()
+        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+}
+
 /// Guess whether a statement produces a result set from its leading keyword.
 ///
 /// `WITH` is included because CTEs usually feed a SELECT, and `INSERT ...
 /// RETURNING` is deliberately *not* matched here — the Postgres driver detects
 /// RETURNING itself, where it can be sure.
 pub fn returns_rows(sql: &str) -> bool {
-    let head = sql
-        .trim_start()
-        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-
     matches!(
-        head.as_str(),
+        leading_keyword(sql).as_str(),
         "SELECT"
             | "WITH"
             | "SHOW"
@@ -160,6 +164,25 @@ pub fn returns_rows(sql: &str) -> bool {
             | "VALUES"
             | "TABLE"
     )
+}
+
+/// Whether `sql` may legally be used as a derived table — `SELECT * FROM (<sql>)`.
+///
+/// Only matters for the drivers that cap a result by rewriting the statement.
+/// `SHOW`, `EXPLAIN`, `DESCRIBE` and `PRAGMA` all return rows but none of them is
+/// a query expression, so wrapping one is a syntax error on every engine. Their
+/// results are inherently small — a table list, a query plan — so leaving them
+/// uncapped costs nothing.
+///
+/// A leading `(` counts: a parenthesised `SELECT`, or a `UNION` of them, nests
+/// fine.
+pub fn is_wrappable(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    trimmed.starts_with('(')
+        || matches!(
+            leading_keyword(trimmed).as_str(),
+            "SELECT" | "WITH" | "VALUES" | "TABLE"
+        )
 }
 
 /// Open a connection for `config`, using `password` from the keychain.
@@ -217,5 +240,45 @@ mod tests {
         assert!(!returns_rows("UPDATE t SET a = 1"));
         assert!(!returns_rows("CREATE TABLE t (a int)"));
         assert!(!returns_rows(""));
+    }
+
+    #[test]
+    fn query_expressions_are_wrappable() {
+        assert!(is_wrappable("SELECT 1"));
+        assert!(is_wrappable("  \n select * from t"));
+        assert!(is_wrappable("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(is_wrappable("(SELECT 1) UNION (SELECT 2)"));
+        assert!(is_wrappable("VALUES (1), (2)"));
+    }
+
+    #[test]
+    fn row_returning_commands_are_not_wrappable() {
+        // These all return rows, but none is a query expression: wrapping one in
+        // `SELECT * FROM (...)` is a syntax error on every engine, which is what
+        // used to make them impossible to run.
+        for sql in [
+            "SHOW TABLES",
+            "show databases",
+            "PRAGMA table_info(t)",
+            "EXPLAIN SELECT 1",
+            "EXPLAIN ANALYZE SELECT 1",
+            "DESCRIBE users",
+            "DESC users",
+        ] {
+            assert!(
+                returns_rows(sql),
+                "{sql} should still be treated as row-returning"
+            );
+            assert!(!is_wrappable(sql), "{sql} must not be wrapped");
+        }
+    }
+
+    #[test]
+    fn statements_that_return_nothing_are_not_wrappable() {
+        // Not strictly required — they never reach `query` — but wrapping one
+        // would be nonsense, so the predicate should say so.
+        assert!(!is_wrappable("INSERT INTO t VALUES (1)"));
+        assert!(!is_wrappable("CREATE TABLE t (a int)"));
+        assert!(!is_wrappable(""));
     }
 }

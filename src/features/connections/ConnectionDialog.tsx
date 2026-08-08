@@ -20,6 +20,23 @@ const blank = (): ConnectionConfig => ({
   readOnly: false,
 });
 
+/**
+ * What "Open read-only" actually guarantees for a given engine.
+ *
+ * Faro refuses edits, imports and restores on a read-only connection whatever
+ * the engine, and blocks non-read statements in the editor by inspecting them.
+ * Most engines can also be told to enforce it themselves, which additionally
+ * catches a write Faro's inspection would miss — a function call that writes,
+ * say. SQL Server has no equivalent session setting, so there the promise rests
+ * on Faro alone and the wording should not imply otherwise.
+ */
+function readOnlyHint(engine: Engine): string {
+  const faroSide = 'Faro will refuse edits, imports, restores and write statements.';
+  return engine === 'sqlserver'
+    ? `${faroSide} SQL Server has no server-side read-only session, so this is enforced by Faro only.`
+    : `${faroSide} The database is asked to enforce it as well.`;
+}
+
 export function ConnectionDialog({
   open,
   onClose,
@@ -270,17 +287,26 @@ export function ConnectionDialog({
           />
         </Field>
 
-        <label
-          className="flex items-center gap-2 text-[12px]"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          <input
-            type="checkbox"
-            checked={config.readOnly}
-            onChange={(e) => patch({ readOnly: e.target.checked })}
-          />
-          Open read-only
-        </label>
+        <div>
+          <label
+            className="flex items-center gap-2 text-[12px]"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            <input
+              type="checkbox"
+              checked={config.readOnly}
+              onChange={(e) => patch({ readOnly: e.target.checked })}
+            />
+            Open read-only
+          </label>
+          {/* Says what is actually guaranteed. Faro blocks every write it can
+              identify, and asks the engine to block them too where it can — but
+              those are two different strengths of promise and the difference
+              matters for a production connection. */}
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-faint)' }}>
+            {readOnlyHint(config.engine)}
+          </p>
+        </div>
 
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
         {tested && !error && (

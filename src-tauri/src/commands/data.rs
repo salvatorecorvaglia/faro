@@ -35,7 +35,7 @@ pub async fn apply_changes(
     table: TableRef,
     changes: Vec<PendingChange>,
 ) -> Result<ApplyResult> {
-    let driver = state.registry.get(&connection_id).await?;
+    let driver = state.registry.get_writable(&connection_id).await?;
     let detail = driver.describe_table(&table).await?;
     let statements = dml::build_statements(&table, &detail, &changes, driver.dialect())?;
 

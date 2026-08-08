@@ -213,19 +213,8 @@ async fn write_table_data(
         .map(|c| dialect.quote_ident(&c.name))
         .collect();
 
-    // Ordering by the primary key makes paging stable. Without it a database
-    // is free to return rows in a different order per page, which can both
-    // duplicate and skip rows across an offset boundary.
-    let order = if detail.primary_key.is_empty() {
-        String::new()
-    } else {
-        let keys: Vec<String> = detail
-            .primary_key
-            .iter()
-            .map(|k| dialect.quote_ident(k))
-            .collect();
-        format!(" ORDER BY {}", keys.join(", "))
-    };
+    // Ordering by the primary key is what makes paging stable; see `order_by_key`.
+    let order = sql::order_by_key(&detail.primary_key, dialect);
 
     let base = format!("SELECT {} FROM {qualified}{order}", columns.join(", "));
     let prefix = format!("INSERT INTO {qualified} ({}) VALUES", columns.join(", "));
@@ -503,6 +492,26 @@ pub async fn restore(
     let mut failed = 0usize;
     let mut errors = Vec::new();
 
+    let dialect = driver.dialect();
+    // Only worth a transaction when the caller wants to stop at the first
+    // failure — "continue past errors" is a request for partial application, so
+    // rolling the whole thing back would be the opposite of what was asked.
+    //
+    // `ddl_is_transactional` matters as much as `supports_transactions`: a dump
+    // is mostly DDL, and on MySQL every `CREATE TABLE` commits implicitly, so
+    // opening a transaction there would promise an atomicity it cannot deliver.
+    let atomic =
+        options.stop_on_error && dialect.supports_transactions() && dialect.ddl_is_transactional();
+
+    if atomic {
+        driver
+            .execute(
+                dialect.begin_statement(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?;
+    }
+
     for (index, stmt) in statements.iter().enumerate() {
         let result = driver
             .execute(stmt, tokio_util::sync::CancellationToken::new())
@@ -512,15 +521,39 @@ pub async fn restore(
             failed += 1;
             let message = format!("statement {}: {e}", index + 1);
             if options.stop_on_error {
+                let outcome = if atomic {
+                    let rolled_back = driver
+                        .execute("ROLLBACK", tokio_util::sync::CancellationToken::new())
+                        .await
+                        .is_ok();
+                    if rolled_back {
+                        "Nothing was applied — the database is as it was.".to_string()
+                    } else {
+                        // Say so plainly. Believing a failed restore left no
+                        // trace, when it did, is worse than knowing it is
+                        // half-applied.
+                        format!(
+                            "The rollback then failed too, so {index} statements \
+                             may remain applied. Check the database before retrying."
+                        )
+                    }
+                } else {
+                    format!("{index} of {total} statements had run and remain applied.")
+                };
                 return Err(FaroError::Other(format!(
-                    "{message}\n\nRestore stopped. {} of {total} statements had run.",
-                    index
+                    "{message}\n\nRestore stopped. {outcome}"
                 )));
             }
             errors.push(message);
         }
 
         on_progress(index + 1, total);
+    }
+
+    if atomic {
+        driver
+            .execute("COMMIT", tokio_util::sync::CancellationToken::new())
+            .await?;
     }
 
     Ok(RestoreResult {

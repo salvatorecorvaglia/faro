@@ -4,7 +4,7 @@
 //! back, and get the same values. Run `./scripts/seed.sh` first.
 
 use faro_lib::driver::{self, Driver};
-use faro_lib::model::{ConnectionConfig, Engine, GuardedStatement, SslMode, Value};
+use faro_lib::model::{ConnectionConfig, Engine, GuardedStatement, SslMode, TableRef, Value};
 use faro_lib::transfer::export::{self, ExportFormat, ExportOptions};
 use faro_lib::transfer::import::{self, ImportFormat};
 use tokio_util::sync::CancellationToken;
@@ -74,6 +74,14 @@ macro_rules! fixture_or_skip {
             }
         }
     };
+}
+
+/// SQLite is schema-less as far as Faro is concerned, so `schema` stays `None`.
+fn table(name: &str) -> TableRef {
+    TableRef {
+        schema: None,
+        name: name.into(),
+    }
 }
 
 fn opts(format: ExportFormat, table: &str) -> ExportOptions {
@@ -208,36 +216,21 @@ async fn null_survives_a_csv_round_trip_as_null() {
 async fn exporting_a_table_reads_past_the_first_page() {
     let mut f = fixture_or_skip!("paging");
     let d = open(&f).await;
-    let dialect = d.dialect();
 
     // access_log has 5000 rows — well past the 1000-row page the grid holds.
     // Exporting what is on screen would silently truncate to a fifth.
-    let base = "SELECT * FROM access_log";
-    let mut all: Option<faro_lib::model::ResultSet> = None;
-    let mut offset = 0u64;
-    loop {
-        let page = d
-            .query(
-                &dialect.paginate(base, 2001, offset),
-                2000,
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let more = page.truncated;
-        let n = page.rows.len() as u64;
-        match &mut all {
-            None => all = Some(page),
-            Some(acc) => acc.rows.extend(page.rows),
-        }
-        if !more || n == 0 {
-            break;
-        }
-        offset += n;
-    }
-
-    let combined = all.unwrap();
+    //
+    // Goes through the production helper rather than re-implementing the paging
+    // loop here: a test that rebuilds the logic it is checking cannot catch the
+    // logic being wrong.
+    let combined = export::read_table_paged(&*d, &table("access_log"))
+        .await
+        .unwrap();
     assert_eq!(combined.rows.len(), 5000, "paged export lost rows");
+    assert!(
+        !combined.truncated,
+        "every page was read, so the set is complete"
+    );
 
     let path = f.file("access.csv");
     let written = export::write_file(
@@ -251,6 +244,56 @@ async fn exporting_a_table_reads_past_the_first_page() {
 
     let (_, rows) = import::read_rows(&path, ImportFormat::Csv, true).unwrap();
     assert_eq!(rows.len(), 5000);
+}
+
+#[tokio::test]
+async fn a_paged_export_is_a_partition_of_the_table_not_a_resample() {
+    let f = fixture_or_skip!("paging_distinct");
+    let d = open(&f).await;
+
+    // Build a keyed table larger than one read batch (5000), so the export has
+    // to cross a page boundary.
+    for sql in [
+        "CREATE TABLE wide (id INTEGER PRIMARY KEY, label TEXT)",
+        "INSERT INTO wide (id, label) SELECT value, 'row-' || value \
+         FROM (WITH RECURSIVE seq(value) AS \
+               (SELECT 1 UNION ALL SELECT value + 1 FROM seq WHERE value < 12000) \
+               SELECT value FROM seq)",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .expect("could not build the wide table");
+    }
+
+    let exported = export::read_table_paged(&*d, &table("wide")).await.unwrap();
+
+    // Counting rows is not enough: pages that overlap would duplicate some rows
+    // and skip others while still totalling the right number. The property that
+    // actually matters is that every id appears exactly once.
+    let id_col = exported
+        .columns
+        .iter()
+        .position(|c| c.name == "id")
+        .expect("id column");
+    let mut ids: Vec<i64> = exported
+        .rows
+        .iter()
+        .map(|r| match &r[id_col] {
+            Value::Int(n) => *n,
+            other => panic!("expected an integer id, got {other:?}"),
+        })
+        .collect();
+
+    assert_eq!(ids.len(), 12_000, "wrong number of rows exported");
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        12_000,
+        "the pages overlapped: some rows were exported twice and others not at all"
+    );
+    assert_eq!(*ids.first().unwrap(), 1);
+    assert_eq!(*ids.last().unwrap(), 12_000);
 }
 
 #[tokio::test]

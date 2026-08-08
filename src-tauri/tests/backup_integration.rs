@@ -417,6 +417,53 @@ async fn restore_stops_at_the_first_error_by_default() {
         Value::Int(0),
         "restore continued past the error"
     );
+
+    // And the statement *before* it must have been rolled back. Stopping is only
+    // half the promise; a half-restored database is exactly what the user was
+    // trying to avoid by asking to stop.
+    let before = dst
+        .query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'ok'",
+            1,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        before.rows[0][0],
+        Value::Int(0),
+        "the statements before the failure were left applied"
+    );
+    assert!(
+        err.to_string().contains("Nothing was applied"),
+        "the error should say the database is unchanged: {err}"
+    );
+}
+
+#[tokio::test]
+async fn a_successful_restore_still_commits() {
+    let f = fixture_or_skip!("commits");
+    let dst = open(&f.target).await;
+
+    // The mirror of the test above: wrapping the restore in a transaction must
+    // not leave the work uncommitted when everything succeeds.
+    let script = "CREATE TABLE kept (a int);\nINSERT INTO kept (a) VALUES (1), (2);";
+    backup::restore(
+        &*dst,
+        script,
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+
+    let rows = dst
+        .query("SELECT COUNT(*) FROM kept", 1, CancellationToken::new())
+        .await
+        .expect("the restored table should exist");
+    assert_eq!(rows.rows[0][0], Value::Int(2), "the restore did not commit");
 }
 
 #[tokio::test]

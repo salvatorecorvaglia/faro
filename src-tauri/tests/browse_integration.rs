@@ -6,7 +6,9 @@
 // `Dialect` needs no import: its methods resolve through the `&dyn Dialect`
 // that `Driver::dialect()` hands back.
 use faro_lib::driver::{self, Driver};
-use faro_lib::model::{ConnectionConfig, Engine, SslMode, Value};
+use faro_lib::model::{
+    BrowseOptions, ColumnFilter, ConnectionConfig, Engine, FilterOp, SslMode, TableRef, Value,
+};
 use tokio_util::sync::CancellationToken;
 
 fn fixture_path() -> Option<String> {
@@ -16,9 +18,9 @@ fn fixture_path() -> Option<String> {
     path.exists().then(|| path.to_string_lossy().into_owned())
 }
 
-async fn open() -> Option<Box<dyn Driver>> {
-    let path = fixture_path()?;
-    let config = ConnectionConfig {
+/// A SQLite connection config with no file chosen yet.
+fn base_config() -> ConnectionConfig {
+    ConnectionConfig {
         id: "test".into(),
         name: "test".into(),
         engine: Engine::Sqlite,
@@ -26,11 +28,16 @@ async fn open() -> Option<Box<dyn Driver>> {
         port: 0,
         username: String::new(),
         database: String::new(),
-        file_path: Some(path),
+        file_path: None,
         ssl_mode: SslMode::Prefer,
         color: None,
         read_only: false,
-    };
+    }
+}
+
+async fn open() -> Option<Box<dyn Driver>> {
+    let mut config = base_config();
+    config.file_path = Some(fixture_path()?);
     Some(
         driver::connect(&config, None)
             .await
@@ -54,6 +61,30 @@ fn text_at(rows: &[Vec<Value>], row: usize, col: usize) -> String {
     match &rows[row][col] {
         Value::Text(s) => s.clone(),
         other => panic!("expected text, got {other:?}"),
+    }
+}
+
+/// SQLite is schema-less as far as Faro is concerned, so `schema` stays `None`.
+fn table(name: &str) -> TableRef {
+    TableRef {
+        schema: None,
+        name: name.into(),
+    }
+}
+
+/// Browse options carrying a single `Contains` filter — the operator whose
+/// escaping is under test.
+fn contains(column: &str, needle: &str) -> BrowseOptions {
+    BrowseOptions {
+        sort_column: None,
+        sort_desc: false,
+        filters: vec![ColumnFilter {
+            column: column.into(),
+            op: FilterOp::Contains,
+            value: needle.into(),
+        }],
+        limit: Some(100),
+        offset: 0,
     }
 }
 
@@ -107,38 +138,107 @@ async fn a_filter_narrows_the_result_server_side() {
     assert_eq!(filtered.rows.len(), 1);
 }
 
+/// A writable copy of the fixture, so a test can add its own rows without
+/// leaking state into tests running in parallel.
+///
+/// Needed because the shared fixture cannot express the case below: none of its
+/// values contain a literal `%` or `_`, which is exactly what distinguishes
+/// working escaping from broken escaping.
+struct TempDb {
+    path: std::path::PathBuf,
+}
+
+impl TempDb {
+    fn from_fixture(tag: &str) -> Option<Self> {
+        let source = fixture_path()?;
+        let path =
+            std::env::temp_dir().join(format!("faro_browse_{tag}_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::copy(&source, &path).ok()?;
+        Some(Self { path })
+    }
+
+    async fn driver(&self) -> Box<dyn Driver> {
+        let mut config = base_config();
+        config.file_path = Some(self.path.to_string_lossy().into_owned());
+        driver::connect(&config, None)
+            .await
+            .expect("connect failed")
+    }
+}
+
+impl Drop for TempDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[tokio::test]
 async fn like_wildcards_in_a_search_term_are_escaped() {
-    let d = driver_or_skip!();
+    let Some(db) = TempDb::from_fixture("like_escape") else {
+        eprintln!("skipping: run ./scripts/seed.sh to create the fixture");
+        return;
+    };
+    let d = db.driver().await;
 
-    // A user searching for the literal text "50%" must not match everything
-    // starting with "50". The escape is what makes that true.
-    let escaped = d
-        .query(
-            r"SELECT * FROM access_log WHERE CAST(path AS TEXT) LIKE '%\%%' ESCAPE '\'",
-            10,
+    // Two rows per operator that differ *only* in whether the wildcard is taken
+    // literally, so the assertions below have real discriminating power: with the
+    // `ESCAPE` clause each search matches exactly its literal row, and without it
+    // the escaped pattern matches nothing at all.
+    for sql in [
+        "CREATE TABLE labels (id INTEGER PRIMARY KEY, name TEXT)",
+        "INSERT INTO labels (name) VALUES ('50%'), ('50off'), ('a_b'), ('axb')",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .expect("could not set up the labels table");
+    }
+
+    // '%' is the multi-character wildcard. Unescaped, '%50%%' matches both
+    // '50%' and '50off'.
+    let percent = d
+        .browse(
+            &table("labels"),
+            &contains("name", "50%"),
             CancellationToken::new(),
         )
         .await
         .unwrap();
     assert_eq!(
-        escaped.rows.len(),
-        0,
-        "no path contains a literal percent sign"
+        percent.rows.len(),
+        1,
+        "searching for the literal text '50%' should match only '50%', got {:?}",
+        percent.rows
     );
 
-    let unescaped = d
+    // '_' is the single-character wildcard. Unescaped, '%a_b%' matches both
+    // 'a_b' and 'axb'.
+    let underscore = d
+        .browse(
+            &table("labels"),
+            &contains("name", "a_b"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        underscore.rows.len(),
+        1,
+        "searching for the literal text 'a_b' should match only 'a_b', got {:?}",
+        underscore.rows
+    );
+
+    // The control: the wildcards really do match more than one row here, so the
+    // assertions above are about escaping and not about a sparse table.
+    let wild = d
         .query(
-            "SELECT * FROM access_log WHERE CAST(path AS TEXT) LIKE '%'",
+            "SELECT * FROM labels WHERE name LIKE '%50%%' OR name LIKE '%a_b%'",
             10,
             CancellationToken::new(),
         )
         .await
         .unwrap();
-    assert!(
-        !unescaped.rows.is_empty(),
-        "a bare % should match everything"
-    );
+    assert_eq!(wild.rows.len(), 4, "all four rows match as wildcards");
 }
 
 #[tokio::test]

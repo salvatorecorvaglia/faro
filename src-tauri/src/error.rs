@@ -23,6 +23,15 @@ pub enum FaroError {
     #[error("no connection is open with id {0}")]
     NotConnected(String),
 
+    /// A write was attempted on a connection the user marked read-only.
+    ///
+    /// Its own variant rather than `Other` so the UI can present it as a setting
+    /// the user chose and can change, not as a database failure. Built through
+    /// [`FaroError::read_only`] so the wording stays identical wherever a write
+    /// is refused.
+    #[error("{0}")]
+    ReadOnly(String),
+
     #[error("query cancelled")]
     Cancelled,
 
@@ -46,12 +55,29 @@ pub enum FaroError {
 }
 
 impl FaroError {
+    /// Refuse a write because the connection is open read-only.
+    ///
+    /// `rejected` names the statement that was turned away, when there is one
+    /// worth quoting — being told *what* was refused is the difference between a
+    /// useful message and a puzzling one when a script has twenty statements.
+    pub fn read_only(connection: &str, rejected: Option<&str>) -> Self {
+        let mut message = format!(
+            "\"{connection}\" is open read-only, so nothing can be written to it. \
+             Turn off \"Open read-only\" in the connection settings to make changes."
+        );
+        if let Some(sql) = rejected {
+            message.push_str(&format!("\n\nRefused: {}", truncate(sql, 80)));
+        }
+        FaroError::ReadOnly(message)
+    }
+
     /// Short machine-readable discriminant for the frontend.
     fn kind(&self) -> &'static str {
         match self {
             FaroError::Connection(_) => "connection",
             FaroError::Database { .. } => "database",
             FaroError::NotConnected(_) => "notConnected",
+            FaroError::ReadOnly(_) => "readOnly",
             FaroError::Cancelled => "cancelled",
             FaroError::UnsupportedEngine(_) => "unsupportedEngine",
             FaroError::Store(_) => "store",
@@ -61,6 +87,18 @@ impl FaroError {
             FaroError::Other(_) => "other",
         }
     }
+}
+
+/// First line of `sql`, capped at `max` characters.
+///
+/// Counts characters rather than bytes: slicing a multi-byte character in half
+/// would panic, and a statement full of non-ASCII text is perfectly ordinary.
+fn truncate(sql: &str, max: usize) -> String {
+    let line = sql.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= max {
+        return line.to_string();
+    }
+    line.chars().take(max).collect::<String>() + "…"
 }
 
 #[derive(Serialize)]

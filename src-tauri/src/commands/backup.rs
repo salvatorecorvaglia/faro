@@ -49,7 +49,7 @@ pub async fn restore_database(
     path: String,
     options: RestoreOptions,
 ) -> Result<RestoreResult> {
-    let driver = state.registry.get(&connection_id).await?;
+    let driver = state.registry.get_writable(&connection_id).await?;
     let script = std::fs::read_to_string(&path)?;
 
     backup::restore(&*driver, &script, &options, |done, total| {

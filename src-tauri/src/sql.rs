@@ -196,6 +196,26 @@ pub fn build_browse_sql(
     }
 }
 
+/// `ORDER BY` over a table's primary key, ready to append to a `SELECT`, or an
+/// empty string when the table has no key.
+///
+/// Anything that walks a table in `LIMIT`/`OFFSET` pages needs this. Without an
+/// ordering, a database is free to return rows in a different order for each
+/// page, which both duplicates and skips rows across a page boundary — so a
+/// paged read of a large table silently produces a wrong copy of it.
+///
+/// A keyless table has no stable order to impose. Ordering by every column would
+/// give one, but it fails outright on types with no ordering operator (Postgres
+/// cannot sort `json`), so callers page such tables unordered and accept the
+/// risk. Streaming the whole table in a single query is the real answer there.
+pub fn order_by_key(primary_key: &[String], dialect: &dyn crate::driver::Dialect) -> String {
+    if primary_key.is_empty() {
+        return String::new();
+    }
+    let keys: Vec<String> = primary_key.iter().map(|k| dialect.quote_ident(k)).collect();
+    format!(" ORDER BY {}", keys.join(", "))
+}
+
 /// Build a WHERE clause from validated column filters.
 ///
 /// Filters whose column is unknown are dropped rather than errored: a stale
@@ -224,14 +244,14 @@ fn build_where(
                         "%{}%",
                         escape_like(&f.value)
                     )));
-                    format!("CAST({col} AS TEXT) LIKE {pat}")
+                    format!("CAST({col} AS TEXT) LIKE {pat} ESCAPE '{LIKE_ESCAPE}'")
                 }
                 FilterOp::StartsWith => {
                     let pat = dialect.literal(&crate::model::Value::Text(format!(
                         "{}%",
                         escape_like(&f.value)
                     )));
-                    format!("CAST({col} AS TEXT) LIKE {pat}")
+                    format!("CAST({col} AS TEXT) LIKE {pat} ESCAPE '{LIKE_ESCAPE}'")
                 }
             }
         })
@@ -239,8 +259,20 @@ fn build_where(
         .join(" AND ")
 }
 
+/// Escape character used with `LIKE`.
+///
+/// Named rather than inlined because it has to appear identically in the escaped
+/// pattern and in the `ESCAPE` clause; the two drifting apart would break every
+/// text filter at once.
+const LIKE_ESCAPE: char = '\\';
+
 /// Neutralize LIKE wildcards so a user searching for "50%" does not match
 /// everything starting with "50".
+///
+/// Must be paired with an explicit `ESCAPE` clause. Postgres and MySQL happen to
+/// treat backslash as the default escape, but SQLite, DuckDB and SQL Server have
+/// **no** default — there, an unaccompanied `\%` matches a literal backslash
+/// followed by anything, so the filter silently returns the wrong rows.
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -412,6 +444,51 @@ SELECT f()
             &TestDialect,
         );
         assert!(out.contains(r"'%50\%%'"), "got {out}");
+    }
+
+    #[test]
+    fn like_filters_declare_their_escape_character() {
+        // Escaping the wildcard is only half the job: SQLite, DuckDB and SQL
+        // Server have no default LIKE escape, so without this clause `\%`
+        // matches a literal backslash and the filter returns the wrong rows.
+        let known = ["a"];
+        for op in [FilterOp::Contains, FilterOp::StartsWith] {
+            let out = build_where(&[filter("a", op, "50%")], &known, &TestDialect);
+            assert!(out.ends_with(r"ESCAPE '\'"), "{op:?} produced {out}");
+        }
+    }
+
+    #[test]
+    fn non_like_filters_have_no_escape_clause() {
+        // ESCAPE is only legal on LIKE; appending it to `=` would be a syntax
+        // error on every engine.
+        let known = ["a"];
+        for op in [
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::GreaterThan,
+            FilterOp::LessThan,
+            FilterOp::IsNull,
+            FilterOp::IsNotNull,
+        ] {
+            let out = build_where(&[filter("a", op, "x")], &known, &TestDialect);
+            assert!(!out.contains("ESCAPE"), "{op:?} produced {out}");
+        }
+    }
+
+    #[test]
+    fn escaped_pattern_and_escape_clause_agree() {
+        // A backslash in the search text must be doubled in the pattern and the
+        // clause must name that same character, or the two disagree and the
+        // engine reads the pattern differently than intended.
+        let known = ["a"];
+        let out = build_where(
+            &[filter("a", FilterOp::Contains, r"c:\tmp")],
+            &known,
+            &TestDialect,
+        );
+        assert!(out.contains(r"'%c:\\tmp%'"), "got {out}");
+        assert!(out.ends_with(r"ESCAPE '\'"), "got {out}");
     }
 
     #[test]
