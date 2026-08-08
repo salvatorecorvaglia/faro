@@ -9,12 +9,14 @@
 ## ✨ Features
 
 - ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)**.
-- 🔒 **Secure Credential Storage**: Integrates directly with your operating system's native password manager (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+- 🛡️ **Read-Only Mode & Safety**: Connection-level read-only enforcement to prevent accidental data modifications or destructive DDL queries on production environments.
+- 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`).
 - 📝 **Advanced SQL Editor**: Built with CodeMirror 6 featuring schema-aware autocompletion, query formatting (`sql-formatter`), tabbed workflows, and multi-query execution.
-- 📊 **Virtualized Data Grid**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline editing (DML), dynamic filtering, and column sorting.
-- 📂 **Flexible Import & Export**: Import and export data seamlessly across CSV, Excel (`.xlsx`), JSON, and raw SQL dumps.
-- ⚙️ **Embedded Databases**: Full zero-config support for embedded SQLite and analytical DuckDB workloads directly inside the client process.
-- 🎨 **Modern Interface**: Designed with Tailwind CSS v4 and dynamic layout panels for an uncluttered user experience.
+- 📊 **Virtualized Data Grid**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, dynamic filtering, and column sorting.
+- 📂 **Flexible Import, Export & Transfer**: Import and export data seamlessly across CSV, Excel (`.xlsx`), JSON, and raw SQL dumps, or stream data directly between databases.
+- ⚙️ **Embedded Databases**: Full zero-config support for embedded SQLite (`rusqlite`) and analytical DuckDB (`duckdb-rs`) workloads directly inside the client process.
+- 🔄 **Automatic Application Updates**: Built-in update notifications and one-click upgrades powered by `tauri-plugin-updater`.
+- 🎨 **Modern Interface**: Designed with Tailwind CSS v4 and dynamic resizable panels (`react-resizable-panels`) for an uncluttered user experience.
 
 ---
 
@@ -39,10 +41,10 @@
 
 Ensure you have the following installed on your machine:
 
-- **Node.js**: v18.0.0 or higher
-- **pnpm**: v11.17.0+ (`corepack enable` or `npm i -g pnpm`)
-- **Rust Toolchain**: 1.85+ (`rustup update stable`)
-- **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk`, or Windows C++ Build Tools).
+- **Node.js**: `v20.0.0` or higher (v22 recommended)
+- **pnpm**: `v11.17.0`+ (`corepack enable` or `npm i -g pnpm`)
+- **Rust Toolchain**: `1.85`+ (`rustup update stable`)
+- **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk-4.1-dev`, or Windows C++ Build Tools).
 
 ### Installation & Local Development
 
@@ -88,7 +90,7 @@ Faro includes a Docker Compose environment containing pre-configured instances o
   pnpm test
   ```
 
-- **Run Backend Tests (Rust)**:
+- **Run Backend Integration Tests (Rust)**:
   ```bash
   # Run all Rust unit and integration tests (includes DuckDB)
   cargo test --manifest-path src-tauri/Cargo.toml
@@ -105,8 +107,12 @@ Faro includes a Docker Compose environment containing pre-configured instances o
   # Lint frontend & configuration files with Biome
   pnpm lint
 
-  # Check Rust code formatting and clippy lints
-  cd src-tauri && cargo fmt --check && cargo clippy
+  # Format frontend files automatically
+  pnpm format
+
+  # Check Rust formatting and clippy lints
+  cargo fmt --check --manifest-path src-tauri/Cargo.toml
+  cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
   ```
 
 ---

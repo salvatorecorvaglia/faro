@@ -41,11 +41,11 @@ If you'd like to implement a feature or fix a bug:
 
 Make sure you have installed:
 
-- **Node.js**: `v18.0.0` or higher
+- **Node.js**: `v20.0.0` or higher (v22 recommended)
 - **pnpm**: `v11.17.0` or higher (`corepack enable` or `npm i -g pnpm`)
 - **Rust**: `1.85` or higher (`rustup update stable`)
 - **Docker & Docker Compose**: Required for running integration tests against real database engines.
-- **Tauri Prerequisites**: Refer to [Tauri v2 Documentation](https://v2.tauri.app/start/prerequisites/) for OS-specific native build tools.
+- **Tauri Prerequisites**: Refer to [Tauri v2 Documentation](https://v2.tauri.app/start/prerequisites/) for OS-specific native build tools (e.g. `libwebkit2gtk-4.1-dev` on Linux, Xcode command line tools on macOS).
 
 ### Local Setup
 
@@ -71,16 +71,16 @@ Make sure you have installed:
 
 ### Frontend Guidelines
 
-- **Stack**: React 19, TypeScript, Vite, Tailwind CSS v4, Zustand.
-- **TypeScript**: Strict type-checking is enforced. Avoid using `any` types; define explicit interfaces or types.
+- **Stack**: React 19, TypeScript 5.9, Vite 8, Tailwind CSS v4, Zustand 5, TanStack Virtual v3, CodeMirror 6.
+- **TypeScript**: Strict type-checking is enforced (`pnpm typecheck`). Avoid using `any` types; define explicit interfaces or types.
 - **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local.
 - **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`.
 
 ### Backend Guidelines (Rust)
 
-- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2, Tokio async runtime, `sqlx`, `rusqlite`, `duckdb`, `mongodb`, `tiberius`.
+- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39, `duckdb` 1, `mongodb` 3, `tiberius` 0.12, `tauri-plugin-updater`.
 - **Error Handling**: Use the custom error types in `src-tauri/src/error.rs` powered by `thiserror`. Do not panic (`unwrap()`) in production IPC paths; return structured `Result<T, FaroError>`.
-- **Async & Concurrency**: Avoid blocking execution on the main UI loop or blocking Tokio worker threads. Use `tokio::task::spawn_blocking` for CPU-heavy disk or parsing work if necessary.
+- **Async & Concurrency**: Avoid blocking execution on the main UI loop or Tokio worker threads. Use `tokio::task::spawn_blocking` for CPU-heavy disk or parsing work if necessary.
 
 ### Linting and Formatting
 
@@ -97,10 +97,9 @@ pnpm lint
 pnpm lint:fix
 pnpm format
 
-# Format and lint Rust backend
-cd src-tauri
-cargo fmt --check
-cargo clippy
+# Check Rust formatting and clippy lints
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
 ```
 
 ---
@@ -135,10 +134,10 @@ Backend integration tests live in `src-tauri/tests/`. To run tests against real 
 
 3. **Execute Rust test suite**:
    ```bash
-   # Full test suite
+   # Full test suite (includes bundled DuckDB compilation)
    cargo test --manifest-path src-tauri/Cargo.toml
 
-   # Fast iteration mode (excludes DuckDB C++ compilation)
+   # Fast iteration mode (skips compiling bundled DuckDB C++ amalgamation)
    cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
    ```
 
@@ -151,15 +150,18 @@ Backend integration tests live in `src-tauri/tests/`. To run tests against real 
    - `fix/short-description`
    - `docs/short-description`
 2. **Commit Messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/):
-   - `feat: add support for custom connection timeouts`
+   - `feat: add support for connection read-only enforcement`
    - `fix: resolve CSV export encoding issue`
    - `docs: update setup instructions`
    - `refactor: clean up schema cache store`
    - `test: add integration test for MSSQL decimal types`
 3. **Verification Checklist**: Before submitting your PR, verify that:
    - [ ] `pnpm typecheck` succeeds without errors.
-   - [ ] `pnpm lint` and `cargo clippy` report no warnings/errors.
-   - [ ] `pnpm test` and `cargo test --no-default-features` pass cleanly.
+   - [ ] `pnpm lint` reports no warnings or errors.
+   - [ ] `cargo fmt --check --manifest-path src-tauri/Cargo.toml` passes.
+   - [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings` reports no warnings.
+   - [ ] `pnpm test` passes cleanly.
+   - [ ] `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features` passes cleanly.
    - [ ] `CHANGELOG.md` has been updated under `[Unreleased]`.
 
 ---
