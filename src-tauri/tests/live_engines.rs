@@ -46,6 +46,18 @@ fn password_for(engine: Engine) -> &'static str {
 
 /// Connect, or return None so the caller can skip.
 async fn try_open(engine: Engine, port: u16, database: &str) -> Option<Box<dyn Driver>> {
+    let addr = format!("127.0.0.1:{port}");
+    if tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .map_or(true, |r| r.is_err())
+    {
+        eprintln!("skipping {}: port {port} not open", engine.display_name());
+        return None;
+    }
+
     let cfg = config(engine, port, database);
     match driver::connect(&cfg, Some(password_for(engine))).await {
         Ok(d) => match d.ping().await {

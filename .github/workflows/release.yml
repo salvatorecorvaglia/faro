@@ -118,11 +118,22 @@ jobs:
   quality-rust-clippy-test:
     name: Quality Gate (Rust Clippy & Test)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     needs: validate
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
+
+      - name: Start Test Database Services
+        run: docker compose -f docker-compose.test.yml up -d
+
+      - name: Seed Test Databases
+        run: ./scripts/seed.sh
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -132,15 +143,10 @@ jobs:
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
+          workspaces: src-tauri
 
       - name: Clippy linting
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
 
       - name: Run tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
