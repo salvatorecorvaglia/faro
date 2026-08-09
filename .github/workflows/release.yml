@@ -115,10 +115,37 @@ jobs:
       - name: Format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
-  quality-rust-clippy-test:
-    name: Quality Gate (Rust Clippy & Test)
+  quality-rust-clippy:
+    name: Quality Gate (Rust Clippy)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    needs: validate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Clippy linting
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
+
+  quality-rust-test:
+    name: Quality Gate (Rust Test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: validate
     steps:
       - name: Checkout repository
@@ -137,16 +164,11 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      - name: Clippy linting
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
 
       - name: Run tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -158,7 +180,7 @@ jobs:
     name: Release (${{ matrix.platform }})
     permissions:
       contents: write
-    needs: [quality-frontend, quality-rust-fmt, quality-rust-clippy-test]
+    needs: [quality-frontend, quality-rust-fmt, quality-rust-clippy, quality-rust-test]
     strategy:
       fail-fast: false
       matrix:
