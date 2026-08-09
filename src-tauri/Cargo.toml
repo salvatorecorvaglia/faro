@@ -1,6 +1,6 @@
 [package]
 name = "faro"
-version = "0.1.0"
+version = "1.0.0"
 description = "Fast, clean, cross-platform database client"
 edition = "2021"
 # Floor set by the spreadsheet crates; Cargo's MSRV-aware resolver silently
