@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Fast, clean, cross-platform database client",
+  "icon": "resources/faro.png",
   "packageManager": "pnpm@11.17.0",
   "scripts": {
     "dev": "vite",
