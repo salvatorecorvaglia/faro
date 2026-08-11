@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { SavedQuery } from '@/ipc/types';
+import { folderNames, groupByFolder, useLibrary } from '@/state/library';
 import { faroError, mockInvoke } from '@/test/ipc';
-import { folderNames, groupByFolder, useLibrary } from './library';
 
 const q = (name: string, folder: string | null): SavedQuery => ({
   id: name,

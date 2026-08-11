@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { editorPlaceholder, isSqlEngine, starterQuery } from './engine';
+import { editorPlaceholder, isSqlEngine, starterQuery } from '@/lib/engine';
 
 describe('isSqlEngine', () => {
   it('is false only for MongoDB', () => {

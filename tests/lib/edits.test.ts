@@ -11,7 +11,7 @@ import {
   setInsertCell,
   toggleDelete,
   toPendingChanges,
-} from './edits';
+} from '@/lib/edits';
 
 const int = (n: number): Value => ({ kind: 'int', value: n });
 const text = (s: string): Value => ({ kind: 'text', value: s });

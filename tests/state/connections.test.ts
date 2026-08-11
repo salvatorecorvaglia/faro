@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-
+import { useConnections } from '@/state/connections';
 import { faroError, mockInvoke } from '@/test/ipc';
-import { useConnections } from './connections';
 
 const initial = useConnections.getState();
 

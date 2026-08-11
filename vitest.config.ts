@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   // The React plugin is what compiles JSX in `.test.tsx` files.
-  plugins: [react()],
+  plugins: [react() as never],
   resolve: {
     alias: { '@': path.resolve(import.meta.dirname, 'src') },
   },
@@ -13,7 +13,7 @@ export default defineConfig({
     // `node` environment plus a `.test.ts`-only glob meant a `.test.tsx` file
     // could not even be collected — so there were no component tests at all.
     environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['tests/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
     setupFiles: ['src/test/setup.ts'],
     // Each file gets a fresh module registry so a zustand store mutated by one
     // test cannot leak into the next. The stores are module-level singletons,
@@ -24,7 +24,13 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/vite-env.d.ts', 'src/main.tsx'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/test/**',
+        'src/vite-env.d.ts',
+        'src/main.tsx',
+        'tests/**',
+      ],
     },
   },
 });

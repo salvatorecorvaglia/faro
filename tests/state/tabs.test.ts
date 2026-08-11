@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useTabs } from './tabs';
+import { useTabs } from '@/state/tabs';
 
 const reset = () => useTabs.setState({ tabs: [], activeId: null });
 

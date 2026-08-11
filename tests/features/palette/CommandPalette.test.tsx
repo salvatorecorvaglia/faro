@@ -1,8 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-
+import { CommandPalette } from '@/features/palette/CommandPalette';
 import { mockInvoke } from '@/test/ipc';
-import { CommandPalette } from './CommandPalette';
 
 function open(onClose = () => {}) {
   mockInvoke({});

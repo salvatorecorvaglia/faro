@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TableColumns } from '@/ipc/types';
-import { toCompletionSchema } from './schemaCache';
+import { toCompletionSchema } from '@/state/schemaCache';
 
 const t = (name: string, columns: string[], schema: string | null = null): TableColumns => ({
   schema,

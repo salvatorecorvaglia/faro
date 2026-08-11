@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatSql } from './format';
+import { formatSql } from '@/lib/format';
 
 describe('formatSql', () => {
   it('expands a query onto readable lines', () => {

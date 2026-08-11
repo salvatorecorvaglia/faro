@@ -1,10 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-
+import { BackupDialog } from '@/features/backup/BackupDialog';
 import type { TableInfo } from '@/ipc/types';
 import { mockInvoke } from '@/test/ipc';
-import { BackupDialog } from './BackupDialog';
 
 const table = (name: string): TableInfo => ({
   schema: null,

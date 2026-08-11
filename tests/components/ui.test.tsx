@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ErrorBanner, Field, Modal } from './ui';
+import { ErrorBanner, Field, Modal } from '@/components/ui';
 
 describe('Modal', () => {
   it('renders nothing until it is opened', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fuzzyMatch, fuzzyRank, oneLine, relativeTime } from './search';
+import { fuzzyMatch, fuzzyRank, oneLine, relativeTime } from '@/lib/search';
 
 describe('fuzzyMatch', () => {
   it('matches a scattered subsequence', () => {

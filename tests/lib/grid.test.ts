@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ResultSet, Value } from '@/ipc/types';
-import { applyGridOps, compareValues, matchesFilter, nextSort } from './grid';
+import { applyGridOps, compareValues, matchesFilter, nextSort } from '@/lib/grid';
 
 const int = (n: number): Value => ({ kind: 'int', value: n });
 const text = (s: string): Value => ({ kind: 'text', value: s });

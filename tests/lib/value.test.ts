@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ResultSet, Value } from '@/ipc/types';
-import { formatDuration, formatValue, isNumeric, resultToJson, toJson } from './value';
+import { formatDuration, formatValue, isNumeric, resultToJson, toJson } from '@/lib/value';
 
 const text = (s: string): Value => ({ kind: 'text', value: s });
 
