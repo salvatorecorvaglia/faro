@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **App Icon Relocation**: Migrated application icon to `resources/faro.png` for better project structure.
 - **SQLite Foreign Key Introspection**: Refactored schema reflection to correctly group multi-column compound foreign keys.
+- **Test Suite Restructuring**: Relocated frontend unit tests (`*.test.ts`, `*.test.tsx`) into the root `tests/` directory and updated Vitest and TypeScript compilation configurations.
 
 ### Fixed
 - **Decimal Precision on PostgreSQL and MySQL**: `numeric` and `DECIMAL` values are now decoded through `BigDecimal` instead of `rust_decimal`, whose ~28-significant-digit limit silently rounded longer values.

@@ -85,7 +85,7 @@ Faro includes a Docker Compose environment containing pre-configured instances o
 
 ### Running Test Suites
 
-- **Run Frontend Tests (Vitest)**:
+- **Run Frontend Tests (Vitest)** (*located in `tests/`*):
   ```bash
   pnpm test
   ```

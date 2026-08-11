@@ -73,8 +73,8 @@ Make sure you have installed:
 
 - **Stack**: React 19, TypeScript 5.9, Vite 8, Tailwind CSS v4, Zustand 5, TanStack Virtual v3, CodeMirror 6.
 - **TypeScript**: Strict type-checking is enforced (`pnpm typecheck`). Avoid using `any` types; define explicit interfaces or types.
-- **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local. Write unit tests for custom store actions (`src/state/*.test.ts`).
-- **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`. Include component unit tests with `@testing-library/react` (`*.test.tsx`).
+- **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local. Write unit tests for custom store actions (`tests/state/*.test.ts`).
+- **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`. Include component unit tests with `@testing-library/react` under `tests/` (`*.test.tsx`).
 - **Command Palette**: When adding new top-level features or global actions, register corresponding commands in `src/features/palette/CommandPalette.tsx`.
 
 ### Backend Guidelines (Rust)
@@ -113,7 +113,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-dep
 
 ### Frontend Unit Tests
 
-Frontend tests are written with **Vitest** and placed alongside source files (e.g., `*.test.ts`).
+Frontend tests are written with **Vitest** and located in the dedicated `tests/` directory (e.g., `tests/lib/*.test.ts`, `tests/features/*.test.tsx`).
 
 ```bash
 # Run tests once
