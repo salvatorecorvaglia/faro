@@ -453,7 +453,7 @@ pub(super) fn decode_value(row: &PgRow, idx: usize) -> Value {
         // name rather than as a wrong number.
         "NUMERIC" => row
             .try_get::<bigdecimal::BigDecimal, _>(idx)
-            .map(|v| Value::Decimal(v.to_plain_string())),
+            .map(|v| Value::Decimal(v.normalized().to_plain_string())),
         "UUID" => row
             .try_get::<uuid::Uuid, _>(idx)
             .map(|v| Value::Uuid(v.to_string())),
@@ -516,5 +516,11 @@ mod tests {
     fn mixed_case_identifiers_are_quoted() {
         // Unquoted, Postgres would fold "MyTable" to "mytable" and fail.
         assert_eq!(PostgresDialect.quote_ident("MyTable"), r#""MyTable""#);
+    }
+
+    #[test]
+    fn numeric_precision_strips_trailing_zeros() {
+        let dec: bigdecimal::BigDecimal = "12345678901234567890.098765432100".parse().unwrap();
+        assert_eq!(dec.normalized().to_plain_string(), "12345678901234567890.0987654321");
     }
 }

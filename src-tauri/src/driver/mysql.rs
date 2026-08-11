@@ -497,7 +497,7 @@ pub(super) fn decode_value(row: &MySqlRow, idx: usize) -> Value {
         // digits, while MySQL DECIMAL allows 65, so it silently rounded.
         "DECIMAL" | "NEWDECIMAL" => row
             .try_get::<bigdecimal::BigDecimal, _>(idx)
-            .map(|v| Value::Decimal(v.to_plain_string())),
+            .map(|v| Value::Decimal(v.normalized().to_plain_string())),
         "DATE" => row
             .try_get::<chrono::NaiveDate, _>(idx)
             .map(|v| Value::Date(v.to_string())),
