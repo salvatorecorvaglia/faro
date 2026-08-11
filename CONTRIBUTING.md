@@ -73,12 +73,17 @@ Make sure you have installed:
 
 - **Stack**: React 19, TypeScript 5.9, Vite 8, Tailwind CSS v4, Zustand 5, TanStack Virtual v3, CodeMirror 6.
 - **TypeScript**: Strict type-checking is enforced (`pnpm typecheck`). Avoid using `any` types; define explicit interfaces or types.
-- **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local.
-- **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`.
+- **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local. Write unit tests for custom store actions (`src/state/*.test.ts`).
+- **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`. Include component unit tests with `@testing-library/react` (`*.test.tsx`).
+- **Command Palette**: When adding new top-level features or global actions, register corresponding commands in `src/features/palette/CommandPalette.tsx`.
 
 ### Backend Guidelines (Rust)
 
 - **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39, `duckdb` 1, `mongodb` 3, `tiberius` 0.12, `tauri-plugin-updater`.
+- **Security & Validation**:
+  - **Read-Only Mode**: Any new SQL execution paths must respect the strict read-only validator (`src-tauri/src/sql.rs`) when operating under read-only connections.
+  - **Export Sanitization**: Any new export routines (CSV/TSV/delimited) must sanitize potential spreadsheet formula injection characters (`=`, `+`, `-`, `@`, `\t`, `\r`) by escaping them.
+  - **SSL/TLS Drivers**: When adding or updating database drivers, support SSL connection modes and custom CA/client certificate configurations where applicable.
 - **Error Handling**: Use the custom error types in `src-tauri/src/error.rs` powered by `thiserror`. Do not panic (`unwrap()`) in production IPC paths; return structured `Result<T, FaroError>`.
 - **Async & Concurrency**: Avoid blocking execution on the main UI loop or Tokio worker threads. Use `tokio::task::spawn_blocking` for CPU-heavy disk or parsing work if necessary.
 
