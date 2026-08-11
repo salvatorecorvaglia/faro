@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useTabs } from './tabs';
 
@@ -74,5 +74,79 @@ describe('tab store', () => {
     const tabs = useTabs.getState().tabs;
     expect(tabs.find((t) => t.id === a)!.sql).toBe('SELECT 42');
     expect(tabs.find((t) => t.id === b)!.sql).toBe('');
+  });
+});
+
+describe('leaving a tab with staged edits', () => {
+  // App mounts only the active tab, so switching away unmounts TableTab and
+  // takes its `edits` with it. Refresh/sort/filter/paging all confirmed first;
+  // switching and closing did not, and silently destroyed the work.
+
+  beforeEach(() => {
+    useTabs.setState({ tabs: [], activeId: null });
+    vi.unstubAllGlobals();
+  });
+
+  function twoTabs() {
+    const a = useTabs.getState().openQueryTab(null, 'select 1', 'A');
+    const b = useTabs.getState().openQueryTab(null, 'select 2', 'B');
+    useTabs.getState().setActive(a);
+    return { a, b };
+  }
+
+  it('switches freely when nothing is staged', () => {
+    const { a, b } = twoTabs();
+    expect(useTabs.getState().activeId).toBe(a);
+    useTabs.getState().setActive(b);
+    expect(useTabs.getState().activeId).toBe(b);
+  });
+
+  it('asks before switching away from a dirty tab', () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    const { a, b } = twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+    useTabs.getState().setActive(b);
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(useTabs.getState().activeId).toBe(b);
+  });
+
+  it('stays put when the user declines', () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
+
+    const { a, b } = twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+    useTabs.getState().setActive(b);
+
+    expect(useTabs.getState().activeId).toBe(a);
+  });
+
+  it('asks before closing a dirty tab and keeps it when declined', () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
+
+    const { a } = twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+    useTabs.getState().closeTab(a);
+
+    expect(useTabs.getState().tabs.map((t) => t.id)).toContain(a);
+  });
+
+  it('does not prompt when re-selecting the tab already active', () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    const { a } = twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+    useTabs.getState().setActive(a);
+
+    expect(confirm).not.toHaveBeenCalled();
   });
 });

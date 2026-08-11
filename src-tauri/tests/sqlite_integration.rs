@@ -544,3 +544,75 @@ async fn syntax_errors_surface_the_engine_message() {
     let msg = err.to_string().to_lowercase();
     assert!(msg.contains("syntax"), "unhelpful error: {err}");
 }
+
+#[tokio::test]
+async fn a_query_matching_no_rows_still_reports_its_columns() {
+    // Column metadata used to be harvested only from the first row, so an
+    // empty result arrived with no columns and the grid rendered nothing —
+    // indistinguishable from a broken query rather than "no rows matched".
+    let d = driver_or_skip!();
+
+    let rs = d
+        .query(
+            "SELECT id, name FROM authors WHERE 1 = 0",
+            100,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(rs.rows.is_empty(), "fixture should match nothing");
+    let names: Vec<&str> = rs.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "name"], "empty result lost its headers");
+
+    d.close().await;
+}
+
+#[tokio::test]
+async fn insert_returning_gives_back_its_rows() {
+    // `INSERT … RETURNING` used to classify as non-row-returning on its leading
+    // keyword, route to `execute`, and report "1 row affected" while silently
+    // discarding the row the user asked for.
+    let d = driver_or_skip!();
+
+    d.execute(
+        "CREATE TEMP TABLE returning_probe (id INTEGER PRIMARY KEY, label TEXT)",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    let outcome = d
+        .run(
+            "INSERT INTO returning_probe (label) VALUES ('x') RETURNING id, label",
+            100,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    match outcome {
+        faro_lib::model::QueryOutcome::Rows(rs) => {
+            assert_eq!(rs.rows.len(), 1, "RETURNING produced no rows");
+            let names: Vec<&str> = rs.columns.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, ["id", "label"]);
+        }
+        other => panic!("RETURNING was routed to execute and its rows dropped: {other:?}"),
+    }
+
+    // A plain INSERT must still be reported as an affected-row count.
+    let plain = d
+        .run(
+            "INSERT INTO returning_probe (label) VALUES ('y')",
+            100,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(plain, faro_lib::model::QueryOutcome::Affected(_)),
+        "a plain INSERT should report a row count, got {plain:?}"
+    );
+
+    d.close().await;
+}

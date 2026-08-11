@@ -7,6 +7,17 @@
 @theme {
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  /*
+   * Type scale. Faro's UI sits a step below the browser default, and before
+   * these existed the components reached for arbitrary values — seven distinct
+   * hardcoded sizes between 10px and 13px, with no rule about which to use.
+   * Named steps so a size is a choice from a scale, not a guess.
+   */
+  --text-2xs: 0.625rem; /* 10px — badges, counts */
+  --text-xs: 0.6875rem; /* 11px — secondary and hint text */
+  --text-sm: 0.75rem; /* 12px — the default UI size */
+  --text-base: 0.8125rem; /* 13px — titles and the editor */
 }
 
 :root {
@@ -34,6 +45,20 @@
   --syntax-function: #2f6feb;
   --syntax-type: #0d7377;
   --syntax-operator: #646c7a;
+
+  /*
+   * Elevation and scrim. Previously every raised surface invented its own
+   * shadow inline, so the palette and the autocomplete popup did not match.
+   * `--on-accent` is the foreground for anything sitting on `--accent`; it was
+   * a hardcoded #fff in two places, which is wrong the moment the accent
+   * changes.
+   */
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 0.18);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.28);
+  --scrim: rgb(0 0 0 / 0.4);
+  --on-accent: #ffffff;
+  --on-accent-muted: rgb(255 255 255 / 0.85);
+  --on-accent-faint: rgb(255 255 255 / 0.7);
 }
 
 :root.dark {
@@ -61,6 +86,15 @@
   --syntax-function: #6cb6ff;
   --syntax-type: #4fd1c5;
   --syntax-operator: #949cab;
+
+  /* Deeper shadows and a heavier scrim: on a dark surface a soft shadow
+     disappears, so elevation has to be carried by contrast instead. */
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 0.5);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.6);
+  --scrim: rgb(0 0 0 / 0.6);
+  --on-accent: #ffffff;
+  --on-accent-muted: rgb(255 255 255 / 0.85);
+  --on-accent-faint: rgb(255 255 255 / 0.7);
 }
 
 * {
@@ -172,4 +206,14 @@ textarea,
   .panel {
     background: var(--bg-subtle);
   }
+}
+
+/*
+ * Dialog scrim. Both `Modal` and the command palette are native <dialog>
+ * elements, so the overlay is the platform's ::backdrop rather than a
+ * hand-rolled fixed div — which is what lets the browser handle the top layer
+ * and inert the page behind.
+ */
+dialog::backdrop {
+  background: var(--scrim);
 }

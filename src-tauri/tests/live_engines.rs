@@ -992,6 +992,13 @@ async fn mysql_keeps_unsigned_bigint_exact() {
     d.close().await;
 }
 
+/// The fixture value, exactly as seeded into a 30-digit decimal column.
+///
+/// 30 significant digits, which is past `rust_decimal`'s ~28. Asserting the
+/// whole string is the point: the previous `starts_with` on a truncated prefix
+/// passed just as happily against the rounded value.
+const EXACT_DECIMAL: &str = "12345678901234567890.0987654321";
+
 #[tokio::test]
 async fn mysql_keeps_decimal_precision() {
     let d = engine_or_skip!(Engine::MySql, 53306, "faro_test");
@@ -1002,10 +1009,23 @@ async fn mysql_keeps_decimal_precision() {
     )
     .await
     {
-        Value::Decimal(s) => assert!(
-            s.starts_with("12345678901234567890.09876543"),
-            "precision lost: {s}"
-        ),
+        Value::Decimal(s) => assert_eq!(s, EXACT_DECIMAL, "precision lost"),
+        other => panic!("expected a decimal, got {other:?}"),
+    }
+    d.close().await;
+}
+
+#[tokio::test]
+async fn postgres_keeps_numeric_precision() {
+    let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
+
+    match scalar(
+        &*d,
+        "SELECT a_numeric FROM type_gallery WHERE a_numeric IS NOT NULL",
+    )
+    .await
+    {
+        Value::Decimal(s) => assert_eq!(s, EXACT_DECIMAL, "precision lost"),
         other => panic!("expected a decimal, got {other:?}"),
     }
     d.close().await;
@@ -1069,5 +1089,237 @@ async fn mysql_native_ddl_is_used_for_backup() {
         .expect("MySQL should expose its own DDL");
     assert!(ddl.to_uppercase().contains("AUTO_INCREMENT"), "{ddl}");
     assert!(ddl.ends_with(';'), "{ddl}");
+    d.close().await;
+}
+
+// -- Backslash escaping in string literals --------------------------------
+//
+// MySQL, MariaDB and ClickHouse honour `\` as an escape inside `'...'`, so
+// doubling only the quote lets a value ending in a backslash escape its own
+// closing delimiter and spill the rest of the statement into SQL. These run
+// the generated SQL against the real server: asserting on the generated string
+// alone would not prove the engine agrees with our reading of its grammar.
+
+/// Two ANDed filters where the first ends in a backslash. If the backslash is
+/// not escaped, it swallows the `' AND ...` that follows and the second value
+/// is parsed as SQL rather than compared as data.
+async fn assert_backslash_is_data_not_syntax(d: &dyn Driver, schema: Option<&str>, label: &str) {
+    let table = TableRef {
+        schema: schema.map(String::from),
+        name: "authors".into(),
+    };
+
+    for payload in [r"\", r"x\", r"a\'; SELECT 1; -- "] {
+        let out = d
+            .browse(
+                &table,
+                &BrowseOptions {
+                    sort_column: None,
+                    sort_desc: false,
+                    filters: vec![
+                        faro_lib::model::ColumnFilter {
+                            column: "name".into(),
+                            op: faro_lib::model::FilterOp::Equals,
+                            value: payload.into(),
+                        },
+                        faro_lib::model::ColumnFilter {
+                            column: "email".into(),
+                            op: faro_lib::model::FilterOp::Equals,
+                            value: "' OR 1=1 -- ".into(),
+                        },
+                    ],
+                    limit: Some(50),
+                    offset: 0,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{label}: filter {payload:?} produced invalid SQL, so it was not escaped: {e}"
+                )
+            });
+
+        // No fixture row holds these values, so a correctly escaped filter
+        // matches nothing. Rows coming back means `OR 1=1` was executed.
+        assert!(
+            out.rows.is_empty(),
+            "{label}: filter {payload:?} let injected SQL run — got {} rows",
+            out.rows.len()
+        );
+    }
+
+    // The LIKE path has its own escape clause, which is a second literal.
+    for op in [
+        faro_lib::model::FilterOp::Contains,
+        faro_lib::model::FilterOp::StartsWith,
+    ] {
+        d.browse(
+            &table,
+            &BrowseOptions {
+                sort_column: None,
+                sort_desc: false,
+                filters: vec![faro_lib::model::ColumnFilter {
+                    column: "name".into(),
+                    op,
+                    value: r"c:\tmp".into(),
+                }],
+                limit: Some(50),
+                offset: 0,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{label}: {op:?} with a backslash produced invalid SQL: {e}"));
+    }
+}
+
+#[tokio::test]
+async fn mysql_escapes_backslashes_in_literals() {
+    let d = engine_or_skip!(Engine::MySql, 53306, "faro_test");
+    assert_backslash_is_data_not_syntax(&*d, None, "mysql").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn mariadb_escapes_backslashes_in_literals() {
+    let d = engine_or_skip!(Engine::MariaDb, 53307, "faro_test");
+    assert_backslash_is_data_not_syntax(&*d, None, "mariadb").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn clickhouse_escapes_backslashes_in_literals() {
+    let d = engine_or_skip!(Engine::ClickHouse, 58123, "faro_test");
+    assert_backslash_is_data_not_syntax(&*d, Some("faro_test"), "clickhouse").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn postgres_keeps_backslashes_as_data() {
+    // The mirror image: Postgres must *not* double the backslash, or the
+    // stored value would come back with an extra one.
+    let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
+    assert_backslash_is_data_not_syntax(&*d, Some("public"), "postgres").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn sqlserver_keeps_the_offset_on_datetimeoffset() {
+    // `datetimeoffset` decodes only into `DateTime<FixedOffset>`; routed
+    // through `NaiveDateTime` it failed and became a silent NULL, which is
+    // indistinguishable from the column actually being NULL.
+    let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
+
+    match scalar(
+        &*d,
+        "SELECT a_datetimeoff FROM type_gallery WHERE a_datetimeoff IS NOT NULL",
+    )
+    .await
+    {
+        Value::Timestamp(s) => {
+            assert!(
+                s.contains('+') || s.contains('Z') || s.matches('-').count() > 2,
+                "the UTC offset was dropped: {s}"
+            );
+        }
+        Value::Null => panic!("datetimeoffset decoded to a silent NULL"),
+        other => panic!("expected a timestamp, got {other:?}"),
+    }
+    d.close().await;
+}
+
+#[tokio::test]
+async fn mysql_dump_restores_into_an_empty_database() {
+    // The existing round-trip restores over the live schema and asserts the
+    // dump *fails*. This proves the dump is actually restorable: MySQL's
+    // `SHOW CREATE TABLE` declares secondary indexes inline, so a dump that
+    // also emits `CREATE INDEX` dies on "Duplicate key name".
+    let d = engine_or_skip!(Engine::MySql, 53306, "faro_test");
+
+    let dir = std::env::temp_dir().join(format!("faro_mysql_dump_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dump = dir.join("dump.sql");
+
+    // `books` is the table carrying a non-unique secondary index.
+    backup::write_backup(
+        &*d,
+        &dump,
+        &BackupOptions {
+            tables: vec![TableRef {
+                schema: None,
+                name: "books".into(),
+            }],
+            include_schema: true,
+            include_data: false,
+            drop_existing: false,
+        },
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    let script = std::fs::read_to_string(&dump).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // One CREATE INDEX per index would be the bug; the inline KEY is the fix.
+    let create_index_count = script.to_uppercase().matches("CREATE INDEX").count();
+    assert_eq!(
+        create_index_count, 0,
+        "indexes are already inline in SHOW CREATE TABLE, so re-emitting them \
+         breaks the restore:\n{script}"
+    );
+
+    d.close().await;
+}
+
+#[tokio::test]
+async fn a_keyless_table_pages_in_a_stable_order() {
+    // `access_log` has no primary key. Without a deterministic ORDER BY the
+    // engine may return rows in a different order per page, so a paged read
+    // both duplicates and drops rows.
+    let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
+
+    let table = TableRef {
+        schema: Some("public".into()),
+        name: "access_log".into(),
+    };
+    let detail = d.describe_table(&table).await.unwrap();
+    assert!(
+        detail.primary_key.is_empty(),
+        "fixture must be keyless for this test to mean anything"
+    );
+
+    // Walk it in small pages twice and check we get the same partition.
+    let mut collected = Vec::new();
+    for offset in [0u64, 50, 100] {
+        let page = d
+            .browse(
+                &table,
+                &BrowseOptions {
+                    sort_column: None,
+                    sort_desc: false,
+                    filters: vec![],
+                    limit: Some(50),
+                    offset,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        collected.extend(page.rows);
+    }
+
+    // Every row must be distinct: a duplicate means a page boundary resampled.
+    let mut seen = std::collections::HashSet::new();
+    for row in &collected {
+        let key = format!("{row:?}");
+        assert!(
+            seen.insert(key),
+            "the same row came back on two pages — paging is not a partition"
+        );
+    }
+    assert_eq!(collected.len(), 150, "expected three full pages");
+
     d.close().await;
 }

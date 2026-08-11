@@ -197,28 +197,39 @@ impl Driver for SqliteDriver {
             .await?;
 
         // SQLite reports one row per column of a composite FK, sharing an id.
+        //
+        // Grouped by id, not by position: SQLite numbers foreign keys in
+        // reverse order of declaration, so the ids arrive descending and are
+        // not indices into this list. Using `fks[id]` merged a composite key's
+        // columns into whichever constraint happened to sit at that index —
+        // the same reason the MySQL and SQL Server drivers group by name.
         let mut fks: Vec<ForeignKey> = Vec::new();
+        let mut index_of: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
         for r in &fk_rows {
             let id: i32 = r.get("id");
             let from: String = r.get("from");
             let to: Option<String> = r.get("to");
             let ref_table: String = r.get("table");
-            match fks.get_mut(id as usize) {
-                Some(fk) => {
+            match index_of.get(&id) {
+                Some(&position) => {
+                    let fk: &mut ForeignKey = &mut fks[position];
                     fk.columns.push(from);
                     if let Some(t) = to {
                         fk.referenced_columns.push(t);
                     }
                 }
-                None => fks.push(ForeignKey {
-                    name: format!("fk_{}_{}", table.name, id),
-                    columns: vec![from],
-                    referenced_table: TableRef {
-                        schema: None,
-                        name: ref_table,
-                    },
-                    referenced_columns: to.into_iter().collect(),
-                }),
+                None => {
+                    index_of.insert(id, fks.len());
+                    fks.push(ForeignKey {
+                        name: format!("fk_{}_{}", table.name, id),
+                        columns: vec![from],
+                        referenced_table: TableRef {
+                            schema: None,
+                            name: ref_table,
+                        },
+                        referenced_columns: to.into_iter().collect(),
+                    });
+                }
             }
         }
 

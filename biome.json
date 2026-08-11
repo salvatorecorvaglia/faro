@@ -33,16 +33,17 @@
         "noNonNullAssertion": "off"
       },
       "a11y": {
-        "useButtonType": "off",
+        "useButtonType": "error",
+        "noAutofocus": "error",
+        "noLabelWithoutControl": "error",
+        "noNoninteractiveTabindex": "error",
+        "useAriaPropsSupportedByRole": "error",
+        "useAriaPropsForRole": "error",
         "noStaticElementInteractions": "off",
         "useSemanticElements": "off",
         "useFocusableInteractive": "off",
         "useKeyWithClickEvents": "off",
-        "noAutofocus": "off",
-        "useAriaPropsSupportedByRole": "off",
-        "noLabelWithoutControl": "off",
-        "useAriaPropsForRole": "off",
-        "noNoninteractiveTabindex": "off"
+        "noNoninteractiveElementInteractions": "off"
       },
       "correctness": {
         "noUnusedVariables": "warn",

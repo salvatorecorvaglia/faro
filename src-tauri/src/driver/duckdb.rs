@@ -177,6 +177,24 @@ impl DuckDbDriver {
     }
 }
 
+/// Roll the transaction back, preserving `cause` as the error the user sees.
+///
+/// A failing rollback is reported alongside the original cause rather than
+/// discarded with `let _ =`: it means the connection still has an open
+/// transaction, and since DuckDB runs everything through one mutex-guarded
+/// connection, every later statement inherits it. The SQL Server driver
+/// already did this; the two implementations had drifted apart.
+fn rollback(c: &duckdb::Connection, cause: FaroError) -> FaroError {
+    match c.execute_batch("ROLLBACK") {
+        Ok(()) => cause,
+        Err(e) => FaroError::Other(format!(
+            "{cause}\n\nThe rollback then failed too ({e}). \
+             This connection may still hold an open transaction — \
+             disconnect and reconnect before making further changes."
+        )),
+    }
+}
+
 fn map_err(e: duckdb::Error) -> FaroError {
     FaroError::Database {
         message: e.to_string(),
@@ -367,7 +385,8 @@ impl Driver for DuckDbDriver {
         // cannot be a derived table — `PRAGMA`, `DESCRIBE`, `SHOW`, `EXPLAIN` —
         // are run as written; the row cap still applies as they are decoded.
         let sql = if super::is_wrappable(sql) {
-            self.dialect.paginate(sql, limit + 1, 0)
+            self.dialect
+                .paginate(sql, crate::driver::probe_limit(limit), 0)
         } else {
             sql.to_string()
         };
@@ -381,14 +400,26 @@ impl Driver for DuckDbDriver {
         let owned = sql.to_string();
         self.with_conn(move |c| {
             let started = Instant::now();
-            // `execute` reports affected rows; statements it rejects as
-            // multi-statement fall back to execute_batch, which reports none.
+            // `execute` reports affected rows; a script it rejects as
+            // multi-statement falls back to execute_batch, which reports none.
+            //
+            // Only `MultipleStatement` retries. The blanket `Err(_)` here also
+            // caught `ExecuteReturnedResults`, which DuckDB raises *after* the
+            // statement has run — so an `INSERT … RETURNING` was executed, then
+            // executed a second time by `execute_batch`, inserting twice. Any
+            // other error is the user's to see, not something to re-run.
             let affected = match c.execute(&owned, []) {
                 Ok(n) => n as u64,
-                Err(_) => {
+                Err(duckdb::Error::MultipleStatement) => {
                     c.execute_batch(&owned).map_err(map_err)?;
                     0
                 }
+                // The statement already ran and produced rows; `run` routes
+                // row-returning SQL to `query`, so reaching here means the
+                // caller wanted only a count. Reporting zero is honest, and
+                // re-running it would not be.
+                Err(duckdb::Error::ExecuteReturnedResults) => 0,
+                Err(e) => return Err(map_err(e)),
             };
             Ok(ExecResult {
                 rows_affected: affected,
@@ -412,10 +443,7 @@ impl Driver for DuckDbDriver {
             for (index, stmt) in owned.iter().enumerate() {
                 let affected = match c.execute(&stmt.sql, []) {
                     Ok(n) => n as u64,
-                    Err(e) => {
-                        let _ = c.execute_batch("ROLLBACK");
-                        return Err(map_err(e));
-                    }
+                    Err(e) => return Err(rollback(c, map_err(e))),
                 };
 
                 if let Some(expected) = stmt.expect {
@@ -423,19 +451,18 @@ impl Driver for DuckDbDriver {
                         // Same safety net as the sqlx drivers: a statement that
                         // touched the wrong number of rows aborts the batch
                         // rather than half-applying it.
-                        let _ = c.execute_batch("ROLLBACK");
-                        return Err(super::tx::guard_error(
-                            index,
-                            owned.len(),
-                            expected,
-                            affected,
-                        ));
+                        let guard = super::tx::guard_error(index, owned.len(), expected, affected);
+                        return Err(rollback(c, guard));
                     }
                 }
                 total += affected;
             }
 
-            c.execute_batch("COMMIT").map_err(map_err)?;
+            // A failing COMMIT leaves the transaction open, so it gets the same
+            // treatment as any other failure rather than returning bare.
+            if let Err(e) = c.execute_batch("COMMIT") {
+                return Err(rollback(c, map_err(e)));
+            }
             Ok(total)
         })
         .await

@@ -49,7 +49,17 @@ impl Registry {
         };
         // Replacing an entry drops the old pool; close it first so its sockets
         // are released rather than left to the Drop impl at an unknown time.
-        if let Some(old) = self.drivers.write().await.insert(connection_id, entry) {
+        //
+        // The guard is bound and dropped before the await. Written as
+        // `if let Some(old) = self.drivers.write().await.insert(..)`, the
+        // temporary guard lives to the end of the `if let` block under edition
+        // 2021 scoping, so the write lock was held across `close()` — which
+        // waits for pool shutdown, blocking every other command meanwhile.
+        let replaced = {
+            let mut drivers = self.drivers.write().await;
+            drivers.insert(connection_id, entry)
+        };
+        if let Some(old) = replaced {
             old.driver.close().await;
         }
     }
@@ -101,11 +111,17 @@ impl Registry {
     pub async fn remove(&self, connection_id: &str) {
         // Cancel first: a query holding a pool slot would otherwise delay close.
         self.cancel_for_connection(connection_id).await;
-        if let Some(open) = self.drivers.write().await.remove(connection_id) {
+        // Guard dropped before the await; see the note in `insert`.
+        let removed = {
+            let mut drivers = self.drivers.write().await;
+            drivers.remove(connection_id)
+        };
+        if let Some(open) = removed {
             open.driver.close().await;
         }
     }
 
+    /// Close every open connection. Called on app exit.
     pub async fn close_all(&self) {
         let ids: Vec<String> = self.drivers.read().await.keys().cloned().collect();
         for id in ids {

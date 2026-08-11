@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { SavedQuery } from '@/ipc/types';
-import { folderNames, groupByFolder } from './library';
+import { faroError, mockInvoke } from '@/test/ipc';
+import { folderNames, groupByFolder, useLibrary } from './library';
 
 const q = (name: string, folder: string | null): SavedQuery => ({
   id: name,
@@ -49,5 +50,48 @@ describe('folderNames', () => {
 
   it('is empty when nothing is foldered', () => {
     expect(folderNames([q('a', null)])).toEqual([]);
+  });
+});
+
+describe('library write failures are surfaced', () => {
+  // These used to `await` with no catch at call sites that also had none, so a
+  // failure became an unhandled rejection and the user saw nothing.
+
+  beforeEach(() => {
+    useLibrary.setState({ error: null, saved: [], history: [] });
+  });
+
+  it('records a failed delete of a saved query', async () => {
+    mockInvoke({ delete_saved_query: faroError('store', 'could not delete') });
+    await expect(useLibrary.getState().remove('q1')).resolves.toBeUndefined();
+    expect(useLibrary.getState().error).toBe('could not delete');
+  });
+
+  it('records a failed history wipe', async () => {
+    mockInvoke({ clear_history: faroError('store', 'history is locked') });
+    await expect(useLibrary.getState().clearHistory()).resolves.toBeUndefined();
+    expect(useLibrary.getState().error).toBe('history is locked');
+  });
+
+  it('records a failed single history delete and keeps the row', async () => {
+    useLibrary.setState({ history: [{ id: 1 } as never] });
+    mockInvoke({ delete_history_entry: faroError('store', 'nope') });
+
+    await expect(useLibrary.getState().deleteHistoryEntry(1)).resolves.toBeUndefined();
+
+    expect(useLibrary.getState().error).toBe('nope');
+    expect(useLibrary.getState().history).toHaveLength(1);
+  });
+
+  it('rethrows a failed save so the dialog stays open', async () => {
+    mockInvoke({ save_query: faroError('store', 'disk full') });
+    await expect(useLibrary.getState().save({ id: '', name: 'x' } as never)).rejects.toBeDefined();
+    expect(useLibrary.getState().error).toBe('disk full');
+  });
+
+  it('leaves reads silent — the library is an accessory to the editor', async () => {
+    mockInvoke({ list_saved_queries: faroError('store', 'unreadable') });
+    await expect(useLibrary.getState().refreshSaved()).resolves.toBeUndefined();
+    expect(useLibrary.getState().error).toBeNull();
   });
 });

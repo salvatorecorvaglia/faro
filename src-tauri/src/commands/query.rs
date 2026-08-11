@@ -5,10 +5,6 @@ use crate::error::Result;
 use crate::model::{NewHistoryEntry, QueryOutcome};
 use crate::sql;
 
-/// Default page size. Large enough that most results arrive whole, small enough
-/// that a stray `SELECT *` on a huge table cannot lock up the UI.
-const DEFAULT_LIMIT: u64 = 1000;
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementResult {
@@ -43,19 +39,22 @@ pub async fn run_query(
     limit: Option<u64>,
 ) -> Result<RunResult> {
     let driver = state.registry.get(&connection_id).await?;
-    let limit = limit.unwrap_or(DEFAULT_LIMIT);
+    // Clamped, not trusted: the limit comes from the frontend and feeds both
+    // the row cap and the `limit + 1` truncation probe.
+    let limit = crate::driver::clamp_limit(limit);
     let statements = sql::split_statements(&sql_text);
 
     // A read-only connection runs reads and nothing else.
     //
     // The whole script is checked before any of it runs: refusing halfway would
     // leave the earlier statements applied, which is exactly the outcome the
-    // setting exists to prevent. Classification is by leading keyword, the same
-    // guess `Driver::run` uses to route a statement — imprecise at the edges
-    // (`SELECT ... INTO` writes), which is why the engines that can enforce
-    // read-only themselves are also told to.
-    if state.registry.is_read_only(&connection_id).await {
-        if let Some(write) = statements.iter().find(|s| !crate::driver::returns_rows(s)) {
+    // setting exists to prevent.
+    //
+    // Skipped for engines whose query language is not SQL: MongoDB queries are
+    // documents, a leading-keyword test means nothing against them, and the
+    // Mongo driver already refuses every write form it does not recognise.
+    if driver.dialect().is_sql() && state.registry.is_read_only(&connection_id).await {
+        if let Some(write) = statements.iter().find(|s| !sql::is_read_only_statement(s)) {
             let name = state
                 .store
                 .get_connection(&connection_id)
@@ -159,6 +158,9 @@ pub async fn cancel_query(
 }
 
 /// Extract the statement under the cursor, so the UI can show what will run.
+///
+/// `offset` is a UTF-16 code unit index — a CodeMirror document position,
+/// passed through unconverted. See [`sql::statement_at`].
 #[tauri::command]
 pub fn statement_at_cursor(sql_text: String, offset: usize) -> Option<String> {
     sql::statement_at(&sql_text, offset)

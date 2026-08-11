@@ -89,13 +89,37 @@ impl Engine {
     }
 }
 
+/// How much TLS a connection asks for.
+///
+/// `Require` encrypts but does **not** authenticate the server: it accepts any
+/// certificate, including one an attacker presents. That is the right default
+/// for the self-signed certificates every local container ships with, and the
+/// wrong one for anything over a network you do not control — which is why
+/// `VerifyFull` exists and is what a production connection should use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum SslMode {
     Disable,
     #[default]
     Prefer,
+    /// Encrypt, accepting any certificate.
     Require,
+    /// Encrypt and check the certificate chain, but not the hostname.
+    VerifyCa,
+    /// Encrypt and check both the chain and the hostname.
+    VerifyFull,
+}
+
+impl SslMode {
+    /// Whether the server's certificate has to be validated.
+    pub fn verifies_certificate(self) -> bool {
+        matches!(self, SslMode::VerifyCa | SslMode::VerifyFull)
+    }
+
+    /// Whether the connection must be encrypted at all.
+    pub fn requires_tls(self) -> bool {
+        !matches!(self, SslMode::Disable | SslMode::Prefer)
+    }
 }
 
 /// A saved connection, minus its password.

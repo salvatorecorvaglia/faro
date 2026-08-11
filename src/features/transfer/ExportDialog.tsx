@@ -38,6 +38,7 @@ export function ExportDialog({
 }) {
   const [format, setFormat] = useState<ExportFormat>('csv');
   const [includeHeader, setIncludeHeader] = useState(true);
+  const [sanitizeFormulas, setSanitizeFormulas] = useState(true);
   const [wholeTable, setWholeTable] = useState(!!table);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +59,12 @@ export function ExportDialog({
       if (!path) return;
 
       setBusy(true);
-      const options = { format, includeHeader, tableName: table?.name ?? null };
+      const options = {
+        format,
+        includeHeader,
+        tableName: table?.name ?? null,
+        sanitizeFormulas,
+      };
       const outcome =
         wholeTable && canExportTable
           ? await ipc.exportTable(connectionId!, table!, path, options)
@@ -127,6 +133,23 @@ export function ExportDialog({
               onChange={(e) => setIncludeHeader(e.target.checked)}
             />
             Include a header row
+          </label>
+        )}
+
+        {(format === 'csv' || format === 'tsv') && (
+          <label className="flex items-start gap-2 text-[12px]">
+            <input
+              type="checkbox"
+              checked={sanitizeFormulas}
+              onChange={(e) => setSanitizeFormulas(e.target.checked)}
+            />
+            <span>
+              Escape spreadsheet formulas
+              <span className="block text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                Prefixes cells starting with = + - @ so Excel shows them as text instead of running
+                them. Turn off only when feeding the file to another program.
+              </span>
+            </span>
           </label>
         )}
 

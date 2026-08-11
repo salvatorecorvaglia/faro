@@ -27,6 +27,9 @@ import { type Tab, useTabs } from '@/state/tabs';
 let browseCounter = 0;
 const PAGE_SIZE = 1000;
 
+/** Matches the history search debounce, so filtering feels the same. */
+const FILTER_DEBOUNCE_MS = 200;
+
 /**
  * Why a table cannot be edited.
  *
@@ -90,6 +93,13 @@ export function TableTab({ tab }: { tab: Tab }) {
   const editable =
     !connectionReadOnly && (detail?.primaryKey.length ? detail.kind === 'table' : false);
   const dirty = hasChanges(edits);
+
+  // Mirror the dirty flag into the store. Only the store is around when the
+  // tab is switched away from or closed — this component is unmounted by then,
+  // taking `edits` with it — so it is what has to know there is work to lose.
+  useEffect(() => {
+    update(tab.id, { dirty });
+  }, [dirty, tab.id, update]);
 
   const load = useCallback(
     async (nextOffset: number, nextSort: SortState | null, nextFilters: GridFilter[]) => {
@@ -155,12 +165,23 @@ export function TableTab({ tab }: { tab: Tab }) {
     [guardUnsaved, load, filters],
   );
 
+  // Filter text arrives a character at a time. Applying it immediately meant
+  // one `browse_table` round trip per keystroke — and, when the grid was dirty,
+  // a blocking `confirm()` per keystroke too. The input stays responsive
+  // because the filter state updates at once; only the query is deferred.
+  //
+  // The same 200ms the history search uses, so the two feel alike.
+  const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => clearTimeout(filterTimer.current ?? undefined), []);
+
   const onFiltersChange = useCallback(
-    (next: GridFilter[]) =>
-      guardUnsaved(() => {
-        setFilters(next);
-        load(0, sort, next);
-      }),
+    (next: GridFilter[]) => {
+      setFilters(next);
+      clearTimeout(filterTimer.current ?? undefined);
+      filterTimer.current = setTimeout(() => {
+        guardUnsaved(() => load(0, sort, next));
+      }, FILTER_DEBOUNCE_MS);
+    },
     [guardUnsaved, load, sort],
   );
 
@@ -222,6 +243,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         )}
 
         <button
+          type="button"
           className="btn btn-ghost px-1.5"
           onClick={() => guardUnsaved(() => load(offset, sort, filters))}
           disabled={tab.running}
@@ -232,6 +254,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
         {editable && detail && (
           <button
+            type="button"
             className="btn btn-ghost"
             onClick={() => setEdits((e) => addRow(e, detail.columns))}
             title="Add a row"
@@ -241,6 +264,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         )}
 
         <button
+          type="button"
           className="btn btn-ghost"
           onClick={() => setExportOpen(true)}
           disabled={!tab.browseResult}
@@ -251,6 +275,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
         {editable && (
           <button
+            type="button"
             className="btn btn-ghost"
             onClick={() => setImportOpen(true)}
             title="Import a file into this table"
@@ -263,6 +288,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
         <div className="flex items-center gap-1.5">
           <button
+            type="button"
             className="btn btn-outline py-1"
             onClick={() => guardUnsaved(() => load(Math.max(0, offset - PAGE_SIZE), sort, filters))}
             disabled={offset === 0 || tab.running}
@@ -273,6 +299,7 @@ export function TableTab({ tab }: { tab: Tab }) {
             {offset + 1}–{offset + (tab.browseResult?.rows.length ?? 0)}
           </span>
           <button
+            type="button"
             className="btn btn-outline py-1"
             onClick={() => guardUnsaved(() => load(offset + PAGE_SIZE, sort, filters))}
             disabled={!hasMore || tab.running}

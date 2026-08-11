@@ -51,8 +51,17 @@ impl Store {
         }
     }
 
+    /// Take the connection lock, recovering from poisoning rather than
+    /// panicking.
+    ///
+    /// A poisoned mutex means some earlier caller panicked while holding it.
+    /// The `Connection` itself is still usable — rusqlite does not leave a
+    /// half-written statement behind — so the only thing poisoning would
+    /// achieve here is turning one panic into a permanently unusable settings
+    /// database. Worse, with `panic = "abort"` in release the `expect()` this
+    /// replaces would take the whole app down rather than surfacing an error.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("store mutex poisoned")
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Versioned migrations via `user_version`, so later phases can add tables
@@ -134,10 +143,17 @@ impl Store {
              FROM connections ORDER BY sort_order, name",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok(ConnectionConfig {
+            Ok(Some(ConnectionConfig {
                 id: r.get("id")?,
                 name: r.get("name")?,
-                engine: parse_engine(&r.get::<_, String>("engine")?),
+                engine: match parse_engine(&r.get::<_, String>("engine")?) {
+                    Some(e) => e,
+                    // Unknown engine: most likely a row written by a newer
+                    // build. Dropped from the list rather than guessed at,
+                    // because guessing means opening a connection with the
+                    // wrong wire protocol against the wrong port.
+                    None => return Ok(None),
+                },
                 host: r.get("host")?,
                 port: r.get::<_, i64>("port")? as u16,
                 username: r.get("username")?,
@@ -146,9 +162,13 @@ impl Store {
                 ssl_mode: parse_ssl(&r.get::<_, String>("ssl_mode")?),
                 color: r.get("color")?,
                 read_only: r.get::<_, i64>("read_only")? != 0,
-            })
+            }))
         })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        Ok(rows
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect())
     }
 
     pub fn get_connection(&self, id: &str) -> Result<Option<ConnectionConfig>> {
@@ -377,10 +397,17 @@ fn engine_str(e: Engine) -> &'static str {
     }
 }
 
-/// Unknown strings fall back to Postgres rather than failing the whole list:
-/// one unreadable row should not hide every other saved connection.
-fn parse_engine(s: &str) -> Engine {
-    match s {
+/// `None` for an engine name this build does not know.
+///
+/// Previously unknown strings became `Postgres`, on the reasoning that one
+/// unreadable row should not hide every other saved connection. The first half
+/// of that is right and is still honoured — the caller skips the row and keeps
+/// the rest — but the fallback was not: a connection saved as `mongodb` by a
+/// newer build would come back as Postgres and then try to speak the Postgres
+/// wire protocol to a MongoDB port.
+fn parse_engine(s: &str) -> Option<Engine> {
+    Some(match s {
+        "postgres" => Engine::Postgres,
         "mysql" => Engine::MySql,
         "mariadb" => Engine::MariaDb,
         "sqlite" => Engine::Sqlite,
@@ -390,8 +417,8 @@ fn parse_engine(s: &str) -> Engine {
         "cockroachdb" => Engine::CockroachDb,
         "redshift" => Engine::Redshift,
         "mongodb" => Engine::MongoDb,
-        _ => Engine::Postgres,
-    }
+        _ => return None,
+    })
 }
 
 fn ssl_str(m: SslMode) -> &'static str {
@@ -399,6 +426,8 @@ fn ssl_str(m: SslMode) -> &'static str {
         SslMode::Disable => "disable",
         SslMode::Prefer => "prefer",
         SslMode::Require => "require",
+        SslMode::VerifyCa => "verify-ca",
+        SslMode::VerifyFull => "verify-full",
     }
 }
 
@@ -406,6 +435,8 @@ fn parse_ssl(s: &str) -> SslMode {
     match s {
         "disable" => SslMode::Disable,
         "require" => SslMode::Require,
+        "verify-ca" => SslMode::VerifyCa,
+        "verify-full" => SslMode::VerifyFull,
         _ => SslMode::Prefer,
     }
 }
@@ -823,5 +854,51 @@ mod tests {
             store.add_history(&history(&format!("q{i}"), None)).unwrap();
         }
         assert_eq!(store.list_history(None, 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn every_engine_round_trips_through_storage() {
+        // `parse_engine` now returns None for anything it does not recognise,
+        // and the loader drops such rows. If these two ever disagree, saved
+        // connections would silently disappear from the sidebar.
+        for engine in [
+            Engine::Postgres,
+            Engine::MySql,
+            Engine::MariaDb,
+            Engine::Sqlite,
+            Engine::SqlServer,
+            Engine::DuckDb,
+            Engine::ClickHouse,
+            Engine::CockroachDb,
+            Engine::Redshift,
+            Engine::MongoDb,
+        ] {
+            assert_eq!(
+                parse_engine(engine_str(engine)),
+                Some(engine),
+                "{engine:?} does not survive a save/load cycle"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_engine_is_rejected_rather_than_guessed() {
+        // It used to become Postgres, which meant a connection saved by a newer
+        // build would try the Postgres wire protocol against the wrong server.
+        assert_eq!(parse_engine("some-future-engine"), None);
+        assert_eq!(parse_engine(""), None);
+    }
+
+    #[test]
+    fn every_ssl_mode_round_trips_through_storage() {
+        for mode in [
+            SslMode::Disable,
+            SslMode::Prefer,
+            SslMode::Require,
+            SslMode::VerifyCa,
+            SslMode::VerifyFull,
+        ] {
+            assert_eq!(parse_ssl(ssl_str(mode)), mode, "{mode:?} did not survive");
+        }
     }
 }

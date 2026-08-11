@@ -1,4 +1,5 @@
 import { IconClose, IconPlus, IconTable } from '@/components/icons';
+import { rowActivation } from '@/components/ui';
 import { useConnections } from '@/state/connections';
 import { useTabs } from '@/state/tabs';
 
@@ -19,6 +20,9 @@ export function TabBar() {
           return (
             <div
               key={tab.id}
+              role="button"
+              tabIndex={0}
+              onKeyDown={rowActivation(() => setActive(tab.id)).onKeyDown}
               onClick={() => setActive(tab.id)}
               onAuxClick={(e) => {
                 // Middle-click closes, as in browsers and editors.
@@ -46,6 +50,7 @@ export function TabBar() {
                 {tab.title}
               </span>
               <button
+                type="button"
                 className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -60,6 +65,7 @@ export function TabBar() {
         })}
 
         <button
+          type="button"
           className="btn btn-ghost shrink-0 px-2"
           onClick={() => openQueryTab(connected[0]?.id ?? null)}
           disabled={connected.length === 0}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import {
   IconChevron,
@@ -15,7 +16,7 @@ import {
   IconView,
   IconWarning,
 } from '@/components/icons';
-import { ErrorBanner, Spinner } from '@/components/ui';
+import { ErrorBanner, rowActivation, Spinner } from '@/components/ui';
 import { BackupDialog, RestoreDialog } from '@/features/backup/BackupDialog';
 import { LibraryPanel } from '@/features/library/LibraryPanel';
 import * as ipc from '@/ipc';
@@ -27,6 +28,9 @@ import { useTabs } from '@/state/tabs';
 import { ConnectionDialog } from './ConnectionDialog';
 
 export function Sidebar() {
+  // `useShallow` rather than a bare `useConnections()`: the latter subscribes
+  // to the whole store object, so any unrelated field changing re-rendered the
+  // entire connection tree.
   const {
     items,
     loading,
@@ -38,7 +42,20 @@ export function Sidebar() {
     disconnect,
     remove,
     clearError,
-  } = useConnections();
+  } = useConnections(
+    useShallow((s) => ({
+      items: s.items,
+      loading: s.loading,
+      connecting: s.connecting,
+      error: s.error,
+      keychainOk: s.keychainOk,
+      refresh: s.refresh,
+      connect: s.connect,
+      disconnect: s.disconnect,
+      remove: s.remove,
+      clearError: s.clearError,
+    })),
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ConnectionConfig | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -79,18 +96,22 @@ export function Sidebar() {
   }
 
   async function toggle(c: ConnectionStatus) {
-    const next = new Set(expanded);
-    if (next.has(c.id)) {
-      next.delete(c.id);
-      setExpanded(next);
+    if (expanded.has(c.id)) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(c.id);
+        return next;
+      });
       return;
     }
     if (!c.connected) {
       const ok = await connect(c.id);
       if (!ok) return;
     }
-    next.add(c.id);
-    setExpanded(next);
+    // Functional update, because connecting is awaited: a snapshot of
+    // `expanded` taken before the await would clobber any other connection the
+    // user expanded while this one was still opening.
+    setExpanded((prev) => new Set(prev).add(c.id));
   }
 
   return (
@@ -101,10 +122,15 @@ export function Sidebar() {
       >
         <IconLighthouse size={15} className="opacity-90" />
         <span className="flex-1 text-[12px] font-semibold tracking-wide">Faro</span>
-        <button className="btn btn-ghost px-1.5" onClick={refresh} title="Refresh">
+        <button type="button" className="btn btn-ghost px-1.5" onClick={refresh} title="Refresh">
           <IconRefresh size={13} />
         </button>
-        <button className="btn btn-ghost px-1.5" onClick={openNew} title="New connection">
+        <button
+          type="button"
+          className="btn btn-ghost px-1.5"
+          onClick={openNew}
+          title="New connection"
+        >
           <IconPlus size={14} />
         </button>
       </header>
@@ -138,7 +164,7 @@ export function Sidebar() {
             <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
               No connections yet
             </p>
-            <button className="btn btn-primary mt-2.5" onClick={openNew}>
+            <button type="button" className="btn btn-primary mt-2.5" onClick={openNew}>
               <IconPlus size={13} /> Add connection
             </button>
           </div>
@@ -213,6 +239,9 @@ function ConnectionNode({
     <div>
       <div
         className="group flex h-7 cursor-pointer items-center gap-1 px-1.5 hover:bg-[var(--bg-inset)]"
+        role="button"
+        tabIndex={0}
+        onKeyDown={rowActivation(onToggle).onKeyDown}
         onClick={onToggle}
       >
         <IconChevron
@@ -238,6 +267,7 @@ function ConnectionNode({
         <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
           {conn.connected && (
             <button
+              type="button"
               className="btn btn-ghost px-1"
               title="New query"
               onClick={(e) => {
@@ -251,6 +281,7 @@ function ConnectionNode({
           {conn.connected && isSqlEngine(conn.engine) && (
             <>
               <button
+                type="button"
                 className="btn btn-ghost px-1"
                 title="Back up this database"
                 onClick={(e) => {
@@ -264,6 +295,7 @@ function ConnectionNode({
                   connection. The backend refuses it too; hiding the affordance
                   saves the user picking a file first. */}
               <button
+                type="button"
                 className="btn btn-ghost px-1"
                 disabled={conn.readOnly}
                 title={
@@ -281,6 +313,7 @@ function ConnectionNode({
             </>
           )}
           <button
+            type="button"
             className="btn btn-ghost px-1"
             title="Edit"
             onClick={(e) => {
@@ -291,6 +324,7 @@ function ConnectionNode({
             <IconEdit size={12} />
           </button>
           <button
+            type="button"
             className="btn btn-ghost px-1"
             title={conn.connected ? 'Disconnect' : 'Delete'}
             onClick={(e) => {
@@ -417,6 +451,9 @@ function SchemaNode({
     <div>
       <div
         className="flex h-6 cursor-pointer items-center gap-1 pl-5 pr-2 hover:bg-[var(--bg-inset)]"
+        role="button"
+        tabIndex={0}
+        onKeyDown={rowActivation(onToggle).onKeyDown}
         onClick={onToggle}
       >
         <IconChevron

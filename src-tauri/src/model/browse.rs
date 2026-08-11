@@ -12,8 +12,12 @@ pub struct BrowseOptions {
     pub sort_column: Option<String>,
     #[serde(default)]
     pub sort_desc: bool,
-    /// Column filters, ANDed together. Values bind as literals via the dialect,
-    /// never by string concatenation of raw user input.
+    /// Column filters, ANDed together.
+    ///
+    /// `column` is checked against the table's real column list and dropped if
+    /// it does not match; `value` is rendered as a literal by the dialect,
+    /// which is responsible for escaping it for that engine. Neither is
+    /// concatenated raw.
     #[serde(default)]
     pub filters: Vec<ColumnFilter>,
     #[serde(default)]

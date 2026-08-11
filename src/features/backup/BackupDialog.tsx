@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { IconSearch } from '@/components/icons';
 import { ErrorBanner, Field, Modal, Spinner } from '@/components/ui';
@@ -28,7 +28,9 @@ export function BackupDialog({
   connectionName: string;
   tables: TableInfo[];
 }) {
-  const dataTables = tables.filter((t) => t.kind === 'table');
+  // Memoized so the seeding effect below keys off the actual list rather than
+  // a fresh array identity on every render.
+  const dataTables = useMemo(() => tables.filter((t) => t.kind === 'table'), [tables]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState('');
@@ -40,16 +42,37 @@ export function BackupDialog({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
+  /** Whether the selection has been seeded for the current opening. */
+  const seeded = useRef(false);
+
   useEffect(() => {
-    if (!open) return;
-    setSelected(new Set(dataTables.map((t) => t.name)));
+    if (!open) {
+      // Arm the next opening to seed again.
+      seeded.current = false;
+      return;
+    }
     setError(null);
     setDone(null);
     setProgress(null);
     setFilter('');
-    // Re-seeding on every table change would fight the user's ticking.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Seed the selection once the table list has actually arrived.
+  //
+  // The sidebar starts fetching tables only after it sets the dialog open, so
+  // on the first render the list is always empty. Seeding on `open` alone
+  // therefore selected nothing and left the primary button disabled, and the
+  // header read "0 of N" once the list landed.
+  //
+  // Guarded by a ref rather than keyed on `open` so that re-seeding happens
+  // exactly once per opening — re-running it on every change to `dataTables`
+  // would fight the user's own ticking, which is what the original comment was
+  // protecting against.
+  useEffect(() => {
+    if (!open || seeded.current || dataTables.length === 0) return;
+    seeded.current = true;
+    setSelected(new Set(dataTables.map((t) => t.name)));
+  }, [open, dataTables]);
 
   // A backup of a large table takes long enough that silence looks like a hang.
   useEffect(() => {

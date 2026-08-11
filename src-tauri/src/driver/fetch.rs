@@ -87,6 +87,30 @@ macro_rules! impl_fetch_capped {
                 rows.push((0..columns.len()).map(|i| $decode(&row, i)).collect());
             }
 
+            // A query that matched nothing still has columns worth showing.
+            // sqlx only surfaces column metadata through the row stream, so
+            // with zero rows the grid was left with no headers at all — it
+            // rendered blank, which reads as "the query is broken" rather than
+            // "no rows matched". Describing the statement recovers them.
+            //
+            // Best effort: preparing runs the statement through the engine's
+            // parser, and engine-specific syntax it rejects will fail here. An
+            // empty column list is still better than an error.
+            if columns.is_empty() {
+                use sqlx::{Executor, SqlSafeStr, Statement};
+                let owned = sqlx::AssertSqlSafe(sql.to_string()).into_sql_str();
+                if let Ok(prepared) = pool.prepare(owned).await {
+                    columns = prepared
+                        .columns()
+                        .iter()
+                        .map(|c| ColumnInfo {
+                            name: c.name().to_string(),
+                            type_name: c.type_info().name().to_string(),
+                        })
+                        .collect();
+                }
+            }
+
             Ok(ResultSet {
                 columns,
                 rows,

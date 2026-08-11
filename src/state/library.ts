@@ -16,6 +16,12 @@ interface LibraryState {
   history: HistoryEntry[];
   historySearch: string;
   loading: boolean;
+  /**
+   * Set when a *write* fails. Reads stay silent (see `refreshSaved`), but a
+   * delete or a history wipe that quietly did nothing is a different matter —
+   * the user believes it happened.
+   */
+  error: string | null;
 
   refreshSaved: () => Promise<void>;
   refreshHistory: (search?: string) => Promise<void>;
@@ -23,6 +29,7 @@ interface LibraryState {
   remove: (id: string) => Promise<void>;
   clearHistory: () => Promise<void>;
   deleteHistoryEntry: (id: number) => Promise<void>;
+  clearError: () => void;
 }
 
 export const useLibrary = create<LibraryState>((set, get) => ({
@@ -30,6 +37,7 @@ export const useLibrary = create<LibraryState>((set, get) => ({
   history: [],
   historySearch: '',
   loading: false,
+  error: null,
 
   refreshSaved: async () => {
     try {
@@ -52,26 +60,51 @@ export const useLibrary = create<LibraryState>((set, get) => ({
     }
   },
 
+  // Rethrows as well as recording: the save dialog awaits this to decide
+  // whether to close, and closing on a failure would discard the user's query.
   save: async (query) => {
-    const saved = await ipc.saveQuery(query);
-    await get().refreshSaved();
-    return saved;
+    set({ error: null });
+    try {
+      const saved = await ipc.saveQuery(query);
+      await get().refreshSaved();
+      return saved;
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+      throw e;
+    }
   },
 
   remove: async (id) => {
-    await ipc.deleteSavedQuery(id);
-    await get().refreshSaved();
+    set({ error: null });
+    try {
+      await ipc.deleteSavedQuery(id);
+      await get().refreshSaved();
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+    }
   },
 
   clearHistory: async () => {
-    await ipc.clearHistory();
-    await get().refreshHistory();
+    set({ error: null });
+    try {
+      await ipc.clearHistory();
+      await get().refreshHistory();
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+    }
   },
 
   deleteHistoryEntry: async (id) => {
-    await ipc.deleteHistoryEntry(id);
-    set((s) => ({ history: s.history.filter((h) => h.id !== id) }));
+    set({ error: null });
+    try {
+      await ipc.deleteHistoryEntry(id);
+      set((s) => ({ history: s.history.filter((h) => h.id !== id) }));
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+    }
   },
+
+  clearError: () => set({ error: null }),
 }));
 
 /** Group saved queries by folder, preserving the backend's ordering. */

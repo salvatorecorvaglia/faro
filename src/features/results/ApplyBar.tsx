@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { IconClose, IconWarning } from '@/components/icons';
 import { ErrorBanner, Spinner } from '@/components/ui';
+import * as ipc from '@/ipc';
 import type { GuardedStatement } from '@/ipc/types';
 
 /**
@@ -41,8 +42,19 @@ export function ApplyBar({
     try {
       setPreview(await onPreview());
     } catch (e) {
-      setPreviewError(e instanceof Error ? e.message : String(e));
+      // `ipc.errorMessage`, not `String(e)`: Tauri rejects with the serialized
+      // `FaroError` object, and stringifying that renders "[object Object]".
+      setPreviewError(ipc.errorMessage(e));
     }
+  }
+
+  // Applying writes to the database and cannot be undone, and the SQL preview
+  // that would show what is about to run is opt-in. Every other destructive
+  // action in the app confirms first; this one did not.
+  function confirmAndApply() {
+    const summary = `Apply ${changeCount} ${changeCount === 1 ? 'change' : 'changes'} to the database?`;
+    if (!window.confirm(`${summary}\n\nThis cannot be undone.`)) return;
+    onApply();
   }
 
   return (
@@ -59,16 +71,26 @@ export function ApplyBar({
           {changeCount} unsaved {changeCount === 1 ? 'change' : 'changes'}
         </span>
 
-        <button className="btn btn-ghost text-[11px]" onClick={togglePreview} disabled={applying}>
+        <button
+          type="button"
+          className="btn btn-ghost text-[11px]"
+          onClick={togglePreview}
+          disabled={applying}
+        >
           {preview ? 'Hide SQL' : 'Show SQL'}
         </button>
 
         <div className="flex-1" />
 
-        <button className="btn btn-ghost" onClick={onDiscard} disabled={applying}>
+        <button type="button" className="btn btn-ghost" onClick={onDiscard} disabled={applying}>
           Discard
         </button>
-        <button className="btn btn-primary" onClick={onApply} disabled={applying}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={confirmAndApply}
+          disabled={applying}
+        >
           {applying && <Spinner size={11} />}
           Apply
         </button>
@@ -141,7 +163,12 @@ export function ReadOnlyNotice({ reason, onDismiss }: { reason: string; onDismis
       <span className="flex-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
         {reason}
       </span>
-      <button className="opacity-60 hover:opacity-100" onClick={onDismiss} aria-label="Dismiss">
+      <button
+        type="button"
+        className="opacity-60 hover:opacity-100"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+      >
         <IconClose size={11} />
       </button>
     </div>

@@ -64,11 +64,15 @@ export function Modal({
         e.preventDefault();
         onClose();
       }}
+      // Backdrop dismissal on a native <dialog>. Escape is handled by
+      // onCancel above, and the platform supplies the focus trap.
       onClick={(e) => {
         // Clicking the backdrop lands on the dialog element itself.
         if (e.target === ref.current) onClose();
       }}
-      className="m-auto rounded-xl p-0 backdrop:bg-black/45"
+      // Backdrop comes from the shared `dialog::backdrop` rule so every
+      // overlay in the app uses the same scrim.
+      className="m-auto rounded-xl p-0"
       style={{ background: 'var(--bg)', color: 'var(--text)', width, maxWidth: '92vw' }}
     >
       <div
@@ -76,7 +80,12 @@ export function Modal({
         style={{ borderColor: 'var(--border)' }}
       >
         <h2 className="text-[13px] font-semibold">{title}</h2>
-        <button className="btn btn-ghost -mr-1.5 px-1.5" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="btn btn-ghost -mr-1.5 px-1.5"
+          onClick={onClose}
+          aria-label="Close"
+        >
           <IconClose />
         </button>
       </div>
@@ -95,6 +104,9 @@ export function Field({
   hint?: string;
 }) {
   return (
+    // The control arrives as `children` and is wrapped by this label; the
+    // rule cannot see through a children prop.
+    // biome-ignore lint/a11y/noLabelWithoutControl: see above
     <label className="block">
       <span className="label">{label}</span>
       {children}
@@ -124,6 +136,7 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
       </span>
       {onDismiss && (
         <button
+          type="button"
           onClick={onDismiss}
           className="shrink-0 opacity-70 hover:opacity-100"
           aria-label="Dismiss"
@@ -161,4 +174,53 @@ export function EmptyState({
       {action && <div className="mt-1">{action}</div>}
     </div>
   );
+}
+
+/**
+ * Props that make a non-button element behave like one for a keyboard user.
+ *
+ * Faro's lists — tabs, connections, schemas, tables, saved queries, history —
+ * are clickable `<div>`s rather than `<button>`s, because a button cannot
+ * contain the nested hover-revealed action buttons each row needs. That is a
+ * legitimate reason to avoid the element, but not a reason to be unreachable:
+ * without a role, a tab stop and an activation key, none of these rows existed
+ * for anyone not using a mouse.
+ *
+ * `role`, `tabIndex` and `onKeyDown` are written out at each site rather than
+ * spread, because the lint rules that enforce them cannot see through a JSX
+ * spread — and a rule that cannot see the fix is a rule that stays off.
+ *
+ * Five a11y rules remain off in `biome.json`, and this is the reason for four
+ * of them, so the note lives here rather than in a file that cannot hold
+ * comments:
+ *
+ * - `useSemanticElements` wants a real `<button>`. These rows cannot be one:
+ *   each contains its own hover-revealed action buttons, and a button may not
+ *   nest a button. `role="button"` plus the handler below is the supported
+ *   alternative.
+ * - `noStaticElementInteractions` and `noNoninteractiveElementInteractions`
+ *   fire on the two native `<dialog>` backdrops, where Escape is handled by
+ *   `onCancel` and the platform supplies the focus trap.
+ * - `useFocusableInteractive` fires on the command palette's listbox options,
+ *   which are correctly *not* tab stops: focus stays on the combobox input and
+ *   `aria-activedescendant` names the active option.
+ *
+ * Worth re-checking whenever Biome's analysis improves.
+ *
+ * ```tsx
+ * <div role="button" tabIndex={0} onKeyDown={rowActivation(onToggle).onKeyDown} onClick={onToggle}>
+ * ```
+ */
+export function rowActivation(onActivate: () => void) {
+  return {
+    onKeyDown: (e: React.KeyboardEvent) => {
+      // Space scrolls by default; Enter and Space are what a button responds to.
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      // Ignore keys bubbling up from a nested control — the row's own action
+      // should not fire when someone activates the delete button inside it.
+      if (e.target !== e.currentTarget) return;
+      e.preventDefault();
+      onActivate();
+    },
+  };
 }

@@ -74,6 +74,9 @@ export function SaveQueryDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Daily active users"
+            // Focusing the first field of a modal the user just opened is
+            // expected behaviour, not a focus trap.
+            // biome-ignore lint/a11y/noAutofocus: see above
             autoFocus
             onKeyDown={(e) => {
               if (e.key === 'Enter') onSave();

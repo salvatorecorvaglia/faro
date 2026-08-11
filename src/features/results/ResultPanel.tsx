@@ -71,11 +71,22 @@ export function ResultPanel({
   }, [statements, clientSideSort]);
 
   // A table tab has a single result set; a query tab has one per statement.
-  const active: StatementResult | null = browseResult
-    ? { sql: '', outcome: { type: 'rows', ...browseResult }, error: null }
-    : (statements[activeIndex] ?? null);
+  //
+  // Memoized on `browseResult` so the wrapper keeps a stable identity. Built
+  // inline it was a new object on every render, which flowed into ResultGrid's
+  // `[result]` reset effect and threw away the user's column widths, column
+  // ordering and cell selection — and re-measured every column — whenever
+  // anything at all re-rendered the tab.
+  const active: StatementResult | null = useMemo(
+    () =>
+      browseResult
+        ? { sql: '', outcome: { type: 'rows' as const, ...browseResult }, error: null }
+        : null,
+    [browseResult],
+  );
 
-  const rawRows = active?.outcome?.type === 'rows' ? active.outcome : null;
+  const shown = active ?? statements[activeIndex] ?? null;
+  const rawRows = shown?.outcome?.type === 'rows' ? shown.outcome : null;
 
   // In client-side mode the grid shows a locally sorted/filtered view. In
   // pushdown mode the server already did the work, so this passes through.
@@ -92,11 +103,11 @@ export function ResultPanel({
     );
   }
 
-  if (running && !active) {
+  if (running && !shown) {
     return <EmptyState title="Running…" />;
   }
 
-  if (!active) {
+  if (!shown) {
     return <EmptyState title="No results yet" hint="Press ⌘↵ to run the query." />;
   }
 
@@ -112,6 +123,7 @@ export function ResultPanel({
           <div className="flex items-center gap-0.5 pr-2">
             {statements.map((s, i) => (
               <button
+                type="button"
                 key={i}
                 onClick={() => onActiveIndexChange(i)}
                 className="btn px-1.5 py-0.5 text-[11px]"
@@ -129,13 +141,14 @@ export function ResultPanel({
           </div>
         )}
 
-        <StatusLine result={active} hidden={hidden} />
+        <StatusLine result={shown} hidden={hidden} />
 
         <div className="flex-1" />
 
         {rawRows && (
           <div className="flex items-center gap-0.5">
             <button
+              type="button"
               className="btn btn-ghost px-1.5"
               onClick={() => setShowFilters((v) => !v)}
               style={showFilters || filters.length > 0 ? { color: 'var(--accent)' } : undefined}
@@ -147,6 +160,7 @@ export function ResultPanel({
               )}
             </button>
             <button
+              type="button"
               className="btn btn-ghost px-1.5"
               onClick={() => setMode('grid')}
               style={mode === 'grid' ? { color: 'var(--accent)' } : undefined}
@@ -155,6 +169,7 @@ export function ResultPanel({
               <IconGrid size={13} />
             </button>
             <button
+              type="button"
               className="btn btn-ghost px-1.5"
               onClick={() => setMode('json')}
               style={mode === 'json' ? { color: 'var(--accent)' } : undefined}
@@ -167,14 +182,14 @@ export function ResultPanel({
       </div>
 
       <div className="min-h-0 flex-1">
-        {active.error ? (
+        {shown.error ? (
           <div className="h-full overflow-auto p-3">
-            <ErrorBanner message={active.error} />
+            <ErrorBanner message={shown.error} />
           </div>
         ) : !rows ? (
           <EmptyState
             title={`${formatRowCount(
-              active.outcome?.type === 'affected' ? active.outcome.rowsAffected : 0,
+              shown.outcome?.type === 'affected' ? shown.outcome.rowsAffected : 0,
             )} rows affected`}
             hint="The statement completed successfully."
           />
@@ -298,7 +313,12 @@ function CellInspector({
           {value.kind}
         </span>
         <div className="flex-1" />
-        <button className="btn btn-ghost px-1" onClick={onClose} aria-label="Close inspector">
+        <button
+          type="button"
+          className="btn btn-ghost px-1"
+          onClick={onClose}
+          aria-label="Close inspector"
+        >
           <IconClose size={12} />
         </button>
       </div>

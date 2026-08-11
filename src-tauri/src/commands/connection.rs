@@ -111,12 +111,11 @@ pub async fn connect(state: State<'_, AppState>, id: String) -> Result<()> {
 }
 
 /// Try a configuration without saving it — the "Test connection" button.
+///
+/// Takes no `AppState`: the connection is opened, pinged and closed without
+/// touching the registry, so nothing is left behind whether or not it worked.
 #[tauri::command]
-pub async fn test_connection(
-    state: State<'_, AppState>,
-    config: ConnectionConfig,
-    password: Option<String>,
-) -> Result<()> {
+pub async fn test_connection(config: ConnectionConfig, password: Option<String>) -> Result<()> {
     if !config.engine.is_supported() {
         return Err(FaroError::UnsupportedEngine(
             config.engine.display_name().into(),
@@ -130,7 +129,6 @@ pub async fn test_connection(
         None if !config.id.is_empty() => secrets::get_password(&config.secret_key()),
         None => None,
     };
-    let _ = &state;
 
     let driver = driver::connect(&config, password.as_deref()).await?;
     let result = driver.ping().await;

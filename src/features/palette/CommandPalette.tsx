@@ -46,13 +46,20 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
   const [cursor, setCursor] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   const connections = useConnections((s) => s.items);
   const connect = useConnections((s) => s.connect);
   const saved = useLibrary((s) => s.saved);
   const history = useLibrary((s) => s.history);
   const schemaByConnection = useSchemaCache((s) => s.byConnection);
-  const { openQueryTab, openTableTab, activeTab } = useTabs();
+  // Selected individually rather than destructured off `useTabs()`. All three
+  // are stable store actions, so this subscribes to nothing that changes —
+  // whereas the whole-store form re-ran this component's hooks on every
+  // keystroke in the editor, even while the palette is closed.
+  const openQueryTab = useTabs((s) => s.openQueryTab);
+  const openTableTab = useTabs((s) => s.openTableTab);
+  const activeTab = useTabs((s) => s.activeTab);
 
   useEffect(() => {
     if (!open) return;
@@ -171,6 +178,15 @@ export function CommandPalette({
       ?.scrollIntoView({ block: 'nearest' });
   }, [cursor]);
 
+  // `showModal` is what gives the platform focus trap, the top layer and the
+  // ::backdrop element. Mirrors `Modal` in components/ui.tsx.
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    if (open && !el.open) el.showModal();
+    if (!open && el.open) el.close();
+  }, [open]);
+
   if (!open) return null;
 
   function choose(item: Item | undefined) {
@@ -197,104 +213,145 @@ export function CommandPalette({
 
   let lastGroup = '';
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]"
-      style={{ background: 'rgb(0 0 0 / 0.4)' }}
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[60vh] w-[560px] max-w-[92vw] flex-col overflow-hidden rounded-xl"
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border-strong)',
-          boxShadow: '0 16px 48px rgb(0 0 0 / 0.28)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div
-          className="flex shrink-0 items-center gap-2 border-b px-3"
-          style={{ borderColor: 'var(--border)' }}
-        >
-          <IconSearch size={14} className="opacity-45" />
-          <input
-            className="flex-1 bg-transparent py-3 text-[13px] outline-none"
-            style={{ color: 'var(--text)' }}
-            placeholder="Search queries, tables, connections…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onKeyDown}
-            autoFocus
-          />
-          <kbd
-            className="rounded px-1.5 py-0.5 text-[10px]"
-            style={{ background: 'var(--bg-inset)', color: 'var(--text-faint)' }}
-          >
-            esc
-          </kbd>
-        </div>
+  const activeId = results[cursor] ? `palette-item-${results[cursor].id}` : undefined;
 
-        <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
-          {results.length === 0 ? (
-            <p className="px-3 py-6 text-center text-[12px]" style={{ color: 'var(--text-faint)' }}>
-              Nothing matches “{query}”.
-            </p>
-          ) : (
-            results.map((item, i) => {
-              const showGroup = item.group !== lastGroup;
-              lastGroup = item.group;
-              const active = i === cursor;
-              return (
-                <div key={item.id}>
-                  {showGroup && (
+  return (
+    // A native <dialog>, like `Modal`. As a plain overlay div this trapped no
+    // focus, restored none on close, announced nothing to a screen reader, and
+    // bound Escape only to the input's onKeyDown — so Escape stopped working
+    // the moment focus moved anywhere else in the panel.
+    <dialog
+      ref={dialogRef}
+      aria-label="Command palette"
+      className="m-0 max-h-none max-w-none bg-transparent p-0"
+      style={{
+        width: '100vw',
+        height: '100vh',
+        // The scrim is the dialog's own backdrop; see the ::backdrop rule.
+        background: 'transparent',
+      }}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      // Backdrop dismissal on a native <dialog>; Escape goes through onCancel.
+      onClick={(e) => {
+        if (e.target === dialogRef.current) onClose();
+      }}
+      onKeyDown={onKeyDown}
+    >
+      <div className="flex h-full items-start justify-center pt-[12vh]">
+        <div
+          className="flex max-h-[60vh] w-[560px] max-w-[92vw] flex-col overflow-hidden rounded-xl"
+          style={{
+            background: 'var(--bg)',
+            border: '1px solid var(--border-strong)',
+            boxShadow: 'var(--shadow-modal)',
+          }}
+        >
+          <div
+            className="flex shrink-0 items-center gap-2 border-b px-3"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <IconSearch size={14} className="opacity-45" />
+            <input
+              className="flex-1 bg-transparent py-3 text-[13px] outline-none"
+              style={{ color: 'var(--text)' }}
+              placeholder="Search queries, tables, connections…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+              role="combobox"
+              aria-expanded
+              aria-controls="palette-results"
+              aria-activedescendant={activeId}
+              aria-autocomplete="list"
+            />
+            <kbd
+              className="rounded px-1.5 py-0.5 text-[10px]"
+              style={{ background: 'var(--bg-inset)', color: 'var(--text-faint)' }}
+            >
+              esc
+            </kbd>
+          </div>
+
+          <div
+            ref={listRef}
+            id="palette-results"
+            role="listbox"
+            aria-label="Results"
+            className="min-h-0 flex-1 overflow-y-auto py-1"
+          >
+            {results.length === 0 ? (
+              <p
+                className="px-3 py-6 text-center text-[12px]"
+                style={{ color: 'var(--text-faint)' }}
+              >
+                Nothing matches “{query}”.
+              </p>
+            ) : (
+              results.map((item, i) => {
+                const showGroup = item.group !== lastGroup;
+                lastGroup = item.group;
+                const active = i === cursor;
+                return (
+                  <div key={item.id}>
+                    {showGroup && (
+                      <div
+                        className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide"
+                        style={{ color: 'var(--text-faint)' }}
+                      >
+                        {item.group}
+                      </div>
+                    )}
                     <div
-                      className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide"
-                      style={{ color: 'var(--text-faint)' }}
-                    >
-                      {item.group}
-                    </div>
-                  )}
-                  <div
-                    data-index={i}
-                    className="mx-1 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
-                    style={{
-                      background: active ? 'var(--accent)' : undefined,
-                      color: active ? '#fff' : undefined,
-                    }}
-                    onMouseEnter={() => setCursor(i)}
-                    onClick={() => choose(item)}
-                  >
-                    <span
-                      className="shrink-0"
+                      data-index={i}
+                      id={`palette-item-${item.id}`}
+                      // Listbox options are not tab stops: focus stays on the
+                      // combobox input, which owns arrows and Enter and names the
+                      // active option via aria-activedescendant.
+                      role="option"
+                      aria-selected={active}
+                      className="mx-1 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
                       style={{
-                        color: active
-                          ? 'rgb(255 255 255 / 0.85)'
-                          : item.danger
-                            ? 'var(--danger)'
-                            : 'var(--text-faint)',
+                        background: active ? 'var(--accent)' : undefined,
+                        color: active ? 'var(--on-accent)' : undefined,
                       }}
+                      onMouseEnter={() => setCursor(i)}
+                      onClick={() => choose(item)}
                     >
-                      {item.icon}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[12.5px]">{item.label}</span>
-                    {item.detail && (
                       <span
-                        className="shrink-0 truncate text-[11px]"
+                        className="shrink-0"
                         style={{
-                          maxWidth: '45%',
-                          color: active ? 'rgb(255 255 255 / 0.7)' : 'var(--text-faint)',
+                          color: active
+                            ? 'var(--on-accent-muted)'
+                            : item.danger
+                              ? 'var(--danger)'
+                              : 'var(--text-faint)',
                         }}
                       >
-                        {item.detail}
+                        {item.icon}
                       </span>
-                    )}
+                      <span className="min-w-0 flex-1 truncate text-[12.5px]">{item.label}</span>
+                      {item.detail && (
+                        <span
+                          className="shrink-0 truncate text-[11px]"
+                          style={{
+                            maxWidth: '45%',
+                            color: active ? 'var(--on-accent-faint)' : 'var(--text-faint)',
+                          }}
+                        >
+                          {item.detail}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })
-          )}
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

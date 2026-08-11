@@ -42,10 +42,49 @@ pub struct ExportOptions {
     /// Table name used in generated `INSERT` statements.
     #[serde(default)]
     pub table_name: Option<String>,
+    /// Neutralize spreadsheet formulas in CSV and TSV output.
+    ///
+    /// On by default. Off is for feeding the file to another program that
+    /// parses it as data, where the added apostrophe would be noise.
+    #[serde(default = "default_true")]
+    pub sanitize_formulas: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Largest integer magnitude an f64 represents exactly (2^53). Excel has no
+/// integer type, so anything beyond this would be silently rounded on write.
+const MAX_EXACT_INT: u64 = 1 << 53;
+
+/// Characters that make a spreadsheet treat a cell as a formula rather than
+/// text. `\t`, `\r` and `\n` are here because Excel strips leading whitespace
+/// before deciding, so " =1+1" is still a formula to it.
+const FORMULA_LEAD: [char; 7] = ['=', '+', '-', '@', '\t', '\r', '\n'];
+
+/// Prefix a field with `'` if a spreadsheet would otherwise evaluate it.
+///
+/// CSV has no types, so Excel, LibreOffice and Sheets decide what a cell means
+/// from its first character. A value read out of a database — which Faro does
+/// not control and which may have been written by someone else — starting with
+/// `=` becomes executable on open: `=HYPERLINK(...)` exfiltrates neighbouring
+/// cells, and the legacy DDE forms can launch a process. The apostrophe is the
+/// conventional fix; every spreadsheet strips it on display and treats the rest
+/// as literal text.
+///
+/// Deliberately *not* applied to XLSX, where the writer sets a real cell type
+/// and `write_string` cannot be reinterpreted as a formula.
+fn sanitize_formula(field: String) -> String {
+    match field.chars().next() {
+        Some(c) if FORMULA_LEAD.contains(&c) => {
+            let mut out = String::with_capacity(field.len() + 1);
+            out.push('\'');
+            out.push_str(&field);
+            out
+        }
+        _ => field,
+    }
 }
 
 /// Render a cell for a text-based export.
@@ -98,7 +137,7 @@ pub async fn read_table_paged(
     let dialect = driver.dialect();
     let qualified = dialect.qualify(table.schema.as_deref(), &table.name);
     let detail = driver.describe_table(table).await?;
-    let order = crate::sql::order_by_key(&detail.primary_key, dialect);
+    let order = crate::sql::stable_order_by(&detail.primary_key, &detail.columns, dialect);
 
     let base = format!("SELECT * FROM {qualified}{order}");
     let mut combined: Option<ResultSet> = None;
@@ -168,14 +207,29 @@ fn write_delimited(
         .map_err(|e| FaroError::Io(e.to_string()))?;
 
     if options.include_header {
+        // Column names are database-supplied too, so they get the same
+        // treatment as the data.
         writer
-            .write_record(result.columns.iter().map(|c| &c.name))
+            .write_record(result.columns.iter().map(|c| {
+                if options.sanitize_formulas {
+                    sanitize_formula(c.name.clone())
+                } else {
+                    c.name.clone()
+                }
+            }))
             .map_err(|e| FaroError::Io(e.to_string()))?;
     }
 
     for row in &result.rows {
         writer
-            .write_record(row.iter().map(cell_text))
+            .write_record(row.iter().map(|v| {
+                let text = cell_text(v);
+                if options.sanitize_formulas {
+                    sanitize_formula(text)
+                } else {
+                    text
+                }
+            }))
             .map_err(|e| FaroError::Io(e.to_string()))?;
     }
 
@@ -266,9 +320,14 @@ fn write_sql(
             .iter()
             .map(|v| match dialect {
                 Some(d) => d.literal(v),
-                // Fall back to SQLite-style byte literals when no connection
-                // is in play, e.g. exporting a detached result.
-                None => v.to_sql_literal(&crate::driver::dialect::hex_bytes_x),
+                // Fall back to SQLite-style byte literals and standard string
+                // quoting when no connection is in play, e.g. exporting a
+                // detached result. A dump written without a dialect is
+                // standard SQL by definition, so the standard rule is right.
+                None => v.to_sql_literal(
+                    &crate::driver::dialect::hex_bytes_x,
+                    &crate::model::quote_sql_string,
+                ),
             })
             .collect();
         writeln!(file, "{prefix}({});", values.join(", "))?;
@@ -311,7 +370,14 @@ fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Resul
                 // blank and an empty string are different things in a
                 // spreadsheet, and formulas treat them differently.
                 Value::Null => continue,
-                Value::Int(i) => sheet.write_number(excel_row, col, *i as f64),
+                // Excel stores every number as an f64, so an integer past 2^53
+                // cannot be written as a number without losing digits — the
+                // same reason decimals stay text just below. A BIGINT id is
+                // exactly the value where that matters, so it goes as text.
+                Value::Int(i) if i.unsigned_abs() <= MAX_EXACT_INT => {
+                    sheet.write_number(excel_row, col, *i as f64)
+                }
+                Value::Int(i) => sheet.write_string(excel_row, col, i.to_string()),
                 Value::Float(f) => sheet.write_number(excel_row, col, *f),
                 Value::Bool(b) => sheet.write_boolean(excel_row, col, *b),
                 other => sheet.write_string(excel_row, col, cell_text(other)),
@@ -390,6 +456,7 @@ mod tests {
             format,
             include_header: true,
             table_name: Some("people".into()),
+            sanitize_formulas: true,
         }
     }
 
@@ -445,6 +512,113 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(text.starts_with("id\tname\tamount\n"), "{text}");
+    }
+
+    /// A result whose contents are hostile to a spreadsheet.
+    fn formula_sample() -> ResultSet {
+        ResultSet {
+            columns: vec![ColumnInfo {
+                name: "payload".into(),
+                type_name: "text".into(),
+            }],
+            rows: vec![
+                vec![Value::Text("=1+1".into())],
+                vec![Value::Text(r#"=HYPERLINK("http://evil/","click")"#.into())],
+                vec![Value::Text("+1234".into())],
+                vec![Value::Text("-1+2".into())],
+                vec![Value::Text("@SUM(A1:A9)".into())],
+                vec![Value::Text("\t=1+1".into())],
+                // Must be left alone: these are ordinary data.
+                vec![Value::Text("Ada".into())],
+                vec![Value::Text("a=b".into())],
+                vec![Value::Null],
+            ],
+            truncated: false,
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn csv_neutralizes_spreadsheet_formulas() {
+        let path = tmp("formula.csv");
+        write_file(&path, &formula_sample(), &opts(ExportFormat::Csv), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let lines: Vec<&str> = text.lines().skip(1).collect();
+        // csv quotes a field once it contains the apostrophe-prefixed comma or
+        // quote, so assert on the parsed field rather than the raw line.
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(text.as_bytes());
+        let fields: Vec<String> = rdr
+            .records()
+            .map(|r| r.unwrap().get(0).unwrap().to_string())
+            .collect();
+
+        assert_eq!(fields[0], "'=1+1");
+        assert_eq!(fields[1], r#"'=HYPERLINK("http://evil/","click")"#);
+        assert_eq!(fields[2], "'+1234");
+        assert_eq!(fields[3], "'-1+2");
+        assert_eq!(fields[4], "'@SUM(A1:A9)");
+        assert_eq!(fields[5], "'\t=1+1");
+        // Untouched.
+        assert_eq!(fields[6], "Ada");
+        assert_eq!(fields[7], "a=b");
+        assert_eq!(fields[8], "");
+        assert_eq!(lines.len(), 9);
+    }
+
+    #[test]
+    fn a_formula_shaped_column_name_is_neutralized_too() {
+        let mut rs = formula_sample();
+        rs.columns[0].name = "=cmd".into();
+        let path = tmp("formula_header.csv");
+        write_file(&path, &rs, &opts(ExportFormat::Csv), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(text.starts_with("'=cmd\n"), "{text}");
+    }
+
+    #[test]
+    fn formula_sanitizing_can_be_turned_off() {
+        let path = tmp("formula_off.csv");
+        let options = ExportOptions {
+            sanitize_formulas: false,
+            ..opts(ExportFormat::Csv)
+        };
+        write_file(&path, &formula_sample(), &options, None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(text.contains("\n=1+1\n"), "{text}");
+    }
+
+    #[test]
+    fn json_and_sql_exports_are_not_apostrophized() {
+        // Only the spreadsheet-facing formats need this; adding an apostrophe
+        // to JSON or a SQL literal would corrupt the value.
+        let json_path = tmp("formula.json");
+        write_file(
+            &json_path,
+            &formula_sample(),
+            &opts(ExportFormat::Json),
+            None,
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&json_path).unwrap();
+        let _ = std::fs::remove_file(&json_path);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed[0]["payload"], "=1+1", "JSON value was altered");
+
+        let sql_path = tmp("formula.sql");
+        write_file(&sql_path, &formula_sample(), &opts(ExportFormat::Sql), None).unwrap();
+        let text = std::fs::read_to_string(&sql_path).unwrap();
+        let _ = std::fs::remove_file(&sql_path);
+        // The literal must hold `=1+1`, not `'=1+1`.
+        assert!(text.contains(r#"VALUES ('=1+1')"#), "{text}");
+        assert!(!text.contains(r#"VALUES ('''=1+1')"#), "{text}");
     }
 
     #[test]

@@ -103,7 +103,7 @@ pub trait Driver: Send + Sync {
     ) -> Result<ResultSet> {
         let detail = self.describe_table(table).await?;
         let known: Vec<&str> = detail.columns.iter().map(|c| c.name.as_str()).collect();
-        let limit = options.limit.unwrap_or(1000);
+        let limit = clamp_limit(options.limit);
         let sql = crate::sql::build_browse_sql(table, options, &known, self.dialect(), limit);
         self.query(&sql, limit, cancel).await
     }
@@ -119,8 +119,9 @@ pub trait Driver: Send + Sync {
 
     /// Run a statement without knowing in advance whether it returns rows.
     ///
-    /// The default classifies by leading keyword, which covers the common cases;
-    /// engines with better introspection can override.
+    /// The default classifies with [`returns_rows`], which reads the leading
+    /// keyword and looks for `RETURNING`. That covers the common cases; engines
+    /// with better introspection can override.
     async fn run(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<QueryOutcome> {
         if returns_rows(sql) {
             self.query(sql, limit, cancel).await.map(QueryOutcome::Rows)
@@ -135,6 +136,34 @@ pub trait Driver: Send + Sync {
     async fn close(&self);
 }
 
+/// Default page size when the caller does not name one.
+pub const DEFAULT_PAGE: u64 = 1_000;
+
+/// The most rows any single request may return.
+///
+/// Every row crosses the IPC boundary as a tagged JSON value and is then held
+/// in the tab's store, so an unbounded page is an out-of-memory condition, not
+/// merely a slow one — and with `panic = "abort"` in release, an allocation
+/// failure takes the whole app down rather than surfacing as an error.
+pub const MAX_PAGE: u64 = 100_000;
+
+/// Clamp a caller-supplied row limit into something safe to execute.
+///
+/// The limit arrives over IPC as a `u64` and was previously used unchecked, so
+/// a value near `u64::MAX` both asked the engine for the entire table and
+/// overflowed the `limit + 1` truncation probe — which wraps to `LIMIT 0` in
+/// release and silently returns nothing.
+pub fn clamp_limit(limit: Option<u64>) -> u64 {
+    limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
+}
+
+/// One row past `limit`, for detecting truncation without a `COUNT(*)`.
+///
+/// Saturating so it cannot wrap; callers pass this straight into `LIMIT`.
+pub fn probe_limit(limit: u64) -> u64 {
+    limit.saturating_add(1)
+}
+
 /// The statement's leading keyword, upper-cased, ignoring leading whitespace and
 /// opening parentheses.
 fn leading_keyword(sql: &str) -> String {
@@ -146,12 +175,24 @@ fn leading_keyword(sql: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// Guess whether a statement produces a result set from its leading keyword.
+/// Guess whether a statement produces a result set.
 ///
-/// `WITH` is included because CTEs usually feed a SELECT, and `INSERT ...
-/// RETURNING` is deliberately *not* matched here — the Postgres driver detects
-/// RETURNING itself, where it can be sure.
+/// `WITH` is included because CTEs usually feed a SELECT.
+///
+/// `RETURNING` is checked explicitly. Postgres, SQLite and DuckDB all let an
+/// `INSERT`, `UPDATE` or `DELETE` return the affected rows, and classifying
+/// those by leading keyword alone sent them to `execute`, which reports a row
+/// count and throws the result set away — so `INSERT … RETURNING id` showed
+/// "1 row affected" and never the id. The check reads bare tokens so a column
+/// named `returning`, or the word inside a string literal, does not trigger it.
 pub fn returns_rows(sql: &str) -> bool {
+    if matches!(
+        leading_keyword(sql).as_str(),
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE"
+    ) {
+        return crate::sql::bare_words(sql).iter().any(|w| w == "RETURNING");
+    }
+
     matches!(
         leading_keyword(sql).as_str(),
         "SELECT"
@@ -280,5 +321,38 @@ mod tests {
         assert!(!is_wrappable("INSERT INTO t VALUES (1)"));
         assert!(!is_wrappable("CREATE TABLE t (a int)"));
         assert!(!is_wrappable(""));
+    }
+
+    #[test]
+    fn a_missing_limit_becomes_the_default_page() {
+        assert_eq!(clamp_limit(None), DEFAULT_PAGE);
+    }
+
+    #[test]
+    fn an_enormous_limit_is_clamped_rather_than_trusted() {
+        // The limit arrives over IPC. Unclamped, u64::MAX asked the engine for
+        // the whole table and then overflowed the truncation probe.
+        assert_eq!(clamp_limit(Some(u64::MAX)), MAX_PAGE);
+        assert_eq!(clamp_limit(Some(MAX_PAGE + 1)), MAX_PAGE);
+    }
+
+    #[test]
+    fn a_zero_limit_still_asks_for_one_row() {
+        // LIMIT 0 would look like an empty table rather than an empty page.
+        assert_eq!(clamp_limit(Some(0)), 1);
+    }
+
+    #[test]
+    fn ordinary_limits_pass_through() {
+        assert_eq!(clamp_limit(Some(1)), 1);
+        assert_eq!(clamp_limit(Some(500)), 500);
+        assert_eq!(clamp_limit(Some(MAX_PAGE)), MAX_PAGE);
+    }
+
+    #[test]
+    fn the_truncation_probe_cannot_wrap() {
+        // `limit + 1` wrapped to 0 in release, which silently returned nothing.
+        assert_eq!(probe_limit(10), 11);
+        assert_eq!(probe_limit(u64::MAX), u64::MAX);
     }
 }

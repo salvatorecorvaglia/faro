@@ -134,6 +134,24 @@ impl MongoDriver {
         options.server_selection_timeout = Some(std::time::Duration::from_secs(15));
         options.app_name = Some("Faro".to_string());
 
+        // Honour the connection's SSL setting. Until this was added the driver
+        // ignored it entirely and every MongoDB connection was plaintext, which
+        // for a URI carrying username and password means the credentials went
+        // over the wire in the clear.
+        if config.ssl_mode.requires_tls() {
+            let mut tls = mongodb::options::TlsOptions::default();
+            // `Require` is "encrypt, do not authenticate".
+            //
+            // The driver exposes no hostname-only relaxation, so `VerifyCa`
+            // gets the same full validation as `VerifyFull`. Erring stricter is
+            // the right direction for the one knob that decides whether a MITM
+            // is possible.
+            if !config.ssl_mode.verifies_certificate() {
+                tls.allow_invalid_certificates = Some(true);
+            }
+            options.tls = Some(mongodb::options::Tls::Enabled(tls));
+        }
+
         let client =
             Client::with_options(options).map_err(|e| FaroError::Connection(e.to_string()))?;
 
@@ -611,20 +629,30 @@ impl Driver for MongoDriver {
                 cursor.try_collect().await.map_err(map_err)?
             }
             "aggregate" => {
-                let stages: Vec<Document> = match parsed.args.first() {
+                let mut stages: Vec<Document> = match parsed.args.first() {
                     Some(serde_json::Value::Array(items)) => {
                         items.iter().map(to_document).collect::<Result<_>>()?
                     }
                     Some(other) => vec![to_document(other)?],
                     None => Vec::new(),
                 };
+
+                // Cap server-side by appending `$limit`.
+                //
+                // Draining the cursor and then calling `take` pulled the entire
+                // pipeline output into memory first, so an aggregation over a
+                // large collection was an out-of-memory risk however small the
+                // page the user asked for. A trailing `$limit` is valid after
+                // any stage, and if the pipeline already ends in a smaller
+                // `$limit` this one is a no-op.
+                stages.push(bson::doc! { "$limit": fetch });
+
                 let cursor = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(FaroError::Cancelled),
                     res = collection.aggregate(stages).into_future() => res.map_err(map_err)?,
                 };
-                let all: Vec<Document> = cursor.try_collect().await.map_err(map_err)?;
-                all.into_iter().take(fetch as usize).collect()
+                cursor.try_collect().await.map_err(map_err)?
             }
             "countDocuments" | "count" => {
                 let filter = parsed
@@ -651,9 +679,13 @@ impl Driver for MongoDriver {
                     .map(to_document)
                     .transpose()?
                     .unwrap_or_default();
+                // `distinct` has no server-side cap — the driver returns every
+                // distinct value — so the only bound available is to stop
+                // materializing documents past the page.
                 let values = collection.distinct(&field, filter).await.map_err(map_err)?;
                 values
                     .into_iter()
+                    .take(fetch as usize)
                     .map(|v| bson::doc! { field.clone(): v })
                     .collect()
             }
@@ -696,7 +728,7 @@ impl Driver for MongoDriver {
             return Err(FaroError::Cancelled);
         }
         let started = Instant::now();
-        let limit = options.limit.unwrap_or(1000);
+        let limit = crate::driver::clamp_limit(options.limit);
 
         // Grid filters become a query document. Their semantics map cleanly:
         // MongoDB has native regex, comparison and existence operators.

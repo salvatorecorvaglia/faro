@@ -52,7 +52,11 @@ impl PostgresDriver {
             .ssl_mode(match config.ssl_mode {
                 SslMode::Disable => PgSslMode::Disable,
                 SslMode::Prefer => PgSslMode::Prefer,
+                // `Require` encrypts without validating; the Verify modes are
+                // the ones that actually authenticate the server.
                 SslMode::Require => PgSslMode::Require,
+                SslMode::VerifyCa => PgSslMode::VerifyCa,
+                SslMode::VerifyFull => PgSslMode::VerifyFull,
             });
 
         if !config.database.is_empty() {
@@ -430,9 +434,21 @@ pub(super) fn decode_value(row: &PgRow, idx: usize) -> Value {
         "INT8" => row.try_get::<i64, _>(idx).map(Value::Int),
         "FLOAT4" => row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)),
         "FLOAT8" => row.try_get::<f64, _>(idx).map(Value::Float),
+        // Read as text, not through `rust_decimal`.
+        //
+        // `rust_decimal` has a 96-bit mantissa — about 28 significant digits —
+        // while Postgres `numeric` allows up to 131,072. Decoding through it
+        // rounds anything longer, and fails outright past ~7.9e28, which then
+        // falls through to `Unsupported` and renders as an error. Postgres
+        // sends numeric as text on the wire anyway, so taking the string keeps
+        // every digit and is the same choice ClickHouse, MSSQL and DuckDB make.
         "NUMERIC" => row
-            .try_get::<rust_decimal::Decimal, _>(idx)
-            .map(|v| Value::Decimal(v.to_string())),
+            .try_get::<String, _>(idx)
+            .map(Value::Decimal)
+            .or_else(|_| {
+                row.try_get::<rust_decimal::Decimal, _>(idx)
+                    .map(|v| Value::Decimal(v.to_string()))
+            }),
         "UUID" => row
             .try_get::<uuid::Uuid, _>(idx)
             .map(|v| Value::Uuid(v.to_string())),

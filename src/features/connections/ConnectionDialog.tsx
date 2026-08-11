@@ -261,15 +261,24 @@ export function ConnectionDialog({
                   />
                 </Field>
               </div>
-              <div className="w-32">
-                <Field label="SSL">
+              <div className="w-40">
+                <Field
+                  label="SSL"
+                  hint={
+                    config.sslMode === 'require'
+                      ? 'Encrypts, but accepts any certificate'
+                      : undefined
+                  }
+                >
                   <select
                     className="input"
                     value={config.sslMode}
                     onChange={(e) => patch({ sslMode: e.target.value as SslMode })}
                   >
                     <option value="prefer">Prefer</option>
-                    <option value="require">Require</option>
+                    <option value="require">Require (no verification)</option>
+                    <option value="verifyCa">Verify CA</option>
+                    <option value="verifyFull">Verify full</option>
                     <option value="disable">Disable</option>
                   </select>
                 </Field>

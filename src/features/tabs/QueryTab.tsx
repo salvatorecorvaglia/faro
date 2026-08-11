@@ -56,9 +56,14 @@ export function QueryTab({ tab }: { tab: Tab }) {
   const tabRef = useRef(tab);
   tabRef.current = tab;
 
+  // Guards re-entry within a single tick. `t.running` comes from `tabRef`,
+  // which is only reassigned during render, so two calls dispatched from the
+  // same event both see `running: false` and both start a query.
+  const inFlight = useRef(false);
+
   const run = useCallback(async () => {
     const t = tabRef.current;
-    if (!t.connectionId || t.running) return;
+    if (!t.connectionId || t.running || inFlight.current) return;
 
     // Run the selection when there is one — the standard way to try part of a
     // script without deleting the rest.
@@ -66,6 +71,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
     const sqlText = selected ?? t.sql;
     if (!sqlText.trim()) return;
 
+    inFlight.current = true;
     const queryId = `q-${++queryCounter}`;
     update(t.id, { running: true, queryId, error: null, activeResultIndex: 0 });
     try {
@@ -82,6 +88,8 @@ export function QueryTab({ tab }: { tab: Tab }) {
       });
     } catch (e) {
       update(t.id, { running: false, queryId: null, error: ipc.errorMessage(e) });
+    } finally {
+      inFlight.current = false;
     }
   }, [update]);
 
@@ -98,12 +106,19 @@ export function QueryTab({ tab }: { tab: Tab }) {
   }
 
   // ⌘↵ from anywhere in the tab, not just inside the editor.
+  //
+  // Events originating inside the editor are skipped: CodeMirror's own
+  // `Mod-Enter` binding already handles those, and it calls `preventDefault`
+  // without stopping propagation, so the keydown reaches this listener too.
+  // Both handlers then ran in the same tick — two queries, two history rows,
+  // and the second result overwriting the first.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        e.preventDefault();
-        run();
-      }
+      if (!(e.metaKey || e.ctrlKey) || e.key !== 'Enter') return;
+      const target = e.target;
+      if (target instanceof Element && target.closest('.cm-editor')) return;
+      e.preventDefault();
+      run();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -116,11 +131,12 @@ export function QueryTab({ tab }: { tab: Tab }) {
         style={{ borderColor: 'var(--border)' }}
       >
         {tab.running ? (
-          <button className="btn btn-outline" onClick={cancel}>
+          <button type="button" className="btn btn-outline" onClick={cancel}>
             <IconStop size={11} /> Cancel
           </button>
         ) : (
           <button
+            type="button"
             className="btn btn-primary"
             onClick={run}
             disabled={!tab.connectionId || !tab.sql.trim()}
@@ -132,6 +148,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
 
         {canFormat && (
           <button
+            type="button"
             className="btn btn-ghost"
             onClick={format}
             disabled={!tab.sql.trim()}
@@ -142,6 +159,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
         )}
 
         <button
+          type="button"
           className="btn btn-ghost"
           onClick={() => setSaveOpen(true)}
           disabled={!tab.sql.trim()}
@@ -151,6 +169,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
         </button>
 
         <button
+          type="button"
           className="btn btn-ghost"
           onClick={() => setExportOpen(true)}
           disabled={!exportable}

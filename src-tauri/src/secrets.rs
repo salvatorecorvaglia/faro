@@ -41,7 +41,7 @@ pub fn set_password(key: &str, password: &str) -> Result<()> {
     } else {
         memory_store()
             .lock()
-            .expect("secrets mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(key.to_string(), password.to_string());
     }
     Ok(())
@@ -53,7 +53,11 @@ pub fn get_password(key: &str) -> Option<String> {
     if keychain_available() {
         entry(key).ok()?.get_password().ok()
     } else {
-        memory_store().lock().ok()?.get(key).cloned()
+        memory_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned()
     }
 }
 
@@ -66,7 +70,7 @@ pub fn delete_password(key: &str) -> Result<()> {
     } else {
         memory_store()
             .lock()
-            .expect("secrets mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(key);
     }
     Ok(())

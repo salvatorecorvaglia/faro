@@ -89,6 +89,7 @@ fn opts(format: ExportFormat, table: &str) -> ExportOptions {
         format,
         include_header: true,
         table_name: Some(table.into()),
+        sanitize_formulas: true,
     }
 }
 

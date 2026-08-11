@@ -82,8 +82,12 @@ export default function App() {
           // Inherit the current tab's connection so a new tab is immediately
           // usable rather than starting unattached.
           const current = state.tabs.find((t) => t.id === state.activeId);
-          const id = current?.connectionId ?? connected[0]?.id ?? null;
-          const engine = connections.find((c) => c.id === id)?.engine ?? null;
+          // Read connections from the store rather than closing over them:
+          // `connected` is a fresh array each render, so depending on it
+          // detached and reattached this listener on every keystroke.
+          const all = useConnections.getState().items;
+          const id = current?.connectionId ?? all.find((c) => c.connected)?.id ?? null;
+          const engine = all.find((c) => c.id === id)?.engine ?? null;
           openQueryTab(id, starterQuery(engine));
           break;
         }
@@ -97,7 +101,8 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openQueryTab, closeTab, connected, connections]);
+    // Both deps are stable store actions, so the listener is attached once.
+  }, [openQueryTab, closeTab]);
 
   return (
     <>
@@ -124,6 +129,7 @@ export default function App() {
                   action={
                     connected.length > 0 ? (
                       <button
+                        type="button"
                         className="btn btn-primary"
                         onClick={() =>
                           openQueryTab(connected[0]!.id, starterQuery(connected[0]!.engine))

@@ -57,23 +57,44 @@ export const useConnections = create<ConnectionState>((set, get) => ({
     }
   },
 
+  // The three below report failures into `error` rather than letting the
+  // promise reject. Their call sites in Sidebar are plain `onClick` handlers
+  // with no catch, so a rejection became an unhandled promise rejection and the
+  // user saw nothing — a delete that silently did not happen is the worst case.
+
   disconnect: async (id) => {
-    await ipc.disconnect(id);
-    // Drop the cached schema: by the time this connection is reopened the
-    // database may have changed, and stale autocomplete is worse than none.
-    useSchemaCache.getState().invalidate(id);
-    await get().refresh();
+    try {
+      await ipc.disconnect(id);
+      // Drop the cached schema: by the time this connection is reopened the
+      // database may have changed, and stale autocomplete is worse than none.
+      useSchemaCache.getState().invalidate(id);
+      await get().refresh();
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+    }
   },
 
+  // Rethrows as well as recording: the connection dialog awaits this to decide
+  // whether to close, and closing on a failed save would discard the user's
+  // input along with the error.
   save: async (config, password) => {
-    const saved = await ipc.saveConnection(config, password);
-    await get().refresh();
-    return saved;
+    try {
+      const saved = await ipc.saveConnection(config, password);
+      await get().refresh();
+      return saved;
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+      throw e;
+    }
   },
 
   remove: async (id) => {
-    await ipc.deleteConnection(id);
-    await get().refresh();
+    try {
+      await ipc.deleteConnection(id);
+      await get().refresh();
+    } catch (e) {
+      set({ error: ipc.errorMessage(e) });
+    }
   },
 
   clearError: () => set({ error: null }),

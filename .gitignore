@@ -2,10 +2,11 @@
 node_modules/
 .pnpm-store/
 
-# Build Outputs
+# Build Outputs & Caches
 dist/
 dist-isolation/
 .vite/
+.cache/
 *.tsbuildinfo
 
 # Rust / Tauri
@@ -13,31 +14,43 @@ target/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/bin/
+**/*.rs.bk
 
 # Tauri Mobile Icons (Faro is desktop-only)
 src-tauri/icons/android/
 src-tauri/icons/ios/
 
-# Tauri updater private keys
+# Tauri updater private keys & secrets
 *.key
 *.pub
 **/tauri-updater.key
 **/tauri-updater.pub
 
+# Databases & Local Storage
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.duckdb.wal
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+scratch/
+tests/fixtures/
+
 # Test Artifacts & Coverage
 coverage/
 .vitest/
 .biome_cache/
-*.db
-*.sqlite
-*.sqlite3
-tests/fixtures/
 
 # Logs
 *.log
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 
 # Environment & Local Overrides
 .env
@@ -46,14 +59,19 @@ yarn-debug.log*
 .env.*.local
 *.local
 !.env.example
+!.env.template
 
-# IDEs & Editors
+# IDEs, Editors & Temp Files
 .vscode/
 .idea/
 .zed/
 *.swp
 *.swo
 *~
+*.bak
+*.tmp
+*.sublime-project
+*.sublime-workspace
 
 # OS Files
 .DS_Store

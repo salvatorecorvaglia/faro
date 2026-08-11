@@ -27,6 +27,24 @@ impl Dialect for MySqlDialect {
         dialect::hex_bytes_x(bytes)
     }
 
+    /// MySQL and MariaDB honour backslash escapes inside string literals unless
+    /// `NO_BACKSLASH_ESCAPES` is set, which it is not by default. Faro does not
+    /// set it either, because doing so would change how the *user's* own SQL
+    /// behaves; escaping correctly here is the fix that stays out of their way.
+    fn quote_string(&self, s: &str) -> String {
+        crate::model::quote_sql_string_backslash(s)
+    }
+
+    /// MySQL has no `TEXT` target for `CAST`; `CHAR` is the text cast.
+    fn text_cast_type(&self) -> &'static str {
+        "CHAR"
+    }
+
+    /// `SHOW CREATE TABLE` lists secondary indexes inline as `KEY name (col)`.
+    fn native_ddl_includes_indexes(&self) -> bool {
+        true
+    }
+
     /// MySQL conflates "database" and "schema": a connection's schema *is* its
     /// database. Faro presents the current database as the one schema, so
     /// generated SQL stays unqualified and cannot accidentally reach across
@@ -62,7 +80,11 @@ impl MySqlDriver {
             .ssl_mode(match config.ssl_mode {
                 SslMode::Disable => MySqlSslMode::Disabled,
                 SslMode::Prefer => MySqlSslMode::Preferred,
+                // `Required` encrypts without validating; the Verify modes are
+                // the ones that actually authenticate the server.
                 SslMode::Require => MySqlSslMode::Required,
+                SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+                SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
             });
 
         if !config.database.is_empty() {
@@ -470,9 +492,17 @@ pub(super) fn decode_value(row: &MySqlRow, idx: usize) -> Value {
             }),
         "FLOAT" => row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)),
         "DOUBLE" => row.try_get::<f64, _>(idx).map(Value::Float),
-        "DECIMAL" | "NEWDECIMAL" => row
-            .try_get::<rust_decimal::Decimal, _>(idx)
-            .map(|v| Value::Decimal(v.to_string())),
+        // Read as text; see the matching comment in the Postgres driver.
+        // `rust_decimal` tops out around 28 significant digits, while MySQL
+        // DECIMAL allows 65, so decoding through it silently rounds.
+        "DECIMAL" | "NEWDECIMAL" => {
+            row.try_get::<String, _>(idx)
+                .map(Value::Decimal)
+                .or_else(|_| {
+                    row.try_get::<rust_decimal::Decimal, _>(idx)
+                        .map(|v| Value::Decimal(v.to_string()))
+                })
+        }
         "DATE" => row
             .try_get::<chrono::NaiveDate, _>(idx)
             .map(|v| Value::Date(v.to_string())),

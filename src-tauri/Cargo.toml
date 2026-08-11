@@ -51,7 +51,6 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 # Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 keyring = "4"
 
-sqlparser = "0.62"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 rust_decimal = "1"

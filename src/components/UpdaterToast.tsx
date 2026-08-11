@@ -42,6 +42,7 @@ export function UpdaterToast() {
           </span>
         </div>
         <button
+          type="button"
           onClick={dismiss}
           className="btn btn-ghost -mr-1 p-1 opacity-70 hover:opacity-100"
           aria-label="Close notification"
@@ -74,19 +75,19 @@ export function UpdaterToast() {
 
       <div className="flex items-center justify-end gap-2 mt-1">
         {status === 'available' && (
-          <button onClick={downloadAndInstall} className="btn btn-primary">
+          <button type="button" onClick={downloadAndInstall} className="btn btn-primary">
             <IconDownload size={13} /> Download
           </button>
         )}
 
         {status === 'ready' && (
-          <button onClick={restartApp} className="btn btn-primary">
+          <button type="button" onClick={restartApp} className="btn btn-primary">
             <IconRefresh size={13} /> Restart now
           </button>
         )}
 
         {status === 'error' && (
-          <button onClick={dismiss} className="btn btn-outline">
+          <button type="button" onClick={dismiss} className="btn btn-outline">
             Dismiss
           </button>
         )}

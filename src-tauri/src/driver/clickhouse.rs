@@ -28,6 +28,19 @@ impl Dialect for ClickHouseDialect {
         format!("unhex('{hex}')")
     }
 
+    /// ClickHouse applies C-style backslash escapes inside string literals, so
+    /// doubling the quote alone leaves a trailing backslash able to escape the
+    /// closing delimiter.
+    fn quote_string(&self, s: &str) -> String {
+        crate::model::quote_sql_string_backslash(s)
+    }
+
+    /// `String` is the native name; the `TEXT` alias exists but is not the one
+    /// ClickHouse's own errors and docs use.
+    fn text_cast_type(&self) -> &'static str {
+        "String"
+    }
+
     /// ClickHouse has no transactions worth the name. Callers check this before
     /// assuming a batch can be rolled back.
     fn supports_transactions(&self) -> bool {
@@ -61,14 +74,24 @@ pub struct ClickHouseDriver {
 impl ClickHouseDriver {
     pub async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
         let port = if config.port == 0 { 8123 } else { config.port };
-        let scheme = match config.ssl_mode {
-            crate::model::SslMode::Require => "https",
-            _ => "http",
+        // Faro authenticates with HTTP Basic, so the scheme decides whether the
+        // password crosses the network in the clear. `Prefer` is the default
+        // mode, and http is what a local container speaks.
+        let scheme = if config.ssl_mode.requires_tls() {
+            "https"
+        } else {
+            "http"
         };
 
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
-            .connect_timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(15));
+        // `Require` means "encrypt, do not authenticate"; the Verify modes get
+        // reqwest's default, which validates against the platform trust store.
+        if config.ssl_mode == crate::model::SslMode::Require {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        let http = builder
             .build()
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
@@ -439,7 +462,8 @@ impl Driver for ClickHouseDriver {
         // keeps the surplus rows on the server. Statements that cannot be a
         // derived table — `SHOW`, `DESCRIBE`, `EXPLAIN` — are run as written.
         let paged = if super::is_wrappable(sql) {
-            self.dialect.paginate(sql, limit + 1, 0)
+            self.dialect
+                .paginate(sql, crate::driver::probe_limit(limit), 0)
         } else {
             sql.trim().trim_end_matches(';').to_string()
         };

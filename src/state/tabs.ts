@@ -5,9 +5,15 @@ import type { ResultSet, StatementResult, TableRef } from '@/ipc/types';
 export type TabKind = 'query' | 'table';
 
 /**
- * One unit of work. Each tab owns its editor text and its results, so switching
- * tabs never loses state and two tabs can run against different connections at
- * the same time.
+ * One unit of work. Two tabs can run against different connections at the same
+ * time.
+ *
+ * Everything a tab must survive being switched away from lives here, because
+ * `App` mounts only the active tab and the others are unmounted. State held in
+ * the tab components themselves — a table tab's page offset, sort and filters,
+ * a result panel's view mode — is deliberately *not* preserved and resets on
+ * return. Staged edits used to be in that category too, which lost data
+ * silently; `dirty` is what lets the store prompt before that happens.
  */
 export interface Tab {
   id: string;
@@ -31,6 +37,16 @@ export interface Tab {
   error: string | null;
   /** Which statement's results are showing, when a script produced several. */
   activeResultIndex: number;
+  /**
+   * Table tabs: whether the grid holds staged INSERT/UPDATE/DELETE that have
+   * not been applied.
+   *
+   * Lives here rather than only inside `TableTab` because only the store knows
+   * a tab is about to be switched away from or closed. The component's own
+   * copy dies with it — `App` mounts just the active tab — so without this the
+   * edits vanished silently.
+   */
+  dirty: boolean;
 }
 
 interface TabState {
@@ -62,7 +78,19 @@ function baseTab(kind: TabKind, connectionId: string | null): Tab {
     queryId: null,
     error: null,
     activeResultIndex: 0,
+    dirty: false,
   };
+}
+
+/**
+ * Ask before abandoning a tab holding unapplied edits.
+ *
+ * Returns true when it is safe to proceed. Kept out of the store actions so
+ * both `setActive` and `closeTab` phrase it identically.
+ */
+function confirmLeaving(tab: Tab | undefined): boolean {
+  if (!tab?.dirty) return true;
+  return confirm(`"${tab.title}" has unsaved changes that have not been applied.\n\nDiscard them?`);
 }
 
 export const useTabs = create<TabState>((set, get) => ({
@@ -103,7 +131,9 @@ export const useTabs = create<TabState>((set, get) => ({
     return tab.id;
   },
 
-  closeTab: (id) =>
+  closeTab: (id) => {
+    // Closing a tab with staged edits throws them away for good.
+    if (!confirmLeaving(get().tabs.find((t) => t.id === id))) return;
     set((s) => {
       const index = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
@@ -111,9 +141,18 @@ export const useTabs = create<TabState>((set, get) => ({
       // Focus the neighbour, preferring the one to the left, as editors do.
       const neighbour = tabs[index - 1] ?? tabs[index] ?? tabs[tabs.length - 1];
       return { tabs, activeId: neighbour?.id ?? null };
-    }),
+    });
+  },
 
-  setActive: (id) => set({ activeId: id }),
+  // Switching away unmounts the tab, which discards its staged edits. Every
+  // other route out of a dirty grid — refresh, sort, filter, paging — already
+  // confirms; this one silently destroyed the work.
+  setActive: (id) => {
+    const { activeId, tabs } = get();
+    if (id === activeId) return;
+    if (!confirmLeaving(tabs.find((t) => t.id === activeId))) return;
+    set({ activeId: id });
+  },
 
   update: (id, patch) =>
     set((s) => ({

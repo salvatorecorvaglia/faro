@@ -132,11 +132,16 @@ pub async fn write_backup(
     // order, where `book_stores` precedes `books`.
     details = order_by_dependency(details);
 
+    // Which tables were written from the engine's own DDL. Recorded here so the
+    // secondary-object pass below does not have to ask again — that second
+    // `table_ddl` call was a wasted round trip per table.
+    let mut used_native_ddl = vec![false; details.len()];
+
     // Schema first, all of it, before any data. A restore then has every table
     // in place before the first insert, so table order cannot break a
     // foreign key.
     if options.include_schema {
-        for detail in &details {
+        for (index, detail) in details.iter().enumerate() {
             if options.drop_existing {
                 writeln!(
                     out,
@@ -147,7 +152,10 @@ pub async fn write_backup(
             // Prefer the engine's own DDL where it keeps one — it preserves
             // constraints a column-by-column rebuild cannot express.
             let ddl = match driver.table_ddl(&detail.table).await? {
-                Some(native) => native,
+                Some(native) => {
+                    used_native_ddl[index] = true;
+                    native
+                }
                 None => create_table_sql(detail, dialect),
             };
             writeln!(out, "{ddl}")?;
@@ -173,13 +181,21 @@ pub async fn write_backup(
     // Indexes and foreign keys last: inserting into an unindexed table is much
     // faster, and every referenced row exists by the time constraints apply.
     //
-    // Foreign keys are skipped when the engine supplied its own DDL, since that
-    // text already declares them inline and adding them again would fail.
+    // What native DDL already covers varies by engine, so what may be re-emitted
+    // does too. Foreign keys are inline in every engine's own `CREATE TABLE`, so
+    // the `ALTER TABLE` form is always redundant there. Indexes are inline only
+    // where the dialect says so — MySQL lists them as `KEY name (col)`, and
+    // emitting `CREATE INDEX` for those failed the restore with "Duplicate key
+    // name", while SQLite keeps them as separate objects that still need it.
     if options.include_schema {
-        for detail in &details {
-            let native = driver.table_ddl(&detail.table).await?.is_some();
+        let skip_indexes = dialect.native_ddl_includes_indexes();
+        for (index, detail) in details.iter().enumerate() {
+            let native = used_native_ddl[index];
             for stmt in secondary_objects_sql(detail, dialect) {
-                if native && stmt.starts_with("ALTER TABLE") {
+                let redundant = native
+                    && (stmt.starts_with("ALTER TABLE")
+                        || (skip_indexes && stmt.contains("INDEX")));
+                if redundant {
                     continue;
                 }
                 writeln!(out, "{stmt}")?;
@@ -213,8 +229,10 @@ async fn write_table_data(
         .map(|c| dialect.quote_ident(&c.name))
         .collect();
 
-    // Ordering by the primary key is what makes paging stable; see `order_by_key`.
-    let order = sql::order_by_key(&detail.primary_key, dialect);
+    // A stable order is what makes paging a partition rather than a resample;
+    // see `stable_order_by`. Without it a keyless table dumps duplicated and
+    // missing rows.
+    let order = sql::stable_order_by(&detail.primary_key, &detail.columns, dialect);
 
     let base = format!("SELECT {} FROM {qualified}{order}", columns.join(", "));
     let prefix = format!("INSERT INTO {qualified} ({}) VALUES", columns.join(", "));

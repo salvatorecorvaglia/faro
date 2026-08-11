@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import {
   IconChevron,
@@ -8,7 +9,7 @@ import {
   IconTrash,
   IconWarning,
 } from '@/components/icons';
-import { Spinner } from '@/components/ui';
+import { ErrorBanner, rowActivation, Spinner } from '@/components/ui';
 import type { HistoryEntry, SavedQuery } from '@/ipc/types';
 import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
 import { formatDuration, formatRowCount } from '@/lib/value';
@@ -28,7 +29,19 @@ type LibraryTab = 'saved' | 'history';
 export function LibraryPanel() {
   const [tab, setTab] = useState<LibraryTab>('saved');
   const [collapsed, setCollapsed] = useState(false);
-  const { saved, history, refreshSaved, refreshHistory, loading } = useLibrary();
+  // Shallow-selected: a bare `useLibrary()` subscribes to the whole store, so
+  // an unrelated field changing re-rendered the panel and both its lists.
+  const { saved, history, refreshSaved, refreshHistory, loading, error, clearError } = useLibrary(
+    useShallow((s) => ({
+      saved: s.saved,
+      history: s.history,
+      refreshSaved: s.refreshSaved,
+      refreshHistory: s.refreshHistory,
+      loading: s.loading,
+      error: s.error,
+      clearError: s.clearError,
+    })),
+  );
 
   useEffect(() => {
     refreshSaved();
@@ -47,6 +60,7 @@ export function LibraryPanel() {
     >
       <div className="flex h-[30px] shrink-0 items-center gap-1 px-1.5">
         <button
+          type="button"
           className="btn btn-ghost px-1"
           onClick={() => setCollapsed((c) => !c)}
           title={collapsed ? 'Expand' : 'Collapse'}
@@ -56,6 +70,7 @@ export function LibraryPanel() {
 
         {(['saved', 'history'] as const).map((t) => (
           <button
+            type="button"
             key={t}
             className="btn px-1.5 py-0.5 text-[11px]"
             onClick={() => {
@@ -80,14 +95,24 @@ export function LibraryPanel() {
       </div>
 
       {!collapsed && (
-        <div className="min-h-0 flex-1">{tab === 'saved' ? <SavedList /> : <HistoryList />}</div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* A failed delete or history wipe used to be an unhandled rejection
+              with no visible trace, so the user believed it had worked. */}
+          {error && (
+            <div className="px-1.5 pb-1.5">
+              <ErrorBanner message={error} onDismiss={clearError} />
+            </div>
+          )}
+          <div className="min-h-0 flex-1">{tab === 'saved' ? <SavedList /> : <HistoryList />}</div>
+        </div>
       )}
     </div>
   );
 }
 
 function SavedList() {
-  const { saved, remove } = useLibrary();
+  const saved = useLibrary((s) => s.saved);
+  const remove = useLibrary((s) => s.remove);
   const openQueryTab = useTabs((s) => s.openQueryTab);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<SavedQuery | null>(null);
@@ -126,12 +151,18 @@ function SavedList() {
                 <div
                   key={q.id}
                   className="group flex h-6 cursor-pointer items-center gap-1.5 px-2 hover:bg-[var(--bg-inset)]"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={
+                    rowActivation(() => openQueryTab(q.connectionId, q.sql, q.name)).onKeyDown
+                  }
                   onClick={() => openQueryTab(q.connectionId, q.sql, q.name)}
                   title={q.sql}
                 >
                   <span className="min-w-0 flex-1 truncate text-[11.5px]">{q.name}</span>
                   <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
                     <button
+                      type="button"
                       className="btn btn-ghost px-1"
                       title="Rename"
                       onClick={(e) => {
@@ -142,6 +173,7 @@ function SavedList() {
                       <IconEdit size={11} />
                     </button>
                     <button
+                      type="button"
                       className="btn btn-ghost px-1"
                       title="Delete"
                       onClick={(e) => {
@@ -171,7 +203,15 @@ function SavedList() {
 }
 
 function HistoryList() {
-  const { history, historySearch, refreshHistory, clearHistory, deleteHistoryEntry } = useLibrary();
+  const { history, historySearch, refreshHistory, clearHistory, deleteHistoryEntry } = useLibrary(
+    useShallow((s) => ({
+      history: s.history,
+      historySearch: s.historySearch,
+      refreshHistory: s.refreshHistory,
+      clearHistory: s.clearHistory,
+      deleteHistoryEntry: s.deleteHistoryEntry,
+    })),
+  );
   const openQueryTab = useTabs((s) => s.openQueryTab);
   const connections = useConnections((s) => s.items);
   const [term, setTerm] = useState(historySearch);
@@ -191,6 +231,7 @@ function HistoryList() {
         </div>
         {history.length > 0 && (
           <button
+            type="button"
             className="btn btn-ghost shrink-0 px-1"
             title="Clear all history"
             onClick={() => {
@@ -238,6 +279,9 @@ function HistoryRow({
     <div
       className="group flex cursor-pointer flex-col gap-0.5 border-b px-2 py-1 hover:bg-[var(--bg-inset)]"
       style={{ borderColor: 'var(--border)' }}
+      role="button"
+      tabIndex={0}
+      onKeyDown={rowActivation(onOpen).onKeyDown}
       onClick={onOpen}
       title={entry.sql}
     >
@@ -252,6 +296,7 @@ function HistoryRow({
           {oneLine(entry.sql, 90)}
         </span>
         <button
+          type="button"
           className="hidden shrink-0 opacity-60 hover:opacity-100 group-hover:block"
           title="Remove from history"
           onClick={(e) => {

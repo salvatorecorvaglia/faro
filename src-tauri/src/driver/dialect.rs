@@ -17,6 +17,36 @@ pub trait Dialect: Send + Sync {
     /// Render a byte string as a literal.
     fn quote_bytes(&self, bytes: &[u8]) -> String;
 
+    /// Render a text string as a literal.
+    ///
+    /// Defaults to the SQL-standard rule of doubling the quote. Engines that
+    /// also honour backslash escapes inside `'...'` **must** override this —
+    /// see [`crate::model::quote_sql_string_backslash`].
+    fn quote_string(&self, s: &str) -> String {
+        crate::model::quote_sql_string(s)
+    }
+
+    /// Whether this engine's own `CREATE TABLE` text also declares the table's
+    /// secondary indexes.
+    ///
+    /// Only meaningful for engines that expose native DDL at all. MySQL's
+    /// `SHOW CREATE TABLE` lists them inline as `KEY name (col)`, so a dump that
+    /// also emits `CREATE INDEX` fails to restore with "Duplicate key name".
+    /// SQLite keeps indexes as separate `sqlite_master` objects, so there they
+    /// still have to be emitted separately. Foreign keys are inline in both.
+    fn native_ddl_includes_indexes(&self) -> bool {
+        false
+    }
+
+    /// The type to cast to when a value has to be compared as text, as in the
+    /// `LIKE` used by the `Contains` and `StartsWith` browse filters.
+    ///
+    /// `TEXT` is not universal: MySQL rejects it in `CAST` and wants `CHAR`,
+    /// and T-SQL's `TEXT` is a deprecated LOB type that cannot be compared.
+    fn text_cast_type(&self) -> &'static str {
+        "TEXT"
+    }
+
     /// ClickHouse has no transactions, so restore and multi-statement applies
     /// must not try to open one.
     fn supports_transactions(&self) -> bool {
@@ -68,7 +98,7 @@ pub trait Dialect: Send + Sync {
     }
 
     fn literal(&self, value: &Value) -> String {
-        value.to_sql_literal(&|b| self.quote_bytes(b))
+        value.to_sql_literal(&|b| self.quote_bytes(b), &|s| self.quote_string(s))
     }
 }
 

@@ -21,6 +21,12 @@ impl Dialect for SqlServerDialect {
         dialect::quote_bracket(ident)
     }
 
+    /// T-SQL's `TEXT` is a deprecated LOB type that cannot be used as a `CAST`
+    /// target for comparison; `NVARCHAR(MAX)` is the modern equivalent.
+    fn text_cast_type(&self) -> &'static str {
+        "NVARCHAR(MAX)"
+    }
+
     /// SQL Server has no `LIMIT`, and it will not accept the wrapping trick the
     /// other engines use.
     ///
@@ -97,10 +103,14 @@ impl SqlServerDriver {
         }
         match config.ssl_mode {
             // SQL Server images ship a self-signed certificate, so requiring a
-            // verified chain would refuse almost every local instance. "Require"
-            // still encrypts; verification is what is relaxed.
-            SslMode::Disable | SslMode::Prefer => tds.trust_cert(),
-            SslMode::Require => tds.trust_cert(),
+            // verified chain would refuse almost every local instance. These
+            // modes still encrypt; verification is what is relaxed.
+            SslMode::Disable | SslMode::Prefer | SslMode::Require => tds.trust_cert(),
+            // Verify modes leave tiberius at its default, which validates the
+            // chain against the platform trust store. Previously every arm
+            // called `trust_cert()`, so "Require" silently accepted any
+            // certificate an attacker cared to present.
+            SslMode::VerifyCa | SslMode::VerifyFull => {}
         }
 
         // Probe once directly before building the pool.
@@ -542,7 +552,9 @@ impl Driver for SqlServerDriver {
     }
 
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
-        let paged = self.dialect.paginate(sql, limit + 1, 0);
+        let paged = self
+            .dialect
+            .paginate(sql, crate::driver::probe_limit(limit), 0);
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(FaroError::Cancelled),
@@ -607,7 +619,15 @@ impl Driver for SqlServerDriver {
             total += affected;
         }
 
-        control(&mut client, "COMMIT").await?;
+        // A failing COMMIT must still close the transaction.
+        //
+        // Returning `?` here dropped `client` straight back into the bb8 pool
+        // with the transaction still open, holding its locks — and since the
+        // pool has `max_size(1)`, that is the connection every later command
+        // gets.
+        if let Err(e) = control(&mut client, "COMMIT").await {
+            return Err(rollback(&mut client, e).await);
+        }
 
         Ok(total)
     }
@@ -690,10 +710,14 @@ fn decode_value(cell: &ColumnData<'static>) -> Value {
             .as_ref()
             .map(|x| Value::Text(x.to_string()))
             .unwrap_or(Value::Null),
-        ColumnData::DateTime(_)
-        | ColumnData::SmallDateTime(_)
-        | ColumnData::DateTime2(_)
-        | ColumnData::DateTimeOffset(_) => decode_temporal(cell, TemporalKind::Timestamp),
+        ColumnData::DateTime(_) | ColumnData::SmallDateTime(_) | ColumnData::DateTime2(_) => {
+            decode_temporal(cell, TemporalKind::Timestamp)
+        }
+        // `datetimeoffset` carries a zone, and tiberius decodes it only into
+        // `DateTime<FixedOffset>` — `NaiveDateTime::from_sql` rejects it. Sent
+        // down the naive path it failed to decode and became a silent NULL,
+        // which is exactly the outcome `Value::Unsupported` exists to avoid.
+        ColumnData::DateTimeOffset(_) => decode_temporal(cell, TemporalKind::TimestampTz),
         ColumnData::Date(_) => decode_temporal(cell, TemporalKind::Date),
         ColumnData::Time(_) => decode_temporal(cell, TemporalKind::Time),
     }
@@ -703,6 +727,8 @@ enum TemporalKind {
     Date,
     Time,
     Timestamp,
+    /// `datetimeoffset`: a timestamp that knows its UTC offset.
+    TimestampTz,
 }
 
 /// Convert a temporal column through tiberius' chrono support.
@@ -710,26 +736,45 @@ enum TemporalKind {
 /// tiberius' own date types are wire representations rather than calendar
 /// values, so they are read out via `FromSql` into chrono types instead of being
 /// destructured by hand.
+/// A decode failure becomes `Unsupported`, not `Null`.
+///
+/// The two are different facts: NULL is what the database holds, `Unsupported`
+/// means Faro could not read what it holds. Collapsing the second into the
+/// first makes a driver gap look like user data.
 fn decode_temporal(cell: &ColumnData<'static>, kind: TemporalKind) -> Value {
-    use tiberius::time::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+    use tiberius::time::chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
     use tiberius::FromSql;
 
+    /// `Ok(None)` is a real SQL NULL; `Err` is a decode failure.
+    fn resolve<T>(
+        decoded: std::result::Result<Option<T>, tiberius::error::Error>,
+        type_name: &str,
+        render: impl Fn(T) -> Value,
+    ) -> Value {
+        match decoded {
+            Ok(Some(v)) => render(v),
+            Ok(None) => Value::Null,
+            Err(_) => Value::Unsupported(type_name.to_string()),
+        }
+    }
+
     match kind {
-        TemporalKind::Date => NaiveDate::from_sql(cell)
-            .ok()
-            .flatten()
-            .map(|d| Value::Date(d.to_string()))
-            .unwrap_or(Value::Null),
-        TemporalKind::Time => NaiveTime::from_sql(cell)
-            .ok()
-            .flatten()
-            .map(|t| Value::Time(t.to_string()))
-            .unwrap_or(Value::Null),
-        TemporalKind::Timestamp => NaiveDateTime::from_sql(cell)
-            .ok()
-            .flatten()
-            .map(|t| Value::Timestamp(t.to_string()))
-            .unwrap_or(Value::Null),
+        TemporalKind::Date => resolve(NaiveDate::from_sql(cell), "date", |d| {
+            Value::Date(d.to_string())
+        }),
+        TemporalKind::Time => resolve(NaiveTime::from_sql(cell), "time", |t| {
+            Value::Time(t.to_string())
+        }),
+        TemporalKind::Timestamp => resolve(NaiveDateTime::from_sql(cell), "datetime2", |t| {
+            Value::Timestamp(t.to_string())
+        }),
+        // Rendered RFC 3339 so the offset survives into the UI and any dump,
+        // matching what the Postgres driver does for `timestamptz`.
+        TemporalKind::TimestampTz => resolve(
+            DateTime::<FixedOffset>::from_sql(cell),
+            "datetimeoffset",
+            |t| Value::Timestamp(t.to_rfc3339()),
+        ),
     }
 }
 

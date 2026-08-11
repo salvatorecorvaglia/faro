@@ -18,7 +18,13 @@ export type Engine =
   | 'redshift'
   | 'mongodb';
 
-export type SslMode = 'disable' | 'prefer' | 'require';
+/**
+ * `require` encrypts but accepts any certificate, so it does not protect
+ * against a man-in-the-middle. `verifyCa` and `verifyFull` validate the
+ * server's certificate and are what a connection over an untrusted network
+ * should use.
+ */
+export type SslMode = 'disable' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull';
 
 export interface ConnectionConfig {
   id: string;
@@ -142,6 +148,11 @@ export interface IndexInfo {
   columns: string[];
   isUnique: boolean;
   isPrimary: boolean;
+  /**
+   * Backed by a constraint rather than a standalone `CREATE INDEX`. Such an
+   * index is created by the table definition and must not be re-emitted.
+   */
+  isConstraint: boolean;
 }
 
 export interface TableDetail {
@@ -235,6 +246,11 @@ export interface ExportOptions {
   format: ExportFormat;
   includeHeader: boolean;
   tableName?: string | null;
+  /**
+   * Prefix CSV/TSV cells that a spreadsheet would evaluate as a formula with an
+   * apostrophe. Defaults to true in the backend when omitted.
+   */
+  sanitizeFormulas?: boolean;
 }
 
 export type ImportFormat = 'csv' | 'tsv' | 'json' | 'xlsx';
@@ -307,6 +323,9 @@ export interface FaroError {
     | 'connection'
     | 'database'
     | 'notConnected'
+    // A write refused because the connection is marked read-only. Distinct
+    // from a database failure: it is a setting the user chose and can change.
+    | 'readOnly'
     | 'cancelled'
     | 'unsupportedEngine'
     | 'store'
