@@ -521,6 +521,9 @@ mod tests {
     #[test]
     fn numeric_precision_strips_trailing_zeros() {
         let dec: bigdecimal::BigDecimal = "12345678901234567890.098765432100".parse().unwrap();
-        assert_eq!(dec.normalized().to_plain_string(), "12345678901234567890.0987654321");
+        assert_eq!(
+            dec.normalized().to_plain_string(),
+            "12345678901234567890.0987654321"
+        );
     }
 }
