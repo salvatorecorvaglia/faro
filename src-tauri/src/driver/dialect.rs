@@ -47,6 +47,16 @@ pub trait Dialect: Send + Sync {
         "TEXT"
     }
 
+    /// Whether `LIKE ... ESCAPE 'c'` is accepted.
+    ///
+    /// ClickHouse has no `ESCAPE` clause at all — it always reads backslash as
+    /// the escape character and rejects the standard syntax outright — so the
+    /// clause has to be left off there. The escaped pattern itself is still
+    /// right; only the trailing declaration goes.
+    fn supports_like_escape(&self) -> bool {
+        true
+    }
+
     /// ClickHouse has no transactions, so restore and multi-statement applies
     /// must not try to open one.
     fn supports_transactions(&self) -> bool {

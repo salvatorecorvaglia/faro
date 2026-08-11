@@ -434,21 +434,26 @@ pub(super) fn decode_value(row: &PgRow, idx: usize) -> Value {
         "INT8" => row.try_get::<i64, _>(idx).map(Value::Int),
         "FLOAT4" => row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)),
         "FLOAT8" => row.try_get::<f64, _>(idx).map(Value::Float),
-        // Read as text, not through `rust_decimal`.
+        // Decoded through `BigDecimal`, which is arbitrary-precision.
         //
-        // `rust_decimal` has a 96-bit mantissa — about 28 significant digits —
-        // while Postgres `numeric` allows up to 131,072. Decoding through it
-        // rounds anything longer, and fails outright past ~7.9e28, which then
-        // falls through to `Unsupported` and renders as an error. Postgres
-        // sends numeric as text on the wire anyway, so taking the string keeps
-        // every digit and is the same choice ClickHouse, MSSQL and DuckDB make.
+        // `rust_decimal` — the obvious choice, and what this used to use — has
+        // a 96-bit mantissa, about 28 significant digits, while Postgres
+        // `numeric` allows up to 131,072. Anything longer came back silently
+        // rounded. Asking for a `String` instead does not help: sqlx sends
+        // numeric in the binary format and refuses to decode it as text, so
+        // that attempt always failed and fell through to the rounding path.
+        //
+        // `to_plain_string` rather than `to_string`: `Display` switches to
+        // exponential notation past a digit threshold, and a cell showing
+        // `1.2e+20` where the column holds an exact integer is a lie about the
+        // stored value.
+        //
+        // `NaN` and the infinities are legal `numeric` values that `BigDecimal`
+        // cannot hold; they fall through to `Unsupported` and show as the type
+        // name rather than as a wrong number.
         "NUMERIC" => row
-            .try_get::<String, _>(idx)
-            .map(Value::Decimal)
-            .or_else(|_| {
-                row.try_get::<rust_decimal::Decimal, _>(idx)
-                    .map(|v| Value::Decimal(v.to_string()))
-            }),
+            .try_get::<bigdecimal::BigDecimal, _>(idx)
+            .map(|v| Value::Decimal(v.to_plain_string())),
         "UUID" => row
             .try_get::<uuid::Uuid, _>(idx)
             .map(|v| Value::Uuid(v.to_string())),

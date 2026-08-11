@@ -41,6 +41,13 @@ impl Dialect for ClickHouseDialect {
         "String"
     }
 
+    /// ClickHouse's `LIKE` takes no `ESCAPE` clause — it is a syntax error —
+    /// but it already treats backslash as the escape character, which is the
+    /// one Faro escapes patterns with, so dropping the clause loses nothing.
+    fn supports_like_escape(&self) -> bool {
+        false
+    }
+
     /// ClickHouse has no transactions worth the name. Callers check this before
     /// assuming a batch can be rolled back.
     fn supports_transactions(&self) -> bool {
@@ -601,6 +608,13 @@ mod tests {
     fn identifiers_use_backticks_and_escape_them() {
         assert_eq!(ClickHouseDialect.quote_ident("my table"), "`my table`");
         assert_eq!(ClickHouseDialect.quote_ident("we`ird"), "`we``ird`");
+    }
+
+    #[test]
+    fn like_takes_no_escape_clause() {
+        // `LIKE '...' ESCAPE '\\'` is a hard syntax error here, so every text
+        // filter would fail if this ever went back to the default.
+        assert!(!ClickHouseDialect.supports_like_escape());
     }
 
     #[test]

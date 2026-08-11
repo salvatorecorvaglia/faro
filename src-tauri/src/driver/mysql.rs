@@ -492,17 +492,12 @@ pub(super) fn decode_value(row: &MySqlRow, idx: usize) -> Value {
             }),
         "FLOAT" => row.try_get::<f32, _>(idx).map(|v| Value::Float(v as f64)),
         "DOUBLE" => row.try_get::<f64, _>(idx).map(Value::Float),
-        // Read as text; see the matching comment in the Postgres driver.
-        // `rust_decimal` tops out around 28 significant digits, while MySQL
-        // DECIMAL allows 65, so decoding through it silently rounds.
-        "DECIMAL" | "NEWDECIMAL" => {
-            row.try_get::<String, _>(idx)
-                .map(Value::Decimal)
-                .or_else(|_| {
-                    row.try_get::<rust_decimal::Decimal, _>(idx)
-                        .map(|v| Value::Decimal(v.to_string()))
-                })
-        }
+        // Decoded through `BigDecimal`; see the matching comment in the
+        // Postgres driver. `rust_decimal` tops out around 28 significant
+        // digits, while MySQL DECIMAL allows 65, so it silently rounded.
+        "DECIMAL" | "NEWDECIMAL" => row
+            .try_get::<bigdecimal::BigDecimal, _>(idx)
+            .map(|v| Value::Decimal(v.to_plain_string())),
         "DATE" => row
             .try_get::<chrono::NaiveDate, _>(idx)
             .map(|v| Value::Date(v.to_string())),

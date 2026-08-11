@@ -454,11 +454,19 @@ fn build_where(
 /// Writing `ESCAPE '\'` directly — as this did — produces an *unterminated*
 /// literal on MySQL and ClickHouse, where the backslash escapes the closing
 /// quote. And the cast target is not portable: MySQL rejects `TEXT` outright.
+///
+/// The clause itself is omitted where the dialect has no `ESCAPE` at all; see
+/// [`crate::driver::Dialect::supports_like_escape`].
 fn like_clause(col: &str, pattern: &str, dialect: &dyn crate::driver::Dialect) -> String {
     let pat = dialect.quote_string(pattern);
-    let esc = dialect.quote_string(&LIKE_ESCAPE.to_string());
     let text = dialect.text_cast_type();
-    format!("CAST({col} AS {text}) LIKE {pat} ESCAPE {esc}")
+    let cmp = format!("CAST({col} AS {text}) LIKE {pat}");
+    if dialect.supports_like_escape() {
+        let esc = dialect.quote_string(&LIKE_ESCAPE.to_string());
+        format!("{cmp} ESCAPE {esc}")
+    } else {
+        cmp
+    }
 }
 
 /// Escape character used with `LIKE`.
@@ -812,6 +820,26 @@ SELECT f()
         }
     }
 
+    /// Stands in for ClickHouse: backslash escaping *and* no `ESCAPE` clause.
+    struct NoEscapeDialect;
+    impl Dialect for NoEscapeDialect {
+        fn quote_ident(&self, i: &str) -> String {
+            crate::driver::dialect::quote_backtick(i)
+        }
+        fn paginate(&self, sql: &str, l: u64, o: u64) -> String {
+            paginate_limit_offset(sql, l, o)
+        }
+        fn quote_bytes(&self, b: &[u8]) -> String {
+            hex_bytes_x(b)
+        }
+        fn quote_string(&self, s: &str) -> String {
+            crate::model::quote_sql_string_backslash(s)
+        }
+        fn supports_like_escape(&self) -> bool {
+            false
+        }
+    }
+
     fn filter(column: &str, op: FilterOp, value: &str) -> ColumnFilter {
         ColumnFilter {
             column: column.into(),
@@ -965,6 +993,18 @@ SELECT f()
         );
         assert!(out.ends_with(r"ESCAPE '\\'"), "got {out}");
         assert!(out.contains(r"'%50\\%%'"), "got {out}");
+    }
+
+    #[test]
+    fn a_dialect_without_escape_still_escapes_the_pattern() {
+        // ClickHouse rejects `ESCAPE` as a syntax error, so the clause is
+        // dropped there — but the wildcard must still be neutralized, since
+        // ClickHouse reads backslash as the escape character regardless.
+        for op in [FilterOp::Contains, FilterOp::StartsWith] {
+            let out = build_where(&[filter("a", op, "50%")], &["a"], &NoEscapeDialect);
+            assert!(!out.contains("ESCAPE"), "{op:?} produced {out}");
+            assert!(out.contains(r"50\\%"), "{op:?} produced {out}");
+        }
     }
 
     #[test]

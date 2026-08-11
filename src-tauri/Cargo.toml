@@ -40,7 +40,10 @@ sqlx = { version = "0.9", default-features = false, features = [
   "sqlite-bundled",
   "chrono",
   "uuid",
-  "rust_decimal",
+  # `bigdecimal`, not `rust_decimal`: the latter's 96-bit mantissa tops out
+  # around 28 significant digits, so Postgres `numeric` and MySQL `DECIMAL`
+  # values longer than that come back silently rounded.
+  "bigdecimal",
   "json",
 ] }
 
@@ -53,7 +56,9 @@ keyring = "4"
 
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-rust_decimal = "1"
+# Arbitrary-precision decimals. Version tracks sqlx's, so the `BigDecimal`
+# decoded out of a row is the same type this crate names.
+bigdecimal = "0.4"
 dirs = "6"
 # `bundled` compiles DuckDB in; there is no system libduckdb to link against on
 # a typical machine. It is the reason this crate is behind a feature.
