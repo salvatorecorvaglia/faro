@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test Suite Restructuring**: Relocated frontend unit tests (`*.test.ts`, `*.test.tsx`) into the root `tests/` directory and updated Vitest and TypeScript compilation configurations.
 
 ### Fixed
-- **Decimal Precision on PostgreSQL and MySQL**: `numeric` and `DECIMAL` values are now decoded through `BigDecimal` instead of `rust_decimal`, whose ~28-significant-digit limit silently rounded longer values.
+- **Decimal Precision & Normalization on PostgreSQL and MySQL**: `numeric` and `DECIMAL` values are now decoded through `BigDecimal` instead of `rust_decimal` (resolving its ~28-significant-digit limitation) and normalized to strip trailing fractional zeros without losing numeric precision.
 - **Text Filters on ClickHouse**: Browse filters using "contains" and "starts with" no longer emit a `LIKE ... ESCAPE` clause on ClickHouse, which rejects it as a syntax error. Wildcards are still escaped — ClickHouse treats backslash as the escape character by default.
 
 ### Security
