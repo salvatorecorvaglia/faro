@@ -31,7 +31,7 @@
 | **DuckDB** | Embedded Analytical | Bundled (`duckdb-rs`) | Local file |
 | **MongoDB** | Document / NoSQL | Native (`mongodb` Rust driver + BSON parser) | `57017` |
 | **ClickHouse** | Analytical Columnar | HTTP Interface (`reqwest`) | `58123` |
-| **SQL Server (MSSQL)** | Relational | Native TDS (`tiberius` + `bb8`) | `51433` |
+| **SQL Server (MSSQL)** | Relational | Native TDS (`tiberius` with `native-tls` + `bb8`) | `51433` |
 
 ---
 

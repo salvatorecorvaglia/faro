@@ -79,11 +79,11 @@ Make sure you have installed:
 
 ### Backend Guidelines (Rust)
 
-- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39, `duckdb` 1, `mongodb` 3, `tiberius` 0.12, `tauri-plugin-updater`.
+- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39, `duckdb` 1, `mongodb` 3, `tiberius` 0.12 (with `native-tls`), `tauri-plugin-updater`.
 - **Security & Validation**:
   - **Read-Only Mode**: Any new SQL execution paths must respect the strict read-only validator (`src-tauri/src/sql.rs`) when operating under read-only connections.
   - **Export Sanitization**: Any new export routines (CSV/TSV/delimited) must sanitize potential spreadsheet formula injection characters (`=`, `+`, `-`, `@`, `\t`, `\r`) by escaping them.
-  - **SSL/TLS Drivers**: When adding or updating database drivers, support SSL connection modes and custom CA/client certificate configurations where applicable.
+  - **SSL/TLS Drivers**: When adding or updating database drivers, support SSL connection modes and custom CA/client certificate configurations where applicable (`native-tls` for Tiberius/MSSQL, `rustls-ring` for `sqlx`, `rustls` for `reqwest`/ClickHouse and `mongodb`).
   - **Numeric Precision & Normalization**: Decode high-precision decimal values (`NUMERIC`/`DECIMAL`) into `bigdecimal::BigDecimal` rather than float or fixed-precision types, normalizing with `.normalized()` to strip trailing fractional zeros while preserving exact precision.
 - **Error Handling**: Use the custom error types in `src-tauri/src/error.rs` powered by `thiserror`. Do not panic (`unwrap()`) in production IPC paths; return structured `Result<T, FaroError>`.
 - **Async & Concurrency**: Avoid blocking execution on the main UI loop or Tokio worker threads. Use `tokio::task::spawn_blocking` for CPU-heavy disk or parsing work if necessary.

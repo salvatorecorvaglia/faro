@@ -16,12 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App Icon Relocation**: Migrated application icon to `resources/faro.png` for better project structure.
 - **SQLite Foreign Key Introspection**: Refactored schema reflection to correctly group multi-column compound foreign keys.
 - **Test Suite Restructuring**: Relocated frontend unit tests (`*.test.ts`, `*.test.tsx`) into the root `tests/` directory and updated Vitest and TypeScript compilation configurations.
+- **Docker Compose Test File Relocation**: Moved `docker-compose.test.yml` into the root `tests/` directory to consolidate test assets, updating test scripts and CI workflows.
 
 ### Fixed
 - **Decimal Precision & Normalization on PostgreSQL and MySQL**: `numeric` and `DECIMAL` values are now decoded through `BigDecimal` instead of `rust_decimal` (resolving its ~28-significant-digit limitation) and normalized to strip trailing fractional zeros without losing numeric precision.
 - **Text Filters on ClickHouse**: Browse filters using "contains" and "starts with" no longer emit a `LIKE ... ESCAPE` clause on ClickHouse, which rejects it as a syntax error. Wildcards are still escaped — ClickHouse treats backslash as the escape character by default.
+- **CI Workflows & Secret Storage Isolation**: Updated test database file references in GitHub Actions workflows (`ci.yml` and `release.yml`) to point to `tests/docker-compose.test.yml`, and randomized key values in secret storage integration tests to avoid key collisions.
 
 ### Security
+- **Tiberius TLS Migration & Security Vulnerability Resolution**: Migrated the `tiberius` MSSQL driver from `rustls-tls` to `native-tls` and updated transitive Cargo dependencies (`rustls-webpki`, `glib`, `rand`) to eliminate security vulnerabilities (RUSTSEC-2025-0003, RUSTSEC-2025-0008, and Dependabot security alerts).
 - **CSV Formula Injection Sanitization**: Implemented automatic formula escaping (`'`, `=`, `+`, `-`, `@`, `\t`, `\r`) during CSV exports to prevent spreadsheet macro execution vulnerabilities.
 - **Enhanced Read-Only Validation**: Expanded the SQL parser and query validator to strictly detect and block data-modifying statements and DDL operations in read-only connection mode.
 
