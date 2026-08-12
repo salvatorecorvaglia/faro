@@ -121,9 +121,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Setup sccache
-        uses: mozilla/actions-sccache@v1
-        with:
-          version: "v0.8.1"
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install Linux dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
