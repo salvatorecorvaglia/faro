@@ -157,7 +157,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
 
       - name: Start Test Database Services
-        run: docker compose -f docker-compose.test.yml up -d
+        run: docker compose -f tests/docker-compose.test.yml up -d
 
       - name: Seed Test Databases
         run: ./scripts/seed.sh

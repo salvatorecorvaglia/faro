@@ -83,8 +83,12 @@ mod tests {
     #[test]
     fn round_trips_a_password() {
         let key = format!("faro:test-{}", uuid::Uuid::new_v4());
-        set_password(&key, "hunter2").unwrap();
-        assert_eq!(get_password(&key).as_deref(), Some("hunter2"));
+        // Generated rather than a literal: the test only cares that whatever
+        // goes in comes back out, and a fresh value keeps concurrent runs from
+        // colliding on a shared keychain.
+        let secret = uuid::Uuid::new_v4().to_string();
+        set_password(&key, &secret).unwrap();
+        assert_eq!(get_password(&key).as_deref(), Some(secret.as_str()));
         delete_password(&key).unwrap();
         assert_eq!(get_password(&key), None);
     }
