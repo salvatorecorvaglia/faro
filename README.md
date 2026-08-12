@@ -75,7 +75,7 @@ Faro includes a Docker Compose environment containing pre-configured instances o
 
 1. **Spin up the test containers**:
    ```bash
-   docker compose -f docker-compose.test.yml up -d
+   docker compose -f tests/docker-compose.test.yml up -d
    ```
 
 2. **Seed the database fixtures**:

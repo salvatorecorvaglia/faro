@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Load the fixture schema into the test databases.
 #
-#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f tests/docker-compose.test.yml up -d
 #   ./scripts/seed.sh
 #
 # The SQLite fixture needs no container and is always built. Every container
@@ -10,9 +10,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose -f docker-compose.test.yml"
+COMPOSE="docker compose -f tests/docker-compose.test.yml"
 
-# Matches docker-compose.test.yml. SQL Server enforces a complexity rule, so it
+# Matches tests/docker-compose.test.yml. SQL Server enforces a complexity rule, so it
 # cannot share the others' password.
 MSSQL_PASSWORD='Faro!Passw0rd'
 
@@ -22,7 +22,7 @@ running() {
 
 skip() {
   echo "==> $1 container not running; skipped."
-  echo "    Start it with: docker compose -f docker-compose.test.yml up -d $2"
+  echo "    Start it with: docker compose -f tests/docker-compose.test.yml up -d $2"
 }
 
 mkdir -p tests/fixtures

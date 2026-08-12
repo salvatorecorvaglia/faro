@@ -1,6 +1,6 @@
 # Test databases for Faro.
 #
-#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f tests/docker-compose.test.yml up -d
 #   ./scripts/seed.sh
 #
 # Ports are offset from the defaults so this never collides with a database the

@@ -130,7 +130,7 @@ Backend integration tests live in `src-tauri/tests/`. To run tests against real 
 
 1. **Start test containers**:
    ```bash
-   docker compose -f docker-compose.test.yml up -d
+   docker compose -f tests/docker-compose.test.yml up -d
    ```
 
 2. **Seed database fixtures**:

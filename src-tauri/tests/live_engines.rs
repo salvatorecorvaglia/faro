@@ -1,6 +1,6 @@
-//! Tests against live database servers from `docker-compose.test.yml`.
+//! Tests against live database servers from `tests/docker-compose.test.yml`.
 //!
-//!   docker compose -f docker-compose.test.yml up -d
+//!   docker compose -f tests/docker-compose.test.yml up -d
 //!   ./scripts/seed.sh
 //!   cargo test --test live_engines
 //!
@@ -38,7 +38,7 @@ fn config(engine: Engine, port: u16, database: &str) -> ConnectionConfig {
 
 fn password_for(engine: Engine) -> &'static str {
     match engine {
-        // Matches docker-compose.test.yml; SQL Server enforces a complexity rule.
+        // Matches tests/docker-compose.test.yml; SQL Server enforces a complexity rule.
         Engine::SqlServer => "Faro!Passw0rd",
         _ => "faro",
     }
