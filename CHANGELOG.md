@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-12
+
 ### Added
 - **SSL/TLS Connection Configurations**: Added support for custom CA certificates, client certificates, client keys, and SSL connection modes (disable, require, verify-ca, verify-full) across PostgreSQL, MySQL, MariaDB, and MSSQL.
 - **Command Palette**: Added an interactive keyboard-first command palette (`Cmd+K` / `Ctrl+K`) for quick actions, view navigation, and tab switching.
