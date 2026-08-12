@@ -34,10 +34,10 @@ echo "    tests/fixtures/faro_test.db"
 
 if running postgres; then
   echo "==> PostgreSQL"
-  # Wait for readiness: the container accepts connections before the server does.
+  # Wait for query readiness: container accepts connections and queries before main server is stable.
   IS_READY=0
   for _ in $(seq 1 60); do
-    if $COMPOSE exec -T postgres pg_isready -U faro -d faro_test >/dev/null 2>&1; then
+    if $COMPOSE exec -T postgres psql -U faro -d faro_test -c "SELECT 1" >/dev/null 2>&1; then
       IS_READY=1
       break
     fi
@@ -47,8 +47,19 @@ if running postgres; then
     echo "PostgreSQL container failed to become ready in 60s" >&2
     exit 1
   fi
-  $COMPOSE exec -T postgres \
-    psql -U faro -d faro_test -v ON_ERROR_STOP=1 < scripts/seed/postgres.sql >/dev/null
+  SEEDED=0
+  for _ in $(seq 1 10); do
+    if $COMPOSE exec -T postgres \
+      psql -U faro -d faro_test -v ON_ERROR_STOP=1 < scripts/seed/postgres.sql >/dev/null 2>&1; then
+      SEEDED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEEDED" -ne 1 ]; then
+    $COMPOSE exec -T postgres \
+      psql -U faro -d faro_test -v ON_ERROR_STOP=1 < scripts/seed/postgres.sql >/dev/null
+  fi
   echo "    localhost:55432/faro_test (user faro, password faro)"
 else
   skip PostgreSQL postgres
@@ -58,7 +69,7 @@ if running mysql; then
   echo "==> MySQL"
   IS_READY=0
   for _ in $(seq 1 60); do
-    if $COMPOSE exec -T mysql mysqladmin ping -h 127.0.0.1 -ufaro -pfaro >/dev/null 2>&1; then
+    if $COMPOSE exec -T mysql mysql -ufaro -pfaro -e "SELECT 1" faro_test >/dev/null 2>&1; then
       IS_READY=1
       break
     fi
@@ -68,8 +79,19 @@ if running mysql; then
     echo "MySQL container failed to become ready in 60s" >&2
     exit 1
   fi
-  $COMPOSE exec -T mysql mysql --default-character-set=utf8mb4 \
-    -ufaro -pfaro faro_test < scripts/seed/mysql.sql
+  SEEDED=0
+  for _ in $(seq 1 10); do
+    if $COMPOSE exec -T mysql mysql --default-character-set=utf8mb4 \
+      -ufaro -pfaro faro_test < scripts/seed/mysql.sql >/dev/null 2>&1; then
+      SEEDED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEEDED" -ne 1 ]; then
+    $COMPOSE exec -T mysql mysql --default-character-set=utf8mb4 \
+      -ufaro -pfaro faro_test < scripts/seed/mysql.sql
+  fi
   echo "    localhost:53306/faro_test (user faro, password faro)"
 else
   skip MySQL mysql
@@ -79,7 +101,7 @@ if running mariadb; then
   echo "==> MariaDB"
   IS_READY=0
   for _ in $(seq 1 60); do
-    if $COMPOSE exec -T mariadb mariadb-admin ping -h 127.0.0.1 -ufaro -pfaro >/dev/null 2>&1; then
+    if $COMPOSE exec -T mariadb mariadb -ufaro -pfaro -e "SELECT 1" faro_test >/dev/null 2>&1; then
       IS_READY=1
       break
     fi
@@ -90,8 +112,19 @@ if running mariadb; then
     exit 1
   fi
   # MariaDB shares the MySQL fixture; its dialect differences do not reach it.
-  $COMPOSE exec -T mariadb mariadb --default-character-set=utf8mb4 \
-    -ufaro -pfaro faro_test < scripts/seed/mysql.sql
+  SEEDED=0
+  for _ in $(seq 1 10); do
+    if $COMPOSE exec -T mariadb mariadb --default-character-set=utf8mb4 \
+      -ufaro -pfaro faro_test < scripts/seed/mysql.sql >/dev/null 2>&1; then
+      SEEDED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEEDED" -ne 1 ]; then
+    $COMPOSE exec -T mariadb mariadb --default-character-set=utf8mb4 \
+      -ufaro -pfaro faro_test < scripts/seed/mysql.sql
+  fi
   echo "    localhost:53307/faro_test (user faro, password faro)"
 else
   skip MariaDB mariadb
@@ -113,11 +146,21 @@ if running sqlserver; then
     echo "SQL Server container failed to become ready in 240s" >&2
     exit 1
   fi
-  # -C trusts the container's self-signed certificate; -b fails the script on
-  # the first error rather than reporting success over a broken fixture.
-  $COMPOSE exec -T sqlserver "$SQLCMD" \
-    -S localhost -U sa -P "$MSSQL_PASSWORD" -C -b \
-    -i /dev/stdin < scripts/seed/sqlserver.sql >/dev/null
+  SEEDED=0
+  for _ in $(seq 1 10); do
+    if $COMPOSE exec -T sqlserver "$SQLCMD" \
+      -S localhost -U sa -P "$MSSQL_PASSWORD" -C -b \
+      -i /dev/stdin < scripts/seed/sqlserver.sql >/dev/null 2>&1; then
+      SEEDED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEEDED" -ne 1 ]; then
+    $COMPOSE exec -T sqlserver "$SQLCMD" \
+      -S localhost -U sa -P "$MSSQL_PASSWORD" -C -b \
+      -i /dev/stdin < scripts/seed/sqlserver.sql >/dev/null
+  fi
   echo "    localhost:51433/faro_test (user sa, password $MSSQL_PASSWORD)"
 else
   skip "SQL Server" sqlserver
@@ -181,8 +224,19 @@ if running mongo; then
     echo "MongoDB container failed to become ready in 60s" >&2
     exit 1
   fi
-  $COMPOSE exec -T mongo mongosh --quiet -u faro -p faro \
-    --authenticationDatabase admin --file /dev/stdin < scripts/seed/mongo.js >/dev/null
+  SEEDED=0
+  for _ in $(seq 1 10); do
+    if $COMPOSE exec -T mongo mongosh --quiet -u faro -p faro \
+      --authenticationDatabase admin --file /dev/stdin < scripts/seed/mongo.js >/dev/null 2>&1; then
+      SEEDED=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEEDED" -ne 1 ]; then
+    $COMPOSE exec -T mongo mongosh --quiet -u faro -p faro \
+      --authenticationDatabase admin --file /dev/stdin < scripts/seed/mongo.js >/dev/null
+  fi
   echo "    localhost:57017/faro_test (user faro, password faro)"
 else
   skip MongoDB mongo
