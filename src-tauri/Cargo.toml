@@ -84,7 +84,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "q
 
 # SQL Server. tiberius is not sqlx: it has no pool of its own and needs a
 # tokio-util compat layer over the socket, so bb8 supplies the pooling.
-tiberius = { version = "0.12", default-features = false, features = ["rustls", "tds73", "chrono"] }
+tiberius = { version = "0.12", default-features = false, features = ["native-tls", "tds73", "chrono"] }
 bb8 = "0.9"
 bb8-tiberius = "0.16"
 
