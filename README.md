@@ -117,18 +117,6 @@ Faro includes a Docker Compose environment containing pre-configured instances o
 
 ---
 
-## 🛠️ Build for Production
-
-To compile a production release bundle (installers, disk images, or executable packages for macOS, Linux, or Windows):
-
-```bash
-pnpm tauri build
-```
-
-The compiled binaries will be output to `src-tauri/target/release/bundle/`.
-
----
-
 ## 💻 Platform-Specific Installation Notes
 
 ### macOS
