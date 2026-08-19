@@ -16,9 +16,8 @@ permissions:
   contents: read
 
 env:
-  CARGO_INCREMENTAL: "0"
-  CARGO_NET_RETRY: "10"
-  RUST_BACKTRACE: "1"
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,7 +27,6 @@ jobs:
   frontend:
     name: Frontend (Lint, Typecheck & Test)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -58,29 +56,31 @@ jobs:
   rust-lint:
     name: Rust (Fmt & Clippy)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cargo Format Check
-        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cargo Format Check
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
       - name: Cargo Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
@@ -88,7 +88,6 @@ jobs:
   rust-test:
     name: Rust Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -113,16 +112,19 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Run Rust Integration Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Dependency Review
         uses: actions/dependency-review-action@v4
+
