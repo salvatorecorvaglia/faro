@@ -9,14 +9,13 @@ import {
   IconLighthouse,
   IconPlus,
   IconRefresh,
-  IconSearch,
   IconTable,
   IconTrash,
   IconUpload,
   IconView,
   IconWarning,
 } from '@/components/icons';
-import { ErrorBanner, rowActivation, Spinner } from '@/components/ui';
+import { ErrorBanner, FilterInput, rowActivation, Spinner } from '@/components/ui';
 import { BackupDialog, RestoreDialog } from '@/features/backup/BackupDialog';
 import { LibraryPanel } from '@/features/library/LibraryPanel';
 import * as ipc from '@/ipc';
@@ -491,18 +490,13 @@ function SchemaNode({
           )}
 
           {showFilter && (
-            <div className="relative px-2 py-1 pl-8">
-              <IconSearch
-                size={11}
-                className="pointer-events-none absolute left-9 top-1/2 -translate-y-1/2 opacity-45"
-              />
-              <input
-                className="input py-1 pl-6 text-[11px]"
-                placeholder="Filter tables"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
-            </div>
+            <FilterInput
+              value={filter}
+              onChange={setFilter}
+              placeholder="Filter tables"
+              wrapperClassName="relative px-2 py-1 pl-8"
+              iconClassName="pointer-events-none absolute left-9 top-1/2 -translate-y-1/2 opacity-45"
+            />
           )}
 
           {tables?.length === 0 && (

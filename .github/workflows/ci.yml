@@ -11,6 +11,10 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  # No path filter here: release.yml dispatches this explicitly for a tagged
+  # commit that has no CI run yet, and a path-filtered trigger can silently
+  # decline to run on a ref with no changed files to compare against.
+  workflow_dispatch:
 
 permissions:
   contents: read

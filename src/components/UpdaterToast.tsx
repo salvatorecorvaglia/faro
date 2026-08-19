@@ -19,11 +19,12 @@ export function UpdaterToast() {
 
   return (
     <div
-      className="fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2 rounded-xl p-3.5 shadow-xl border backdrop-blur-md transition-all animate-in fade-in slide-in-from-bottom-2"
+      className="toast-in fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2 rounded-xl border p-3.5 backdrop-blur-md transition-all"
       style={{
         background: 'var(--bg)',
         borderColor: 'var(--border-strong)',
         color: 'var(--text)',
+        boxShadow: 'var(--shadow-modal)',
       }}
       role="alert"
     >
@@ -32,7 +33,7 @@ export function UpdaterToast() {
           {status === 'downloading' ? (
             <Spinner size={16} />
           ) : (
-            <IconDownload size={16} className="text-[var(--accent)]" />
+            <IconDownload size={16} style={{ color: 'var(--accent)' }} />
           )}
           <span className="text-[13px] font-semibold">
             {status === 'available' && `Update v${version} available`}

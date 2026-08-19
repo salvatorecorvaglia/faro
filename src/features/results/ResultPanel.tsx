@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { IconBraces, IconClose, IconFilter, IconGrid } from '@/components/icons';
 import { EmptyState, ErrorBanner } from '@/components/ui';
@@ -9,32 +9,35 @@ import { type GridEditing, ResultGrid } from './ResultGrid';
 
 type ViewMode = 'grid' | 'json';
 
+/** Matches the table-browsing debounce (TableTab), so both feel alike. */
+const FILTER_DEBOUNCE_MS = 200;
+
 /**
- * The results pane below the editor.
- *
- * Sorting and filtering work one of two ways, chosen by the caller:
- *
- * - `clientSideSort` — the rows are already in hand (an ad-hoc query result),
- *   so the operations run locally over that page.
- * - controlled `sort`/`filters` props — a table tab, which pushes the same
- *   gestures down into SQL. Sorting a fetched page of a ten-million-row table
- *   would order the wrong thousand rows and quietly mislead.
+ * Sorting and filtering work one of two ways, chosen by the caller — and the
+ * two are mutually exclusive, not just independently optional: passing
+ * `clientSideSort` together with a controlled `sort`/`onSortChange` used to
+ * type-check while silently ignoring the controlled props, because both were
+ * simply optional. A discriminated union makes that combination impossible to
+ * construct instead of merely wrong at runtime.
  */
-export function ResultPanel({
-  statements,
-  browseResult,
-  primaryKey,
-  error,
-  activeIndex,
-  onActiveIndexChange,
-  running,
-  clientSideSort = false,
-  sort: controlledSort,
-  onSortChange: onControlledSortChange,
-  filters: controlledFilters,
-  onFiltersChange: onControlledFiltersChange,
-  editing,
-}: {
+type SortFilterMode =
+  | {
+      /** The rows are already in hand (an ad-hoc query result), so sorting
+       * and filtering run locally over that page. */
+      clientSideSort: true;
+    }
+  | {
+      clientSideSort?: false;
+      /** Pushes the same gestures down into SQL — a table tab, where sorting
+       * a fetched page of a ten-million-row table would order the wrong
+       * thousand rows and quietly mislead. */
+      sort: SortState | null;
+      onSortChange: (s: SortState | null) => void;
+      filters: GridFilter[];
+      onFiltersChange: (f: GridFilter[]) => void;
+    };
+
+type ResultPanelProps = {
   statements: StatementResult[];
   browseResult: ResultSet | null;
   primaryKey?: string[];
@@ -42,13 +45,22 @@ export function ResultPanel({
   activeIndex: number;
   onActiveIndexChange: (i: number) => void;
   running: boolean;
-  clientSideSort?: boolean;
-  sort?: SortState | null;
-  onSortChange?: (s: SortState | null) => void;
-  filters?: GridFilter[];
-  onFiltersChange?: (f: GridFilter[]) => void;
   editing?: GridEditing;
-}) {
+} & SortFilterMode;
+
+/** The results pane below the editor. */
+export function ResultPanel(props: ResultPanelProps) {
+  const {
+    statements,
+    browseResult,
+    primaryKey,
+    error,
+    activeIndex,
+    onActiveIndexChange,
+    running,
+    editing,
+  } = props;
+
   const [mode, setMode] = useState<ViewMode>('grid');
   const [inspect, setInspect] = useState<{ value: Value; column: string } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -57,17 +69,35 @@ export function ResultPanel({
   const [localSort, setLocalSort] = useState<SortState | null>(null);
   const [localFilters, setLocalFilters] = useState<GridFilter[]>([]);
 
-  const sort = clientSideSort ? localSort : (controlledSort ?? null);
-  const filters = clientSideSort ? localFilters : (controlledFilters ?? []);
-  const setSort = clientSideSort ? setLocalSort : (onControlledSortChange ?? (() => {}));
-  const setFilters = clientSideSort ? setLocalFilters : (onControlledFiltersChange ?? (() => {}));
+  // Filter text arrives a character at a time. Re-filtering and re-sorting
+  // the full result set synchronously on every keystroke is exactly the cost
+  // table browsing debounces server-side (TableTab) — this is the same idea
+  // applied locally: the input stays responsive because `localFilters`
+  // (what the grid displays) updates at once, while the expensive
+  // `applyGridOps` pass runs against a debounced copy.
+  const [debouncedFilters, setDebouncedFilters] = useState<GridFilter[]>([]);
+  const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => clearTimeout(filterTimer.current ?? undefined), []);
+
+  const sort = props.clientSideSort ? localSort : props.sort;
+  const filters = props.clientSideSort ? localFilters : props.filters;
+  const setSort = props.clientSideSort ? setLocalSort : props.onSortChange;
+  const setFilters = props.clientSideSort
+    ? (next: GridFilter[]) => {
+        setLocalFilters(next);
+        clearTimeout(filterTimer.current ?? undefined);
+        filterTimer.current = setTimeout(() => setDebouncedFilters(next), FILTER_DEBOUNCE_MS);
+      }
+    : props.onFiltersChange;
 
   // A new query's columns may be unrelated to the last one's, so carrying a
   // sort or filter across would silently drop rows the user did not exclude.
+  const clientSideSort = props.clientSideSort ?? false;
   useEffect(() => {
     if (!clientSideSort) return;
     setLocalSort(null);
     setLocalFilters([]);
+    setDebouncedFilters([]);
   }, [statements, clientSideSort]);
 
   // A table tab has a single result set; a query tab has one per statement.
@@ -92,8 +122,8 @@ export function ResultPanel({
   // pushdown mode the server already did the work, so this passes through.
   const rows = useMemo(() => {
     if (!rawRows) return null;
-    return clientSideSort ? applyGridOps(rawRows, sort, filters) : rawRows;
-  }, [rawRows, clientSideSort, sort, filters]);
+    return clientSideSort ? applyGridOps(rawRows, sort, debouncedFilters) : rawRows;
+  }, [rawRows, clientSideSort, sort, debouncedFilters]);
 
   if (error) {
     return (

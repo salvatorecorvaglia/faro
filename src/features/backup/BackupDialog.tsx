@@ -1,9 +1,8 @@
-import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { IconSearch } from '@/components/icons';
-import { ErrorBanner, Field, Modal, Spinner } from '@/components/ui';
+import { ErrorBanner, Field, FilterInput, Modal, Spinner } from '@/components/ui';
+import { useAsyncAction, useBackendProgress } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type { BackupProgress, TableInfo } from '@/ipc/types';
 import { formatBytes, formatRowCount } from '@/lib/value';
@@ -37,10 +36,8 @@ export function BackupDialog({
   const [includeSchema, setIncludeSchema] = useState(true);
   const [includeData, setIncludeData] = useState(true);
   const [dropExisting, setDropExisting] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<BackupProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const { busy, error, done, reset, run } = useAsyncAction();
+  const progress = useBackendProgress<BackupProgress>(ipc.BACKUP_PROGRESS_EVENT, busy);
 
   /** Whether the selection has been seeded for the current opening. */
   const seeded = useRef(false);
@@ -51,11 +48,9 @@ export function BackupDialog({
       seeded.current = false;
       return;
     }
-    setError(null);
-    setDone(null);
-    setProgress(null);
+    reset();
     setFilter('');
-  }, [open]);
+  }, [open, reset]);
 
   // Seed the selection once the table list has actually arrived.
   //
@@ -74,17 +69,6 @@ export function BackupDialog({
     setSelected(new Set(dataTables.map((t) => t.name)));
   }, [open, dataTables]);
 
-  // A backup of a large table takes long enough that silence looks like a hang.
-  useEffect(() => {
-    if (!busy) return;
-    const unlisten = listen<BackupProgress>(ipc.BACKUP_PROGRESS_EVENT, (e) =>
-      setProgress(e.payload),
-    );
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [busy]);
-
   const shown = filter.trim()
     ? dataTables.filter((t) => t.name.toLowerCase().includes(filter.trim().toLowerCase()))
     : dataTables;
@@ -97,11 +81,9 @@ export function BackupDialog({
     });
   }
 
-  async function run() {
+  async function runBackup() {
     if (!connectionId) return;
-    setError(null);
-    setDone(null);
-    try {
+    await run(async () => {
       const stem = connectionName.replace(/[^A-Za-z0-9_-]+/g, '_') || 'backup';
       const stamp = new Date().toISOString().slice(0, 10);
       const path = await save({
@@ -110,7 +92,6 @@ export function BackupDialog({
       });
       if (!path) return;
 
-      setBusy(true);
       const result = await ipc.backupDatabase(connectionId, path, {
         // An empty list means "everything" to the backend, but being explicit
         // keeps the dump reproducible from what the user actually saw.
@@ -121,16 +102,11 @@ export function BackupDialog({
         includeData,
         dropExisting,
       });
-      setDone(
+      return (
         `Backed up ${result.tables} tables, ${formatRowCount(result.rows)} rows ` +
-          `(${formatBytes(result.bytes)}) to ${result.path}`,
+        `(${formatBytes(result.bytes)}) to ${result.path}`
       );
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
-    }
+    });
   }
 
   return (
@@ -191,18 +167,13 @@ export function BackupDialog({
           </div>
 
           {dataTables.length > 10 && (
-            <div className="relative mb-1">
-              <IconSearch
-                size={11}
-                className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 opacity-45"
-              />
-              <input
-                className="input py-1 pl-6 text-[11px]"
-                placeholder="Filter tables"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
-            </div>
+            <FilterInput
+              value={filter}
+              onChange={setFilter}
+              placeholder="Filter tables"
+              wrapperClassName="relative mb-1"
+              iconClassName="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 opacity-45"
+            />
           )}
 
           <div
@@ -259,7 +230,7 @@ export function BackupDialog({
           </div>
         )}
 
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorBanner message={error} onDismiss={reset} />}
         {done && (
           <p className="break-all text-[11.5px]" style={{ color: 'var(--success)' }}>
             {done}
@@ -272,7 +243,7 @@ export function BackupDialog({
           </button>
           <button
             className="btn btn-primary"
-            onClick={run}
+            onClick={runBackup}
             disabled={busy || selected.size === 0 || (!includeSchema && !includeData)}
             type="button"
           >
@@ -308,28 +279,18 @@ export function RestoreDialog({
   const [path, setPath] = useState<string | null>(null);
   const [info, setInfo] = useState<ipc.BackupFileInfo | null>(null);
   const [stopOnError, setStopOnError] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const { busy, error, done, reset: resetStatus, run } = useAsyncAction();
+  const progress = useBackendProgress<{ done: number; total: number }>(
+    ipc.RESTORE_PROGRESS_EVENT,
+    busy,
+  );
 
   useEffect(() => {
     if (open) return;
     setPath(null);
     setInfo(null);
-    setError(null);
-    setDone(null);
-  }, [open]);
-
-  useEffect(() => {
-    if (!busy) return;
-    const unlisten = listen<{ done: number; total: number }>(ipc.RESTORE_PROGRESS_EVENT, (e) =>
-      setProgress(e.payload),
-    );
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [busy]);
+    resetStatus();
+  }, [open, resetStatus]);
 
   async function choose() {
     const { open: openFile } = await import('@tauri-apps/plugin-dialog');
@@ -343,17 +304,13 @@ export function RestoreDialog({
     if (typeof picked !== 'string') return;
 
     setPath(picked);
-    setError(null);
-    setDone(null);
-    try {
+    setInfo(null);
+    await run(async () => {
       setInfo(await ipc.inspectBackup(picked));
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-      setInfo(null);
-    }
+    });
   }
 
-  async function run() {
+  async function runRestore() {
     if (!path || !connectionId) return;
     // Naming the target explicitly: this is the step that cannot be undone.
     if (
@@ -365,23 +322,13 @@ export function RestoreDialog({
       return;
     }
 
-    setBusy(true);
-    setError(null);
-    setProgress(null);
-    try {
+    const ok = await run(async () => {
       const result = await ipc.restoreDatabase(connectionId, path, { stopOnError });
-      setDone(
-        result.failed === 0
-          ? `Ran ${result.statements} statements successfully.`
-          : `Ran ${result.statements} statements; ${result.failed} failed.`,
-      );
-      onRestored();
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-    } finally {
-      setBusy(false);
-      setProgress(null);
-    }
+      return result.failed === 0
+        ? `Ran ${result.statements} statements successfully.`
+        : `Ran ${result.statements} statements; ${result.failed} failed.`;
+    });
+    if (ok) onRestored();
   }
 
   return (
@@ -446,7 +393,7 @@ export function RestoreDialog({
           </div>
         )}
 
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorBanner message={error} onDismiss={resetStatus} />}
         {done && (
           <p className="text-[12px]" style={{ color: 'var(--success)' }}>
             {done}
@@ -459,7 +406,7 @@ export function RestoreDialog({
           </button>
           <button
             className="btn btn-primary"
-            onClick={run}
+            onClick={runRestore}
             disabled={busy || !path || !info}
             type="button"
           >

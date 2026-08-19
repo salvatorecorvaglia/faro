@@ -12,7 +12,7 @@ use faro_lib::dml;
 use faro_lib::driver::{self, Driver};
 use faro_lib::model::{
     BrowseOptions, CellEdit, ConnectionConfig, EditValue, Engine, GuardedStatement, PendingChange,
-    SslMode, TableRef, Value,
+    QueryOutcome, SslMode, TableRef, Value,
 };
 use faro_lib::transfer::backup::{self, BackupOptions, RestoreOptions};
 use tokio_util::sync::CancellationToken;
@@ -883,6 +883,59 @@ async fn mongodb_live() {
         .unwrap_err();
     assert!(err.to_string().contains("not supported"), "{err}");
 
+    // -- `run` classifies every Mongo query as row-returning --------------
+    //
+    // The default `Driver::run` guesses from a leading SQL keyword, which a
+    // `db.collection.find(...)` call never has, so it used to fall through to
+    // `execute` and be rejected outright. This is the path `run_query` (the
+    // Query tab) actually calls.
+    match d
+        .run("db.authors.find({})", 10, CancellationToken::new())
+        .await
+        .unwrap()
+    {
+        QueryOutcome::Rows(rs) => assert_eq!(rs.rows.len(), 5),
+        other => panic!("expected rows from a Mongo find, got {other:?}"),
+    }
+    match d
+        .run(
+            r#"db.books.aggregate([{"$match": {"in_stock": true}}, {"$count": "n"}])"#,
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    {
+        QueryOutcome::Rows(rs) => assert_eq!(rs.rows.len(), 1),
+        other => panic!("expected rows from a Mongo aggregate, got {other:?}"),
+    }
+
+    // -- `$out`/`$merge` are refused even though `aggregate` is recognised -
+    for pipeline in [
+        r#"db.authors.aggregate([{"$match": {}}, {"$out": "authors_copy"}])"#,
+        r#"db.authors.aggregate([{"$match": {}}, {"$merge": {"into": "authors_copy"}}])"#,
+    ] {
+        let err = d
+            .run(pipeline, 10, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("read-only"),
+            "a write stage must be refused: {err}"
+        );
+    }
+    let table_names: Vec<String> = d
+        .list_tables(schema)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(
+        !table_names.contains(&"authors_copy".to_string()),
+        "a refused $out/$merge must not have written anything"
+    );
+
     // -- Cancellation ------------------------------------------------------
     let token = CancellationToken::new();
     token.cancel();
@@ -972,6 +1025,123 @@ async fn mysql_backup_round_trip() {
 async fn sqlserver_backup_round_trip() {
     let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
     backup_round_trip(&*d, Some("dbo"), "SQL Server").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn mariadb_backup_round_trip() {
+    // MariaDB shares the MySQL driver and wire protocol, but nothing had
+    // exercised backup/restore against it directly — every assumption the
+    // dump generator makes about MySQL-dialect quoting and escaping had only
+    // ever been proven against MySQL itself.
+    let d = engine_or_skip!(Engine::MariaDb, 53307, "faro_test");
+    backup_round_trip(&*d, None, "MariaDB").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn mongodb_backup_is_declined_not_silently_wrong() {
+    // MongoDB has no SQL dump to produce, so `write_backup` refuses outright
+    // rather than writing a file that only looks like a backup — this proves
+    // that decline path actually fires for the driver, instead of assuming
+    // the `is_sql` check in the shared code is enough.
+    let d = engine_or_skip!(Engine::MongoDb, 57017, "faro_test");
+
+    let dump = std::env::temp_dir().join(format!(
+        "faro_live_mongo_decline_{}.sql",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&dump);
+
+    let err = backup::write_backup(
+        &*d,
+        &dump,
+        &BackupOptions {
+            tables: vec![TableRef {
+                schema: Some("faro_test".into()),
+                name: "authors".into(),
+            }],
+            include_schema: true,
+            include_data: true,
+            drop_existing: false,
+        },
+        |_| {},
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("does not apply"),
+        "the decline message should explain why: {err}"
+    );
+    assert!(!dump.exists(), "a declined backup must not write a file");
+
+    d.close().await;
+}
+
+// -- Read-only enforcement, end to end ---------------------------------------
+
+/// A connection opened read-only is refused a write at both layers: the
+/// `Registry` gate every write command goes through, and — belt and braces —
+/// the engine's own session-level guard, so a write hidden from the lexical
+/// check in `sql.rs` (a function call, say) still cannot land.
+///
+/// Only the `Registry` gate had a test before this: `sql.rs`'s classifier is
+/// thoroughly unit-tested in isolation, but nothing proved the wiring from
+/// "connection marked read-only" through to "the driver's own connection
+/// actually refuses a write" against a live server.
+#[tokio::test]
+async fn postgres_read_only_is_enforced_by_the_registry_and_the_server() {
+    if tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio::net::TcpStream::connect("127.0.0.1:55432"),
+    )
+    .await
+    .map_or(true, |r| r.is_err())
+    {
+        eprintln!("skipping: port 55432 not open");
+        return;
+    }
+
+    let cfg = ConnectionConfig {
+        read_only: true,
+        ..config(Engine::Postgres, 55432, "faro_test")
+    };
+    let d: std::sync::Arc<dyn Driver> = driver::connect(&cfg, Some(password_for(Engine::Postgres)))
+        .await
+        .unwrap()
+        .into();
+
+    // -- The Registry gate --------------------------------------------------
+    let reg = faro_lib::registry::Registry::new();
+    reg.insert("c1".into(), d.clone(), true, "test".into())
+        .await;
+    assert!(reg.is_read_only("c1").await);
+    match reg.get_writable("c1").await {
+        Err(faro_lib::error::FaroError::ReadOnly(_)) => {}
+        other => panic!(
+            "the registry must refuse before a write command ever reaches the driver: {}",
+            other.is_ok()
+        ),
+    }
+
+    // -- The server's own guard, bypassing the registry and sql.rs ----------
+    //
+    // `default_transaction_read_only=on` was set at connect time (see
+    // postgres.rs). Targeting a row id that cannot exist means this is safe
+    // to run against the shared fixture even if enforcement were broken: at
+    // worst it deletes nothing.
+    let err = d
+        .execute(
+            "DELETE FROM authors WHERE id = 999999",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("read-only"),
+        "the server itself must refuse the write, not just Faro's own guards: {err}"
+    );
+
     d.close().await;
 }
 

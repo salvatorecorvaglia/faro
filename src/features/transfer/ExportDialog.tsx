@@ -2,6 +2,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { useState } from 'react';
 
 import { ErrorBanner, Field, Modal, Spinner } from '@/components/ui';
+import { useAsyncAction } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type { ExportFormat, ResultSet, TableRef } from '@/ipc/types';
 
@@ -40,17 +41,16 @@ export function ExportDialog({
   const [includeHeader, setIncludeHeader] = useState(true);
   const [sanitizeFormulas, setSanitizeFormulas] = useState(true);
   const [wholeTable, setWholeTable] = useState(!!table);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const { busy, error, done, reset, run } = useAsyncAction();
 
   const canExportTable = !!table && !!connectionId;
   const truncated = result?.truncated ?? false;
 
   async function onExport() {
-    setError(null);
-    setDone(null);
-    try {
+    // The whole flow — including choosing a file — runs inside `run` so a
+    // failure at any point (suggesting a name, the picker itself) is caught
+    // and shown the same way a failure in the actual export would be.
+    await run(async () => {
       const suggested = await ipc.suggestedExportName(defaultName, format);
       const path = await save({
         defaultPath: suggested,
@@ -58,7 +58,6 @@ export function ExportDialog({
       });
       if (!path) return;
 
-      setBusy(true);
       const options = {
         format,
         includeHeader,
@@ -70,12 +69,8 @@ export function ExportDialog({
           ? await ipc.exportTable(connectionId!, table!, path, options)
           : await ipc.exportResult(path, result!, options);
 
-      setDone(`Wrote ${outcome.rows.toLocaleString()} rows to ${outcome.path}`);
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
+      return `Wrote ${outcome.rows.toLocaleString()} rows to ${outcome.path}`;
+    });
   }
 
   return (
@@ -153,7 +148,7 @@ export function ExportDialog({
           </label>
         )}
 
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorBanner message={error} onDismiss={reset} />}
         {done && (
           <p className="break-all text-[11.5px]" style={{ color: 'var(--success)' }}>
             {done}

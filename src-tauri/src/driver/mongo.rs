@@ -29,8 +29,8 @@ use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
     BrowseOptions, ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, FilterOp,
-    GuardedStatement, ResultSet, SchemaInfo, TableColumns, TableDetail, TableInfo, TableKind,
-    TableRef, Value,
+    GuardedStatement, QueryOutcome, ResultSet, SchemaInfo, TableColumns, TableDetail, TableInfo,
+    TableKind, TableRef, Value,
 };
 
 /// How many documents to sample when inferring a collection's fields.
@@ -590,6 +590,17 @@ impl Driver for MongoDriver {
         Ok(out)
     }
 
+    /// MongoDB has no execute-vs-query split the way SQL does. The default
+    /// classifier keys off a leading SQL keyword (`SELECT`, `INSERT`, ...),
+    /// which a `db.collection.find(...)` call never has, so it always fell
+    /// through to `execute` — which unconditionally refuses, since Mongo
+    /// support here is read-only. Every operation `query` understands
+    /// (`find`, `aggregate`, `countDocuments`, `distinct`) returns documents,
+    /// so `run` goes straight there instead of guessing from the text.
+    async fn run(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<QueryOutcome> {
+        self.query(sql, limit, cancel).await.map(QueryOutcome::Rows)
+    }
+
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
         if cancel.is_cancelled() {
             return Err(FaroError::Cancelled);
@@ -636,6 +647,27 @@ impl Driver for MongoDriver {
                     Some(other) => vec![to_document(other)?],
                     None => Vec::new(),
                 };
+
+                // `$out` and `$merge` write the pipeline's output to a
+                // collection — the one way `aggregate` can modify data rather
+                // than just read it. Faro's Mongo support is read-only, and
+                // unlike every write form `execute` refuses by name, a write
+                // stage buried in an otherwise-reading pipeline would sail
+                // through silently if not checked here.
+                if let Some(stage) = stages
+                    .iter()
+                    .find(|s| s.contains_key("$out") || s.contains_key("$merge"))
+                {
+                    let name = if stage.contains_key("$out") {
+                        "$out"
+                    } else {
+                        "$merge"
+                    };
+                    return Err(FaroError::Sql(format!(
+                        "Faro's MongoDB support is read-only. `{name}` writes the pipeline's \
+                         output to a collection, so it is not allowed here."
+                    )));
+                }
 
                 // Cap server-side by appending `$limit`.
                 //

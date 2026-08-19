@@ -121,6 +121,12 @@ export function TableTab({ tab }: { tab: Tab }) {
           },
           queryId,
         );
+        // A newer load can start (and overwrite `queryId`) while this one is
+        // still in flight — a sort click right after a filter edit, say.
+        // Applying whichever response lands last regardless of order would
+        // silently show the wrong page under a newer sort/filter/offset, so
+        // only the most recently started request's result is ever committed.
+        if (tabRef.current.queryId !== queryId) return;
         update(t.id, { running: false, queryId: null, browseResult: result });
         setOffset(nextOffset);
         // Staged edits address rows by their position in the page, so any
@@ -128,6 +134,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         // reapplying them to different rows would be far worse.
         setEdits(emptyEdits());
       } catch (e) {
+        if (tabRef.current.queryId !== queryId) return;
         update(t.id, { running: false, queryId: null, error: ipc.errorMessage(e) });
       }
     },

@@ -1,15 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import {
-  IconChevron,
-  IconClose,
-  IconEdit,
-  IconSearch,
-  IconTrash,
-  IconWarning,
-} from '@/components/icons';
-import { ErrorBanner, rowActivation, Spinner } from '@/components/ui';
+import { IconChevron, IconClose, IconEdit, IconTrash, IconWarning } from '@/components/icons';
+import { ErrorBanner, FilterInput, rowActivation, Spinner } from '@/components/ui';
 import type { HistoryEntry, SavedQuery } from '@/ipc/types';
 import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
 import { formatDuration, formatRowCount } from '@/lib/value';
@@ -129,7 +122,7 @@ function SavedList() {
 
   return (
     <div className="flex h-full flex-col">
-      <SearchBox value={search} onChange={setSearch} placeholder="Search saved queries" />
+      <FilterInput value={search} onChange={setSearch} placeholder="Search saved queries" />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {saved.length === 0 ? (
@@ -227,7 +220,7 @@ function HistoryList() {
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 pr-1.5">
         <div className="min-w-0 flex-1">
-          <SearchBox value={term} onChange={setTerm} placeholder="Search history" />
+          <FilterInput value={term} onChange={setTerm} placeholder="Search history" />
         </div>
         {history.length > 0 && (
           <button
@@ -330,31 +323,6 @@ function HistoryRow({
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function SearchBox({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-}) {
-  return (
-    <div className="relative px-1.5 py-1">
-      <IconSearch
-        size={11}
-        className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 opacity-45"
-      />
-      <input
-        className="input py-1 pl-6 text-[11px]"
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
     </div>
   );
 }

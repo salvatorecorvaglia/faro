@@ -72,10 +72,18 @@ export function ResultGrid({
 
   // Reset layout whenever the shape of the result changes. Keeping widths from
   // a previous query's columns would size the new ones arbitrarily.
+  //
+  // `editingCell` resets here too: it addresses a cell by row/column index
+  // into *this* `result`, so a new one makes that index meaningless — most
+  // refreshes already blur the open editor first, which commits or discards
+  // it, but nothing guarantees that for every path that can hand this
+  // component a new result (a future live-refresh, say), so this is the
+  // actual invariant rather than a coincidence of today's call sites.
   useEffect(() => {
     setWidths(measureWidths(result));
     setOrder(result.columns.map((_, i) => i));
     setSelected(null);
+    setEditingCell(null);
   }, [result]);
 
   const visible = order.length === result.columns.length ? order : result.columns.map((_, i) => i);

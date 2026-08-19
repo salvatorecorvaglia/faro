@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-import { IconClose } from './icons';
+import { IconClose, IconSearch } from './icons';
 
 export function Spinner({ size = 13 }: { size?: number }) {
   return (
@@ -144,6 +144,39 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
           <IconClose size={13} />
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * A search icon and text input, for filtering a list in place.
+ *
+ * The wrapper and icon positioning are configurable because callers nest this
+ * at different depths — a tree row, a dialog section, a panel header — each
+ * needing its own spacing, but the input itself always looks the same.
+ */
+export function FilterInput({
+  value,
+  onChange,
+  placeholder,
+  wrapperClassName = 'relative px-1.5 py-1',
+  iconClassName = 'pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 opacity-45',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  wrapperClassName?: string;
+  iconClassName?: string;
+}) {
+  return (
+    <div className={wrapperClassName}>
+      <IconSearch size={11} className={iconClassName} />
+      <input
+        className="input py-1 pl-6 text-[11px]"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }

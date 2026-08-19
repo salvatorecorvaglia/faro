@@ -113,6 +113,20 @@ impl SqlServerDriver {
             SslMode::VerifyCa | SslMode::VerifyFull => {}
         }
 
+        if config.read_only {
+            // Belt and braces alongside Faro's own guard, same as the other
+            // SQL engines — but weaker. T-SQL has no session-level
+            // `SET TRANSACTION READ ONLY`, so this sets `ApplicationIntent=
+            // ReadOnly` on the login instead. Azure SQL Database enforces it
+            // server-side (writes fail with error 3906), and an Always On
+            // listener uses it to route to a secondary that cannot write
+            // regardless. A standalone, non-AG SQL Server — including the
+            // Docker image used for local testing — simply ignores the flag
+            // and accepts writes anyway, so for that deployment the lexical
+            // guard in `sql.rs` remains the only line of defense.
+            tds.readonly(true);
+        }
+
         // Probe once directly before building the pool.
         //
         // bb8 retries a failing connection until its timeout expires and then

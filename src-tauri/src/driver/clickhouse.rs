@@ -566,10 +566,41 @@ fn decode_value(cell: Option<&serde_json::Value>, type_name: &str) -> Value {
     }
 }
 
+/// Whether `s` is a bare numeric literal: an optional leading `-`, digits,
+/// and at most one decimal point.
+///
+/// `Value::Decimal` is rendered into generated SQL verbatim, unescaped, on the
+/// premise that a decimal is always just digits — see `Value::to_sql_literal`.
+/// That premise holds for a value ClickHouse actually produced, but this text
+/// comes straight from the HTTP response body: a compromised server, or a
+/// MITM under `SslMode::Require` (which does not verify the certificate),
+/// could return anything here. Checked before trusting it as a bare literal;
+/// anything else falls back to `Value::Text`, which is quoted and escaped.
+fn looks_numeric(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
+    if s.is_empty() {
+        return false;
+    }
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for c in s.chars() {
+        match c {
+            '0'..='9' => seen_digit = true,
+            '.' if !seen_dot => seen_dot = true,
+            _ => return false,
+        }
+    }
+    seen_digit
+}
+
 /// Interpret a JSON string according to the column's ClickHouse type.
 fn decode_string(s: &str, inner: &str) -> Value {
     if inner.starts_with("Decimal") {
-        return Value::Decimal(s.to_string());
+        return if looks_numeric(s) {
+            Value::Decimal(s.to_string())
+        } else {
+            Value::Text(s.to_string())
+        };
     }
     if inner.starts_with("Int") || inner.starts_with("UInt") {
         // Quoted because it is 64-bit or wider. Parse when it fits, keep the
@@ -577,7 +608,8 @@ fn decode_string(s: &str, inner: &str) -> Value {
         // to -1.
         return match s.parse::<i64>() {
             Ok(n) => Value::Int(n),
-            Err(_) => Value::Decimal(s.to_string()),
+            Err(_) if looks_numeric(s) => Value::Decimal(s.to_string()),
+            Err(_) => Value::Text(s.to_string()),
         };
     }
     if inner.starts_with("Date32") || inner == "Date" {
@@ -686,6 +718,38 @@ mod tests {
             "Decimal(38, 10)",
         );
         assert_eq!(v, Value::Decimal("12345678901234567890.0987654321".into()));
+    }
+
+    #[test]
+    fn a_non_numeric_decimal_string_falls_back_to_text_instead_of_an_unescaped_literal() {
+        // Value::Decimal is spliced into generated SQL unescaped, on the
+        // premise that it is always bare digits. This string came straight
+        // off the wire — a compromised or MITM'd server could send anything
+        // — so anything that is not actually numeric must not be trusted as
+        // one, or it becomes a live SQL injection in exports/backups.
+        let v = decode_value(Some(&json(r#""1'); DROP TABLE t; --""#)), "Decimal(38, 10)");
+        assert_eq!(v, Value::Text("1'); DROP TABLE t; --".into()));
+
+        // Same for the wider-than-i64 integer fallback path.
+        let v = decode_value(Some(&json(r#""18446744073709551615; --""#)), "UInt64");
+        assert_eq!(v, Value::Text("18446744073709551615; --".into()));
+    }
+
+    #[test]
+    fn looks_numeric_accepts_only_bare_signed_decimals() {
+        for ok in [
+            "0",
+            "42",
+            "-42",
+            "1.5",
+            "-1.5",
+            "12345678901234567890.0987654321",
+        ] {
+            assert!(looks_numeric(ok), "{ok} should be accepted");
+        }
+        for bad in ["", "-", ".", "1.2.3", "1e10", "nan", "1 OR 1=1", "1'; --"] {
+            assert!(!looks_numeric(bad), "{bad} should be rejected");
+        }
     }
 
     #[test]

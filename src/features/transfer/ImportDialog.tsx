@@ -2,6 +2,7 @@ import { open as openFile } from '@tauri-apps/plugin-dialog';
 import { useState } from 'react';
 
 import { ErrorBanner, Field, Modal, Spinner } from '@/components/ui';
+import { useAsyncAction } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type {
   ColumnDetail,
@@ -38,16 +39,13 @@ export function ImportDialog({
   const [hasHeader, setHasHeader] = useState(true);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [mappings, setMappings] = useState<Record<number, string>>({});
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const { busy, error, done, reset: resetStatus, run } = useAsyncAction();
 
   function reset() {
     setPath(null);
     setPreview(null);
     setMappings({});
-    setError(null);
-    setDone(null);
+    resetStatus();
   }
 
   async function choose() {
@@ -64,10 +62,8 @@ export function ImportDialog({
   }
 
   async function load(file: string, header: boolean) {
-    setBusy(true);
-    setError(null);
-    setDone(null);
-    try {
+    setPreview(null);
+    await run(async () => {
       const p = await ipc.previewImport(file, header);
       setPreview(p);
       // Pre-map columns whose names match, case-insensitively. Guessing beyond
@@ -78,12 +74,7 @@ export function ImportDialog({
         if (hit) guessed[i] = hit.name;
       });
       setMappings(guessed);
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-      setPreview(null);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function runImport() {
@@ -92,22 +83,24 @@ export function ImportDialog({
       .filter(([, target]) => !!target)
       .map(([index, target]) => ({ sourceIndex: Number(index), targetColumn: target }));
 
-    setBusy(true);
-    setError(null);
-    try {
+    // Naming the target explicitly: a wrong mapping writes plausible-looking
+    // data into the wrong columns, which is both easy to miss and hard to
+    // undo — the same reason restore and apply confirm before they write.
+    const rows = preview?.totalRows?.toLocaleString() ?? 'these';
+    if (!confirm(`Import ${rows} rows into "${table.name}"?\n\nThis modifies that table.`)) {
+      return;
+    }
+
+    const ok = await run(async () => {
       const outcome = await ipc.importFile(connectionId, table, path, {
         format: formatOf(path),
         hasHeader,
         mappings: list,
         nullTokens: [''],
       });
-      setDone(`Imported ${outcome.rows.toLocaleString()} rows.`);
-      onImported();
-    } catch (e) {
-      setError(ipc.errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
+      return `Imported ${outcome.rows.toLocaleString()} rows.`;
+    });
+    if (ok) onImported();
   }
 
   const mappedCount = Object.values(mappings).filter(Boolean).length;
@@ -220,7 +213,7 @@ export function ImportDialog({
           </>
         )}
 
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorBanner message={error} onDismiss={resetStatus} />}
         {done && (
           <p className="text-[12px]" style={{ color: 'var(--success)' }}>
             {done}
