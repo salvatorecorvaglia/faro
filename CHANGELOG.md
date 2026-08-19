@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-19
+
 ### Added
 - **`useAsyncAction` & `useBackendProgress` Hooks**: Added reusable React hooks for standardized async operation lifecycle management (busy states, error handling, completion tracking) and Tauri progress event subscriptions during background tasks like backups and restores.
 - **Import Safety Confirmation**: Added interactive confirmation prompt before writing data in `ImportDialog`, verifying the target table name and row count to prevent accidental overwrites.
