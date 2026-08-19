@@ -15,9 +15,11 @@ permissions:
 
 env:
   NODE_OPTIONS: "--max-old-space-size=6144"
-  CARGO_INCREMENTAL: "0"
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Validate Tag Ref
+  # ──────────────────────────────────────────────
   validate:
     name: Validate Tag Ref
     runs-on: ubuntu-latest
@@ -31,22 +33,28 @@ jobs:
             echo "::error::Release workflow must be run on a version tag ref starting with 'v' (e.g. refs/tags/v1.0.0)"
             exit 1
           fi
-
+          
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          
+          # Read package.json version
           PKG_VERSION=$(jq -r .version package.json)
+          
+          # Read tauri.conf.json version
           TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          
+          # Read Cargo.toml version
           CARGO_VERSION=$(grep -m 1 '^version = ' src-tauri/Cargo.toml | cut -d '"' -f 2)
-
+          
           echo "Tag version: $TAG_VERSION"
           echo "package.json version: $PKG_VERSION"
           echo "tauri.conf.json version: $TAURI_VERSION"
           echo "Cargo.toml version: $CARGO_VERSION"
-
+          
           if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
             echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
             exit 1
           fi
-
+          
           if [[ "$TAG_VERSION" != "$TAURI_VERSION" ]]; then
             echo "::error::Tag version ($TAG_VERSION) does not match tauri.conf.json version ($TAURI_VERSION)"
             exit 1
@@ -57,11 +65,14 @@ jobs:
             exit 1
           fi
 
+  # ──────────────────────────────────────────────
+  # Build & Publish – Tauri Platforms Matrix
+  # ──────────────────────────────────────────────
   publish-tauri:
     name: Release (${{ matrix.platform }})
     permissions:
       contents: write
-    needs: [validate]
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +94,9 @@ jobs:
     timeout-minutes: 40
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -106,6 +119,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install Linux dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -137,6 +153,9 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+  # ──────────────────────────────────────────────
+  # Finalize – update release description and publish
+  # ──────────────────────────────────────────────
   finalize:
     name: Finalize Release
     runs-on: ubuntu-latest
@@ -158,9 +177,9 @@ jobs:
             NOTES="Faro release $TAG"
           fi
           {
-            echo "notes<<$EOF"
+            echo 'notes<<EOF'
             echo "$NOTES"
-            echo "$EOF"
+            echo 'EOF'
           } >> $GITHUB_OUTPUT
 
       - name: Update Release
