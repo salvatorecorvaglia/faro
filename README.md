@@ -13,9 +13,9 @@
 - 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`).
 - 📝 **Advanced SQL Editor & Command Palette**: Built with CodeMirror 6 featuring schema-aware autocompletion, query formatting (`sql-formatter`), multi-query execution, and a keyboard-first Command Palette (`Cmd+K` / `Ctrl+K`).
 - 📊 **Virtualized Data Grid & High Precision**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, high-precision `BigDecimal` numerical decoding with normalized zero-stripping formatting, dynamic filtering, and column sorting.
-- 📂 **Flexible Import, Export & Transfer**: Import and export data seamlessly across CSV (with automatic formula injection protection), Excel (`.xlsx`), JSON, and raw SQL dumps, or stream data directly between databases.
+- 📂 **Flexible Import, Export & Transfer**: Import and export data seamlessly across CSV (with automatic formula injection protection and pre-import confirmation safety prompts), Excel (`.xlsx`), JSON, and raw SQL dumps, or stream data directly between databases.
 - ⚙️ **Embedded Databases**: Full zero-config support for embedded SQLite (`rusqlite`) and analytical DuckDB (`duckdb-rs`) workloads directly inside the client process.
-- 🔄 **Automatic Application Updates**: Built-in update notifications and one-click upgrades powered by `tauri-plugin-updater`.
+- 🔄 **Automatic Application Updates**: Built-in update notifications and one-click upgrades powered by `tauri-plugin-updater` with native toast animations.
 - 🎨 **Modern Interface**: Designed with Tailwind CSS v4 and dynamic resizable panels (`react-resizable-panels`) for an uncluttered user experience.
 
 ---
@@ -90,9 +90,9 @@ Faro includes a Docker Compose environment containing pre-configured instances o
   pnpm test
   ```
 
-- **Run Backend Integration Tests (Rust)**:
+- **Run Backend Integration Tests (Rust)** (*located in `src-tauri/tests/`*):
   ```bash
-  # Run all Rust unit and integration tests (includes DuckDB)
+  # Run all Rust unit and integration tests (includes DuckDB and live driver tests in live_engines.rs)
   cargo test --manifest-path src-tauri/Cargo.toml
 
   # Fast iteration mode (skips compiling bundled DuckDB C++ amalgamation)

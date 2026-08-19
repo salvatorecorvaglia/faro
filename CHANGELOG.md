@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`useAsyncAction` & `useBackendProgress` Hooks**: Added reusable React hooks for standardized async operation lifecycle management (busy states, error handling, completion tracking) and Tauri progress event subscriptions during background tasks like backups and restores.
+- **Import Safety Confirmation**: Added interactive confirmation prompt before writing data in `ImportDialog`, verifying the target table name and row count to prevent accidental overwrites.
+- **Frontend Feature Unit Tests**: Added Vitest unit test suites for the CodeMirror `Editor` component (`tests/features/editor/Editor.test.tsx`) covering keyboard shortcuts (`Mod-Enter`, `Shift-Enter`), imperative handle methods, and value synchronization, as well as `ImportDialog` (`tests/features/transfer/ImportDialog.test.tsx`).
+- **Live Engine Integration Tests**: Expanded Rust integration test suite (`src-tauri/tests/live_engines.rs`) with comprehensive test coverage for ClickHouse, MongoDB, and MSSQL live drivers.
+
+### Changed
+- **Async State Refactoring**: Standardized async state management across `BackupDialog`, `ImportDialog`, `ExportDialog`, `ResultGrid`, `ResultPanel`, and `TabBar` using `useAsyncAction`.
+- **Updater Toast Entrance Animation**: Replaced uninstalled utility classes with a native `@keyframes toast-in` CSS transition for the updater toast (`UpdaterToast.tsx`).
+- **CI/CD & Release Workflows**: Updated GitHub Actions release workflow (`release.yml`) and CI pipeline (`ci.yml`) to upgrade `sccache-action` to `v0.0.11` and refine build caching and artifact packaging.
+
+### Fixed
+- **Driver Robustness & Document Handling**: Enhanced query execution, parameter binding, and nested payload parsing across ClickHouse, MongoDB, and MSSQL database drivers.
+
 ## [1.1.0] - 2026-08-12
 
 ### Added
