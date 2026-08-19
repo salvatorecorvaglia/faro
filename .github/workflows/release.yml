@@ -15,6 +15,7 @@ permissions:
 
 env:
   NODE_OPTIONS: "--max-old-space-size=6144"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   # ──────────────────────────────────────────────
@@ -149,8 +150,6 @@ jobs:
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      RUSTC_WRAPPER: "sccache"
-      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -174,14 +173,10 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Install Linux dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list /etc/apt/sources.list.d/*
-          sudo apt-get -o Acquire::Http::Timeout="10" -o Acquire::Retries="3" update
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
 
       - name: Install frontend dependencies
