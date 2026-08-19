@@ -180,7 +180,8 @@ jobs:
       - name: Install Linux dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
+          sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list /etc/apt/sources.list.d/*
+          sudo apt-get -o Acquire::Http::Timeout="10" -o Acquire::Retries="3" update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
 
       - name: Install frontend dependencies

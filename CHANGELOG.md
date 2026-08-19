@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`useAsyncAction` & `useBackendProgress` Hooks**: Added reusable React hooks for standardized async operation lifecycle management (busy states, error handling, completion tracking) and Tauri progress event subscriptions during background tasks like backups and restores.
 - **Import Safety Confirmation**: Added interactive confirmation prompt before writing data in `ImportDialog`, verifying the target table name and row count to prevent accidental overwrites.
+- **`FilterInput` UI Component**: Added a centralized `FilterInput` search component (`src/components/ui.tsx`) with customizable styling for consistent list filtering across panels and dialogs.
 - **Frontend Feature Unit Tests**: Added Vitest unit test suites for the CodeMirror `Editor` component (`tests/features/editor/Editor.test.tsx`) covering keyboard shortcuts (`Mod-Enter`, `Shift-Enter`), imperative handle methods, and value synchronization, as well as `ImportDialog` (`tests/features/transfer/ImportDialog.test.tsx`).
 - **Live Engine Integration Tests**: Expanded Rust integration test suite (`src-tauri/tests/live_engines.rs`) with comprehensive test coverage for ClickHouse, MongoDB, and MSSQL live drivers.
 
@@ -19,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI/CD & Release Workflows**: Updated GitHub Actions release workflow (`release.yml`) and CI pipeline (`ci.yml`) to upgrade `sccache-action` to `v0.0.11` and refine build caching and artifact packaging.
 
 ### Fixed
-- **Driver Robustness & Document Handling**: Enhanced query execution, parameter binding, and nested payload parsing across ClickHouse, MongoDB, and MSSQL database drivers.
+- **ClickHouse Numeric Validation on Decimal Decoding**: Prevented potential unescaped literal SQL injection in backups/exports by strictly validating (`looks_numeric`) that ClickHouse decimal response strings contain only numeric characters before decoding as decimal literals.
+- **MongoDB Read-Only Safeguards & Query Routing**: Overrode `Driver::run` in `MongoDriver` to route Mongo queries directly to read-only document execution, and explicitly blocked mutating pipeline stages (`$out` and `$merge`) in `aggregate`.
+- **MSSQL Read-Only Connection Intent**: Enabled `ApplicationIntent=ReadOnly` (`tds.readonly(true)`) on TDS connection setup when read-only mode is configured.
+- **Grid Cell Editing Invariant**: Ensured active cell editing state (`editingCell`) is cleared in `ResultGrid` whenever a new result set is loaded.
 
 ## [1.1.0] - 2026-08-12
 
