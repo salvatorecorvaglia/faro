@@ -50,7 +50,7 @@ function renderDialog(onImported = () => {}) {
 
 describe('ImportDialog', () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
