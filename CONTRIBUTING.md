@@ -71,7 +71,7 @@ Make sure you have installed:
 
 ### Frontend Guidelines
 
-- **Stack**: React 19, TypeScript 5.9, Vite 8, Tailwind CSS v4, Zustand 5, TanStack Virtual v3, CodeMirror 6.
+- **Stack**: React 19, TypeScript 7.0, Vite 8, Tailwind CSS v4, Zustand 5, TanStack Virtual v3, CodeMirror 6.
 - **TypeScript**: Strict type-checking is enforced (`pnpm typecheck`). Avoid using `any` types; define explicit interfaces or types.
 - **State Management**: Use Zustand stores in `src/state/` for global app state, keeping transient component state local. Write unit tests for custom store actions (`tests/state/*.test.ts`). Use `useAsyncAction` (`src/hooks/useAsyncAction.ts`) to manage async operation lifecycles (busy states, error catching, done state) consistently across dialogs and panels.
 - **UI Components**: Keep components functional, accessible, and responsive. Modularize complex features under `src/features/`. Include component unit tests with `@testing-library/react` under `tests/` (`tests/features/*/*.test.tsx`, `tests/components/*.test.tsx`).
