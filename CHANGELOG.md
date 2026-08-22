@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Toolchain & Dependency Upgrades**: Upgraded frontend toolchain dependencies including Vite 8 (`^8.2.2`), React 19 (`^19.2.8`), TypeScript (`^7.0.2`), Zustand (`^5.0.15`), Tailwind CSS (`^4.3.3`), and Vitest (`^4.1.11`). Aligned Rust dependencies in `Cargo.toml` including `rusqlite` (`0.39.0`), `bson` (`2`), `reqwest` (`0.13`), `rust_xlsxwriter` (`0.98.2`), and `calamine` (`0.36`).
+- **Toolchain & Dependency Upgrades**: Upgraded frontend toolchain dependencies including Vite 8 (`^8.2.2`), React 19 (`^19.2.8`), TypeScript (`^7.0.2`), Zustand (`^5.0.15`), Tailwind CSS (`^4.3.3`), and Vitest (`^4.1.11`). Aligned and upgraded Rust dependencies in `Cargo.toml` including `rusqlite` (`0.40.2`), `bson` (`3.1.0`), `reqwest` (`0.13`), `rust_xlsxwriter` (`0.98.2`), and `calamine` (`0.36`).
 - **CI/CD Pipeline Optimizations**: Streamlined GitHub Actions release (`release.yml`) and CI (`ci.yml`) workflows by removing sccache build overhead, disabling incremental Rust compilation for clean builds, and optimizing format check ordering.
 
 ### Fixed

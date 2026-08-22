@@ -79,7 +79,7 @@ Make sure you have installed:
 
 ### Backend Guidelines (Rust)
 
-- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39, `duckdb` 1, `mongodb` 3, `tiberius` 0.12 (with `native-tls`), `tauri-plugin-updater`.
+- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.40, `duckdb` 1, `mongodb` 3, `bson` 3.1, `tiberius` 0.12 (with `native-tls`), `tauri-plugin-updater`.
 - **Security & Validation**:
   - **Read-Only Mode**: Any new SQL execution paths must respect the strict read-only validator (`src-tauri/src/sql.rs`) when operating under read-only connections.
   - **Export Sanitization**: Any new export routines (CSV/TSV/delimited) must sanitize potential spreadsheet formula injection characters (`=`, `+`, `-`, `@`, `\t`, `\r`) by escaping them.
