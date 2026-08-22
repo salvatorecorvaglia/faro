@@ -49,7 +49,7 @@ sqlx = { version = "0.9", default-features = false, features = [
 
 # Pinned to 0.39: it shares libsqlite3-sys 0.37 with sqlx-sqlite. rusqlite 0.40
 # requires 0.38, and two crates cannot both link the native sqlite3 library.
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # The default "v1" feature pulls in the native store for each platform:
 # Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 keyring = "4"
@@ -73,7 +73,7 @@ mongodb = { version = "3", default-features = false, features = [
   "bson-2",
   "compat-3-3-0",
 ] }
-bson = "2"
+bson = "3.1.0"
 
 # ClickHouse speaks HTTP. The `clickhouse` crate maps rows onto serde structs,
 # which cannot express the arbitrary result shapes a SQL client needs, so Faro
