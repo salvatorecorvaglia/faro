@@ -8,11 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Toolchain & Dependency Upgrades**: Upgraded frontend toolchain dependencies including Vite 8 (`^8.2.2`), React 19 (`^19.2.8`), TypeScript (`^7.0.2`), Zustand (`^5.0.15`), Tailwind CSS (`^4.3.3`), and Vitest (`^4.1.11`). Aligned and upgraded Rust dependencies in `Cargo.toml` including `rusqlite` (`0.40.2`), `bson` (`3.1.0`), `reqwest` (`0.13`), `rust_xlsxwriter` (`0.98.2`), and `calamine` (`0.36`).
+- **Toolchain & Dependency Upgrades**: Upgraded frontend toolchain dependencies including Vite 8 (`^8.2.2`), React 19 (`^19.2.8`), TypeScript (`^7.0.2`), Zustand (`^5.0.15`), Tailwind CSS (`^4.3.3`), and Vitest (`^4.1.11`). Upgraded `bson` to `3.1.0` (and switched the `mongodb` crate from its `bson-2` to `bson-3` feature to match), plus `reqwest` (`0.13`), `rust_xlsxwriter` (`0.98.2`), and `calamine` (`0.36`). `rusqlite` stays pinned at `0.39`: `0.40` requires `libsqlite3-sys` `0.38`, which conflicts with the `0.37` that `sqlx-sqlite` links against — the two crates cannot both link the native `sqlite3` library.
 - **CI/CD Pipeline Optimizations**: Streamlined GitHub Actions release (`release.yml`) and CI (`ci.yml`) workflows by removing sccache build overhead, disabling incremental Rust compilation for clean builds, and optimizing format check ordering.
 
 ### Fixed
 - **TypeScript Path Mapping & Test Mock Cleanup**: Configured `@/*` path mapping in `tsconfig.json` for consistent module resolution, and refined mock cleanup handling in Vitest test suites (`ImportDialog.test.tsx`).
+- **Dependency & Docs Drift**: Regenerated `Cargo.lock` so it actually satisfies `Cargo.toml` again (`bson` now resolves to the declared `3.1.0`; `rusqlite` reverted from an undeclarable `0.40.2` back to the working `0.39`). Corrected `package.json`'s declared `@codemirror/view` version (`6.43.9` → `6.43.8`) to match what the pnpm override actually installs. Aligned the documented `cargo clippy` command in README/CONTRIBUTING with the one CI actually runs, keeping the `--no-default-features` variant as a documented fast-iteration alternative.
 
 ## [1.2.0] - 2026-08-19
 

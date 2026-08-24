@@ -103,8 +103,12 @@ pnpm lint
 pnpm lint:fix
 pnpm format
 
-# Check Rust formatting and clippy lints
+# Check Rust formatting and clippy lints (matches what CI enforces)
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
+
+# Faster local iteration: skips compiling the bundled DuckDB C++ amalgamation,
+# but does not cover the duckdb-engine code path that CI lints
 cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
 ```
 
@@ -165,7 +169,7 @@ Backend integration tests live in `src-tauri/tests/` (including live database en
    - [ ] `pnpm typecheck` succeeds without errors.
    - [ ] `pnpm lint` reports no warnings or errors.
    - [ ] `cargo fmt --check --manifest-path src-tauri/Cargo.toml` passes.
-   - [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings` reports no warnings.
+   - [ ] `cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings` reports no warnings.
    - [ ] `pnpm test` passes cleanly.
    - [ ] `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features` passes cleanly.
    - [ ] `CHANGELOG.md` has been updated under `[Unreleased]`.

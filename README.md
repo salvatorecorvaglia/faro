@@ -110,8 +110,12 @@ Faro includes a Docker Compose environment containing pre-configured instances o
   # Format frontend files automatically
   pnpm format
 
-  # Check Rust formatting and clippy lints
+  # Check Rust formatting and clippy lints (matches what CI enforces)
   cargo fmt --check --manifest-path src-tauri/Cargo.toml
+  cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
+
+  # Faster local iteration: skips compiling the bundled DuckDB C++ amalgamation,
+  # but does not cover the duckdb-engine code path that CI lints
   cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
   ```
 
