@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Result Grid Cell Editor Double-Commit**: Pressing Escape to cancel an in-progress cell edit could, in rare cases, still be followed by a trailing blur event that re-committed the discarded value. The edit is now resolved (committed or cancelled) exactly once.
 - **Case-Sensitive Text Filter Fallback**: A grid's Greater Than/Less Than filter fell back to case-sensitive text ordering on non-numeric columns, unlike every other filter operator (Equals, Contains, Starts With), which are case-insensitive.
 
+### Testing
+- **Result Grid, Result Panel & Tab Coverage**: Added test suites for `ResultGrid`, `ResultPanel`, `QueryTab`, `TableTab` and `TabBar` — previously the app's largest and most stateful components (virtualization, sort/filter routing, run/cancel guards, out-of-order response handling, dirty-edit tracking) had none. Also fixed `src/test/setup.ts`'s virtualizer size stub, which patched `clientHeight`/`clientWidth` but not the `offsetWidth`/`offsetHeight` properties `@tanstack/virtual-core` actually reads, silently virtualizing every grid down to zero rendered rows in tests.
+- **Query Cancellation Round-Trip**: Added a backend integration test (`src-tauri/tests/cancellation.rs`) that cancels a query mid-stream and confirms the connection is immediately reusable afterward, rather than left queued behind the abandoned request. Runs against an in-memory SQLite database — no Docker fixture required — since `driver/fetch.rs` generates the identical cancellation logic for Postgres, MySQL and MariaDB from the same macro, so this exercises the mechanism all four pooled engines share.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added

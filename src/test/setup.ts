@@ -90,15 +90,21 @@ if (!window.matchMedia) {
 
 // The grid measures its scroll container to decide how many rows to render.
 // jsdom reports every element as 0×0, which would virtualize down to nothing.
-Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
-  configurable: true,
-  get() {
-    return 600;
-  },
-});
-Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
-  configurable: true,
-  get() {
-    return 1000;
-  },
-});
+// @tanstack/virtual-core reads offsetWidth/offsetHeight for this (not
+// clientWidth/clientHeight), so both pairs are stubbed to be safe.
+for (const prop of ['clientHeight', 'offsetHeight'] as const) {
+  Object.defineProperty(HTMLElement.prototype, prop, {
+    configurable: true,
+    get() {
+      return 600;
+    },
+  });
+}
+for (const prop of ['clientWidth', 'offsetWidth'] as const) {
+  Object.defineProperty(HTMLElement.prototype, prop, {
+    configurable: true,
+    get() {
+      return 1000;
+    },
+  });
+}
