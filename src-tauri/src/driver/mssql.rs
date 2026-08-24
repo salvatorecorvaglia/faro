@@ -9,9 +9,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement,
-    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
-    TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet,
+    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct SqlServerDialect;
@@ -432,31 +431,19 @@ impl Driver for SqlServerDriver {
             ))
             .await?;
 
-        // One row per column of a composite key, grouped by constraint name.
-        let mut foreign_keys: Vec<ForeignKey> = Vec::new();
-        for r in &fk_rows {
-            let name = as_text(r.first());
-            let column = as_text(r.get(1));
-            let ref_schema = as_text(r.get(2));
-            let ref_table = as_text(r.get(3));
-            let ref_column = as_text(r.get(4));
-
-            match foreign_keys.iter_mut().find(|f| f.name == name) {
-                Some(fk) => {
-                    fk.columns.push(column);
-                    fk.referenced_columns.push(ref_column);
-                }
-                None => foreign_keys.push(ForeignKey {
-                    name,
-                    columns: vec![column],
-                    referenced_table: TableRef {
-                        schema: Some(ref_schema),
-                        name: ref_table,
-                    },
-                    referenced_columns: vec![ref_column],
-                }),
-            }
-        }
+        let foreign_keys = super::fk::group_foreign_keys(
+            fk_rows
+                .iter()
+                .map(|r| super::fk::FkColumnRow {
+                    group: as_text(r.first()),
+                    column: as_text(r.get(1)),
+                    referenced_schema: Some(as_text(r.get(2))),
+                    referenced_table: as_text(r.get(3)),
+                    referenced_column: Some(as_text(r.get(4))),
+                })
+                .collect(),
+            |name| name.clone(),
+        );
 
         let idx_rows = self
             .meta_rows(&format!(

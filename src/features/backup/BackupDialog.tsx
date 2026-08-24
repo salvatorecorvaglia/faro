@@ -7,6 +7,9 @@ import * as ipc from '@/ipc';
 import type { BackupProgress, TableInfo } from '@/ipc/types';
 import { formatBytes, formatRowCount } from '@/lib/value';
 
+let backupCounter = 0;
+let restoreCounter = 0;
+
 /**
  * Back up the connected database to a `.sql` file.
  *
@@ -92,16 +95,22 @@ export function BackupDialog({
       });
       if (!path) return;
 
-      const result = await ipc.backupDatabase(connectionId, path, {
-        // An empty list means "everything" to the backend, but being explicit
-        // keeps the dump reproducible from what the user actually saw.
-        tables: dataTables
-          .filter((t) => selected.has(t.name))
-          .map((t) => ({ schema: t.schema, name: t.name })),
-        includeSchema,
-        includeData,
-        dropExisting,
-      });
+      const result = await ipc.backupDatabase(
+        connectionId,
+        path,
+        {
+          // An empty list means "everything" to the backend, but being
+          // explicit keeps the dump reproducible from what the user actually
+          // saw.
+          tables: dataTables
+            .filter((t) => selected.has(t.name))
+            .map((t) => ({ schema: t.schema, name: t.name })),
+          includeSchema,
+          includeData,
+          dropExisting,
+        },
+        `bak-${++backupCounter}`,
+      );
       return (
         `Backed up ${result.tables} tables, ${formatRowCount(result.rows)} rows ` +
         `(${formatBytes(result.bytes)}) to ${result.path}`
@@ -323,7 +332,12 @@ export function RestoreDialog({
     }
 
     const ok = await run(async () => {
-      const result = await ipc.restoreDatabase(connectionId, path, { stopOnError });
+      const result = await ipc.restoreDatabase(
+        connectionId,
+        path,
+        { stopOnError },
+        `res-${++restoreCounter}`,
+      );
       return result.failed === 0
         ? `Ran ${result.statements} statements successfully.`
         : `Ran ${result.statements} statements; ${result.failed} failed.`;

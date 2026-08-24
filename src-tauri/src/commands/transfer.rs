@@ -4,7 +4,7 @@ use tauri::State;
 use super::AppState;
 use crate::error::{FaroError, Result};
 use crate::model::{ResultSet, TableRef};
-use crate::transfer::export::{self, ExportOptions};
+use crate::transfer::export::{self, ExportFormat, ExportOptions};
 use crate::transfer::import::{self, ImportFormat, ImportOptions, ImportPreview};
 
 #[derive(serde::Serialize)]
@@ -30,6 +30,15 @@ pub async fn export_result(
 ///
 /// The grid only ever holds one page, so exporting what is on screen would
 /// silently truncate a large table. This re-reads from the database instead.
+///
+/// CSV, TSV and SQL are streamed straight to disk page by page, since their
+/// writers never needed the whole table in memory to begin with. XLSX and
+/// JSON still read every page into one `ResultSet` first — producing either
+/// genuinely requires the complete row set before the first byte can be
+/// written.
+///
+/// `query_id` is registered the same way a query's is, so `cancel_query` can
+/// stop a full-table export mid-flight too.
 #[tauri::command]
 pub async fn export_table(
     state: State<'_, AppState>,
@@ -37,6 +46,7 @@ pub async fn export_table(
     table: TableRef,
     path: String,
     mut options: ExportOptions,
+    query_id: String,
 ) -> Result<TransferResult> {
     let driver = state.registry.get(&connection_id).await?;
 
@@ -44,10 +54,32 @@ pub async fn export_table(
         options.table_name = Some(table.name.clone());
     }
 
-    let result = export::read_table_paged(&*driver, &table).await?;
-
     let target = PathBuf::from(&path);
-    let rows = export::write_file(&target, &result, &options, Some(driver.dialect()))?;
+    let cancel = state.registry.begin_query(&connection_id, &query_id).await;
+
+    let outcome = match options.format {
+        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Sql => {
+            export::export_table_streaming(
+                &*driver,
+                &table,
+                &target,
+                &options,
+                Some(driver.dialect()),
+                cancel,
+            )
+            .await
+        }
+        ExportFormat::Json | ExportFormat::Xlsx => {
+            export::read_table_paged(&*driver, &table, cancel)
+                .await
+                .and_then(|result| {
+                    export::write_file(&target, &result, &options, Some(driver.dialect()))
+                })
+        }
+    };
+
+    state.registry.end_query(&connection_id, &query_id).await;
+    let rows = outcome?;
     Ok(TransferResult { rows, path })
 }
 

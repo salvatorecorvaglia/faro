@@ -6,6 +6,8 @@ import { useAsyncAction } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type { ExportFormat, ResultSet, TableRef } from '@/ipc/types';
 
+let exportCounter = 0;
+
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'csv', label: 'CSV', hint: 'Comma-separated, opens anywhere' },
   { id: 'tsv', label: 'TSV', hint: 'Tab-separated, pastes into spreadsheets' },
@@ -66,7 +68,7 @@ export function ExportDialog({
       };
       const outcome =
         wholeTable && canExportTable
-          ? await ipc.exportTable(connectionId!, table!, path, options)
+          ? await ipc.exportTable(connectionId!, table!, path, options, `exp-${++exportCounter}`)
           : await ipc.exportResult(path, result!, options);
 
       return `Wrote ${outcome.rows.toLocaleString()} rows to ${outcome.path}`;

@@ -122,13 +122,19 @@ export const applyChanges = (connectionId: string, table: TableRef, changes: Pen
 export const exportResult = (path: string, result: ResultSet, options: ExportOptions) =>
   invoke<TransferResult>('export_result', { path, result, options });
 
-/** Re-reads the table from the database, so it is not capped at one page. */
+/**
+ * Re-reads the table from the database, so it is not capped at one page.
+ *
+ * `queryId` registers the export with the same cancellation registry a query
+ * uses, so `cancelQuery(connectionId, queryId)` can stop it mid-flight.
+ */
 export const exportTable = (
   connectionId: string,
   table: TableRef,
   path: string,
   options: ExportOptions,
-) => invoke<TransferResult>('export_table', { connectionId, table, path, options });
+  queryId: string,
+) => invoke<TransferResult>('export_table', { connectionId, table, path, options, queryId });
 
 export const previewImport = (path: string, hasHeader: boolean) =>
   invoke<ImportPreview>('preview_import', { path, hasHeader });
@@ -149,11 +155,21 @@ export const suggestedExportName = (base: string, format: ExportFormat) =>
 export const BACKUP_PROGRESS_EVENT = 'faro://backup-progress';
 export const RESTORE_PROGRESS_EVENT = 'faro://restore-progress';
 
-export const backupDatabase = (connectionId: string, path: string, options: BackupOptions) =>
-  invoke<BackupResult>('backup_database', { connectionId, path, options });
+/** `queryId` lets `cancelQuery` stop a backup mid-flight, the same as a query. */
+export const backupDatabase = (
+  connectionId: string,
+  path: string,
+  options: BackupOptions,
+  queryId: string,
+) => invoke<BackupResult>('backup_database', { connectionId, path, options, queryId });
 
-export const restoreDatabase = (connectionId: string, path: string, options: RestoreOptions) =>
-  invoke<RestoreResult>('restore_database', { connectionId, path, options });
+/** `queryId` lets `cancelQuery` stop a restore mid-flight, the same as a query. */
+export const restoreDatabase = (
+  connectionId: string,
+  path: string,
+  options: RestoreOptions,
+  queryId: string,
+) => invoke<RestoreResult>('restore_database', { connectionId, path, options, queryId });
 
 export const inspectBackup = (path: string) => invoke<BackupFileInfo>('inspect_backup', { path });
 

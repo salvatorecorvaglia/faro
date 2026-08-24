@@ -970,6 +970,7 @@ async fn backup_round_trip(d: &dyn Driver, schema: Option<&str>, label: &str) {
             include_data: true,
             drop_existing: false,
         },
+        CancellationToken::new(),
         |_| {},
     )
     .await
@@ -995,6 +996,7 @@ async fn backup_round_trip(d: &dyn Driver, schema: Option<&str>, label: &str) {
         &RestoreOptions {
             stop_on_error: false,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -1065,6 +1067,7 @@ async fn mongodb_backup_is_declined_not_silently_wrong() {
             include_data: true,
             drop_existing: false,
         },
+        CancellationToken::new(),
         |_| {},
     )
     .await
@@ -1424,6 +1427,7 @@ async fn mysql_dump_restores_into_an_empty_database() {
             include_data: false,
             drop_existing: false,
         },
+        CancellationToken::new(),
         |_| {},
     )
     .await

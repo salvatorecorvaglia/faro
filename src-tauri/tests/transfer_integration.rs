@@ -224,7 +224,7 @@ async fn exporting_a_table_reads_past_the_first_page() {
     // Goes through the production helper rather than re-implementing the paging
     // loop here: a test that rebuilds the logic it is checking cannot catch the
     // logic being wrong.
-    let combined = export::read_table_paged(&*d, &table("access_log"))
+    let combined = export::read_table_paged(&*d, &table("access_log"), CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(combined.rows.len(), 5000, "paged export lost rows");
@@ -266,7 +266,9 @@ async fn a_paged_export_is_a_partition_of_the_table_not_a_resample() {
             .expect("could not build the wide table");
     }
 
-    let exported = export::read_table_paged(&*d, &table("wide")).await.unwrap();
+    let exported = export::read_table_paged(&*d, &table("wide"), CancellationToken::new())
+        .await
+        .unwrap();
 
     // Counting rows is not enough: pages that overlap would duplicate some rows
     // and skip others while still totalling the right number. The property that
@@ -295,6 +297,91 @@ async fn a_paged_export_is_a_partition_of_the_table_not_a_resample() {
     );
     assert_eq!(*ids.first().unwrap(), 1);
     assert_eq!(*ids.last().unwrap(), 12_000);
+}
+
+#[tokio::test]
+async fn a_streamed_export_is_a_partition_of_the_table_too() {
+    // Same property as `a_paged_export_is_a_partition_of_the_table_not_a_resample`,
+    // checked against the file `export_table_streaming` writes directly —
+    // it must not silently disagree with the accumulate-then-write path it
+    // replaced for CSV/TSV/SQL just because nothing is held in memory here.
+    let mut f = fixture_or_skip!("paging_streamed");
+    let d = open(&f).await;
+
+    for sql in [
+        "CREATE TABLE wide (id INTEGER PRIMARY KEY, label TEXT)",
+        "INSERT INTO wide (id, label) SELECT value, 'row-' || value \
+         FROM (WITH RECURSIVE seq(value) AS \
+               (SELECT 1 UNION ALL SELECT value + 1 FROM seq WHERE value < 12000) \
+               SELECT value FROM seq)",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .expect("could not build the wide table");
+    }
+
+    let path = f.file("wide_streamed.csv");
+    let written = export::export_table_streaming(
+        &*d,
+        &table("wide"),
+        &path,
+        &opts(ExportFormat::Csv, "wide"),
+        Some(d.dialect()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written, 12_000, "wrong number of rows reported as written");
+
+    let (header, rows) = import::read_rows(&path, ImportFormat::Csv, true).unwrap();
+    let id_col = header.iter().position(|c| c == "id").expect("id column");
+    let mut ids: Vec<i64> = rows
+        .iter()
+        .map(|r| r[id_col].parse::<i64>().expect("id should be numeric"))
+        .collect();
+
+    assert_eq!(ids.len(), 12_000, "wrong number of rows in the file");
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        12_000,
+        "the pages overlapped: some rows were written twice and others not at all"
+    );
+    assert_eq!(*ids.first().unwrap(), 1);
+    assert_eq!(*ids.last().unwrap(), 12_000);
+}
+
+#[tokio::test]
+async fn a_streamed_export_of_an_empty_table_still_writes_a_header() {
+    let mut f = fixture_or_skip!("paging_streamed_empty");
+    let d = open(&f).await;
+
+    d.execute(
+        "CREATE TABLE empty_table (id INTEGER PRIMARY KEY, label TEXT)",
+        CancellationToken::new(),
+    )
+    .await
+    .expect("could not create the empty table");
+
+    let path = f.file("empty_streamed.csv");
+    let written = export::export_table_streaming(
+        &*d,
+        &table("empty_table"),
+        &path,
+        &opts(ExportFormat::Csv, "empty_table"),
+        Some(d.dialect()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written, 0);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        text, "id,label\n",
+        "an empty table should still get a header row"
+    );
 }
 
 #[tokio::test]

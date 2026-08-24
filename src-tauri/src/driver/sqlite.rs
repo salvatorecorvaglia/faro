@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteRow};
 use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::str::FromStr;
 use std::time::Instant;
@@ -9,8 +9,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet, SchemaInfo,
+    TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct SqliteDialect;
@@ -75,28 +75,12 @@ impl SqliteDriver {
             .busy_timeout(std::time::Duration::from_secs(5))
             .foreign_keys(true);
 
-        // A single connection for user SQL, deliberately.
-        //
-        // Session state — temp tables, PRAGMAs, open transactions — lives on
-        // one connection. With a larger pool, `CREATE TEMP TABLE t` followed by
-        // `INSERT INTO t` can land on different connections and fail with "no
-        // such table", which is baffling from the user's side. SQLite also
-        // serializes writes anyway, so the lost parallelism is largely
-        // notional for a local file.
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts.clone())
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
-
-        // Catalog reads go on their own connection so the schema tree and
-        // autocomplete stay responsive while a long query runs. WAL permits
-        // concurrent readers, so this costs nothing.
-        let meta = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        // See `driver::pool::dual_pool` for the general reasoning (session
+        // state needs one connection; catalog reads get their own so the
+        // schema tree stays responsive). No `acquire_timeout` here — unlike a
+        // networked engine, a local file has no host to hang on. WAL permits
+        // concurrent readers, so splitting catalog reads off costs nothing.
+        let (pool, meta) = super::pool::dual_pool::<sqlx::Sqlite>(opts, None).await?;
 
         Ok(Self {
             pool,
@@ -196,42 +180,23 @@ impl Driver for SqliteDriver {
             .fetch_all(&self.meta)
             .await?;
 
-        // SQLite reports one row per column of a composite FK, sharing an id.
-        //
-        // Grouped by id, not by position: SQLite numbers foreign keys in
-        // reverse order of declaration, so the ids arrive descending and are
-        // not indices into this list. Using `fks[id]` merged a composite key's
-        // columns into whichever constraint happened to sit at that index —
-        // the same reason the MySQL and SQL Server drivers group by name.
-        let mut fks: Vec<ForeignKey> = Vec::new();
-        let mut index_of: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
-        for r in &fk_rows {
-            let id: i32 = r.get("id");
-            let from: String = r.get("from");
-            let to: Option<String> = r.get("to");
-            let ref_table: String = r.get("table");
-            match index_of.get(&id) {
-                Some(&position) => {
-                    let fk: &mut ForeignKey = &mut fks[position];
-                    fk.columns.push(from);
-                    if let Some(t) = to {
-                        fk.referenced_columns.push(t);
-                    }
-                }
-                None => {
-                    index_of.insert(id, fks.len());
-                    fks.push(ForeignKey {
-                        name: format!("fk_{}_{}", table.name, id),
-                        columns: vec![from],
-                        referenced_table: TableRef {
-                            schema: None,
-                            name: ref_table,
-                        },
-                        referenced_columns: to.into_iter().collect(),
-                    });
-                }
-            }
-        }
+        // SQLite reports one row per column of a composite FK, sharing an id
+        // — grouped by that id below, not by position: SQLite numbers foreign
+        // keys in reverse order of declaration, so the ids arrive descending
+        // and are not indices into the output list.
+        let fks = super::fk::group_foreign_keys(
+            fk_rows
+                .iter()
+                .map(|r| super::fk::FkColumnRow {
+                    group: r.get::<i32, _>("id"),
+                    column: r.get("from"),
+                    referenced_schema: None,
+                    referenced_table: r.get("table"),
+                    referenced_column: r.get("to"),
+                })
+                .collect(),
+            |id| format!("fk_{}_{}", table.name, id),
+        );
 
         let idx_rows = sqlx::query(AssertSqlSafe(format!("PRAGMA index_list({quoted})")))
             .fetch_all(&self.meta)

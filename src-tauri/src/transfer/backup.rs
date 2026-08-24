@@ -70,10 +70,18 @@ pub struct BackupProgress {
 ///
 /// `on_progress` is called per batch so the UI can show a progress bar; a
 /// backup of a large table is otherwise indistinguishable from a hang.
+///
+/// `cancel` is checked between tables and threaded into each table's row
+/// fetches, so a backup of many (or very large) tables can be stopped rather
+/// than run to completion regardless of what the caller wants. Catalog calls
+/// per table (`describe_table`, `table_ddl`) are not cancellable — the
+/// `Driver` trait does not accept a token there — but those are cheap
+/// metadata reads, not the source of a runaway backup.
 pub async fn write_backup(
     driver: &dyn Driver,
     path: &std::path::Path,
     options: &BackupOptions,
+    cancel: tokio_util::sync::CancellationToken,
     mut on_progress: impl FnMut(BackupProgress),
 ) -> Result<BackupResult> {
     let dialect = driver.dialect();
@@ -165,15 +173,19 @@ pub async fn write_backup(
     let mut total_rows = 0u64;
     if options.include_data {
         for (index, detail) in details.iter().enumerate() {
-            let written = write_table_data(driver, &mut out, detail, dialect, |rows| {
-                on_progress(BackupProgress {
-                    table: detail.table.name.clone(),
-                    table_index: index,
-                    table_count: details.len(),
-                    rows_written: rows,
-                });
-            })
-            .await?;
+            if cancel.is_cancelled() {
+                return Err(FaroError::Cancelled);
+            }
+            let written =
+                write_table_data(driver, &mut out, detail, dialect, cancel.clone(), |rows| {
+                    on_progress(BackupProgress {
+                        table: detail.table.name.clone(),
+                        table_index: index,
+                        table_count: details.len(),
+                        rows_written: rows,
+                    });
+                })
+                .await?;
             total_rows += written;
         }
     }
@@ -220,6 +232,7 @@ async fn write_table_data(
     out: &mut impl Write,
     detail: &TableDetail,
     dialect: &dyn Dialect,
+    cancel: tokio_util::sync::CancellationToken,
     mut on_batch: impl FnMut(u64),
 ) -> Result<u64> {
     let qualified = dialect.qualify(detail.table.schema.as_deref(), &detail.table.name);
@@ -244,13 +257,7 @@ async fn write_table_data(
 
     loop {
         let paged = dialect.paginate(&base, FETCH_BATCH + 1, offset);
-        let page = driver
-            .query(
-                &paged,
-                FETCH_BATCH,
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await?;
+        let page = driver.query(&paged, FETCH_BATCH, cancel.clone()).await?;
 
         if page.rows.is_empty() {
             break;
@@ -478,14 +485,48 @@ pub struct RestoreOptions {
     pub stop_on_error: bool,
 }
 
+/// Describe what happened to the statements already run, when a restore
+/// stops partway — either because `stop_on_error` hit a failure, or because
+/// the caller cancelled. Both abandon the rest of the script and need to say
+/// the same thing about what is left applied, so the rollback attempt and its
+/// wording live in exactly one place.
+async fn abort_outcome(driver: &dyn Driver, atomic: bool, applied: usize, total: usize) -> String {
+    if !atomic {
+        return format!("{applied} of {total} statements had run and remain applied.");
+    }
+    let rolled_back = driver
+        .execute("ROLLBACK", tokio_util::sync::CancellationToken::new())
+        .await
+        .is_ok();
+    if rolled_back {
+        "Nothing was applied — the database is as it was.".to_string()
+    } else {
+        // Say so plainly. Believing a failed restore left no trace, when it
+        // did, is worse than knowing it is half-applied.
+        format!(
+            "The rollback then failed too, so {applied} statements \
+             may remain applied. Check the database before retrying."
+        )
+    }
+}
+
 /// Execute a dump file against a connection.
 ///
 /// Statements are split with the same lexer the editor uses, so dollar-quoted
 /// bodies and embedded semicolons survive.
+///
+/// `cancel` is threaded into each statement's `execute`, so a slow statement
+/// can be interrupted mid-flight, not just skipped between statements. It
+/// stops the restore unconditionally — unlike a statement failure, cancelling
+/// is a direct request from the user and is honoured regardless of
+/// `stop_on_error`. `BEGIN`/`ROLLBACK`/`COMMIT` deliberately use a fresh,
+/// non-cancellable token: those are near-instant, and interrupting a rollback
+/// partway could leave the database worse off than letting it finish.
 pub async fn restore(
     driver: &dyn Driver,
     script: &str,
     options: &RestoreOptions,
+    cancel: tokio_util::sync::CancellationToken,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<RestoreResult> {
     // Comment-only fragments survive the split — the dump's own header is one.
@@ -531,33 +572,21 @@ pub async fn restore(
     }
 
     for (index, stmt) in statements.iter().enumerate() {
-        let result = driver
-            .execute(stmt, tokio_util::sync::CancellationToken::new())
-            .await;
+        let result = driver.execute(stmt, cancel.clone()).await;
+
+        // Cancellation always stops the restore, regardless of stop_on_error
+        // — that flag is about how to react to a *statement failing*, not
+        // about whether a user's cancel request gets honoured.
+        if let Err(FaroError::Cancelled) = result {
+            let outcome = abort_outcome(driver, atomic, index, total).await;
+            return Err(FaroError::Other(format!("Restore cancelled.\n\n{outcome}")));
+        }
 
         if let Err(e) = result {
             failed += 1;
             let message = format!("statement {}: {e}", index + 1);
             if options.stop_on_error {
-                let outcome = if atomic {
-                    let rolled_back = driver
-                        .execute("ROLLBACK", tokio_util::sync::CancellationToken::new())
-                        .await
-                        .is_ok();
-                    if rolled_back {
-                        "Nothing was applied — the database is as it was.".to_string()
-                    } else {
-                        // Say so plainly. Believing a failed restore left no
-                        // trace, when it did, is worse than knowing it is
-                        // half-applied.
-                        format!(
-                            "The rollback then failed too, so {index} statements \
-                             may remain applied. Check the database before retrying."
-                        )
-                    }
-                } else {
-                    format!("{index} of {total} statements had run and remain applied.")
-                };
+                let outcome = abort_outcome(driver, atomic, index, total).await;
                 return Err(FaroError::Other(format!(
                     "{message}\n\nRestore stopped. {outcome}"
                 )));

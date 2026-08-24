@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlRow, MySqlSslMode};
 use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -8,8 +8,8 @@ use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ConnectionConfig, ExecResult, ForeignKey, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet, SchemaInfo,
+    SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct MySqlDialect;
@@ -94,21 +94,11 @@ impl MySqlDriver {
             opts = opts.password(pw);
         }
 
-        // See the Postgres driver for why user SQL gets one connection and
-        // catalog reads get their own.
-        let pool = MySqlPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(15))
-            .connect_with(opts.clone())
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
-
-        let meta = MySqlPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(15))
-            .connect_with(opts)
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        // See `driver::pool::dual_pool` for why user SQL gets one connection
+        // and catalog reads get their own.
+        let (pool, meta) =
+            super::pool::dual_pool::<sqlx::MySql>(opts, Some(std::time::Duration::from_secs(15)))
+                .await?;
 
         if config.read_only {
             // Belt and braces alongside Faro's own guard: this makes the server
@@ -256,30 +246,19 @@ impl Driver for MySqlDriver {
         .fetch_all(&self.meta)
         .await?;
 
-        // One row per column of a composite key, grouped by constraint name.
-        let mut foreign_keys: Vec<ForeignKey> = Vec::new();
-        for r in &fk_rows {
-            let name: String = r.get("name");
-            let column: String = r.get("column_name");
-            let ref_table: String = r.get("ref_table");
-            let ref_column: String = r.get("ref_column");
-
-            match foreign_keys.iter_mut().find(|f| f.name == name) {
-                Some(fk) => {
-                    fk.columns.push(column);
-                    fk.referenced_columns.push(ref_column);
-                }
-                None => foreign_keys.push(ForeignKey {
-                    name,
-                    columns: vec![column],
-                    referenced_table: TableRef {
-                        schema: None,
-                        name: ref_table,
-                    },
-                    referenced_columns: vec![ref_column],
-                }),
-            }
-        }
+        let foreign_keys = super::fk::group_foreign_keys(
+            fk_rows
+                .iter()
+                .map(|r| super::fk::FkColumnRow {
+                    group: r.get::<String, _>("name"),
+                    column: r.get("column_name"),
+                    referenced_schema: None,
+                    referenced_table: r.get("ref_table"),
+                    referenced_column: Some(r.get("ref_column")),
+                })
+                .collect(),
+            |name| name.clone(),
+        );
 
         let idx_rows = sqlx::query(
             r#"

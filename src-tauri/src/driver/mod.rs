@@ -5,9 +5,11 @@ pub mod dialect;
 #[cfg(feature = "duckdb-engine")]
 mod duckdb;
 mod fetch;
+mod fk;
 mod mongo;
 mod mssql;
 mod mysql;
+mod pool;
 mod postgres;
 mod sqlite;
 mod tx;

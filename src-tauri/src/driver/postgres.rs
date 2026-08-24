@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgRow, PgSslMode};
 use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -72,37 +72,15 @@ impl PostgresDriver {
             opts = opts.options([("default_transaction_read_only", "on")]);
         }
 
-        // One connection for user SQL, so the user gets one coherent session.
-        //
-        // Temp tables, `SET search_path`, and open transactions are all
-        // per-connection. A larger pool would scatter statements across
-        // sessions, so `CREATE TEMP TABLE t` then `INSERT INTO t` could fail
-        // with "relation does not exist" for no reason the user can see.
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            // Fail fast on a wrong host rather than making the user wait out
-            // the OS-level TCP timeout.
-            .acquire_timeout(std::time::Duration::from_secs(15))
-            .connect_with(opts.clone())
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
-
-        // A second connection reserved for catalog reads.
-        //
-        // Schema browsing and autocomplete must stay responsive while a long
-        // query runs; sharing the single session connection would make the
-        // schema tree hang behind the user's own `SELECT`. Catalog queries
-        // carry no session state, so splitting them off costs nothing.
-        //
-        // One consequence worth knowing: temp tables created on the query
-        // connection are invisible to this one, so they do not appear in the
-        // schema tree.
-        let meta = PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(15))
-            .connect_with(opts)
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        // See `driver::pool::dual_pool` for why this is two single-connection
+        // pools rather than one larger one. Worth knowing here specifically:
+        // temp tables created on the query connection are invisible on the
+        // catalog one, so they do not appear in the schema tree.
+        let (pool, meta) = super::pool::dual_pool::<sqlx::Postgres>(
+            opts,
+            Some(std::time::Duration::from_secs(15)),
+        )
+        .await?;
 
         Ok(Self {
             pool,

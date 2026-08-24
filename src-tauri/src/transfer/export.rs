@@ -117,55 +117,75 @@ fn cell_text(value: &Value) -> String {
 /// Rows read per query while walking a table.
 ///
 /// Large enough to be efficient, small enough that one query's buffer stays
-/// bounded. The accumulated result is not bounded — XLSX and JSON both need the
-/// whole set before they can produce a valid file.
+/// bounded. Whether the *pages* accumulate beyond that depends on the caller:
+/// `read_table_paged` does, because XLSX and JSON need the whole set before
+/// they can produce a valid file; `export_table_streaming` does not, because
+/// CSV, TSV and SQL can each be written one row at a time.
 const READ_BATCH: u64 = 5_000;
 
-/// Read an entire table into one `ResultSet`, a page at a time.
+/// Walk a table page by page, in primary-key order, handing each one to
+/// `on_page` as it arrives.
 ///
-/// Split out of the `export_table` command so the paging can be tested without a
-/// Tauri `State`: getting this wrong produces a file that looks complete and is
-/// not, which is the kind of bug that has to be caught by a test rather than by
-/// a user noticing later.
-///
-/// Ordering by the primary key is what makes the pages a partition of the table
-/// rather than five arbitrary samples of it — see `sql::order_by_key`.
-pub async fn read_table_paged(
+/// The one place the paging logic — offsets, the truncation flag, the stable
+/// ordering that makes pages a partition of the table rather than five
+/// arbitrary samples of it (see `sql::order_by_key`) — is implemented, shared
+/// by `read_table_paged` (which accumulates the pages) and
+/// `export_table_streaming` (which writes each one straight to disk).
+/// Getting this wrong produces a file that looks complete and is not, which
+/// is the kind of bug that has to be caught by a test rather than by a user
+/// noticing later — so it exists in exactly one place either way.
+async fn walk_table_pages<F>(
     driver: &dyn crate::driver::Driver,
     table: &crate::model::TableRef,
-) -> Result<ResultSet> {
+    cancel: tokio_util::sync::CancellationToken,
+    mut on_page: F,
+) -> Result<()>
+where
+    F: FnMut(ResultSet) -> Result<()>,
+{
     let dialect = driver.dialect();
     let qualified = dialect.qualify(table.schema.as_deref(), &table.name);
     let detail = driver.describe_table(table).await?;
     let order = crate::sql::stable_order_by(&detail.primary_key, &detail.columns, dialect);
-
     let base = format!("SELECT * FROM {qualified}{order}");
-    let mut combined: Option<ResultSet> = None;
-    let mut offset = 0u64;
 
+    let mut offset = 0u64;
     loop {
         let paged = dialect.paginate(&base, READ_BATCH + 1, offset);
-        let page = driver
-            .query(
-                &paged,
-                READ_BATCH,
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await?;
+        let page = driver.query(&paged, READ_BATCH, cancel.clone()).await?;
 
         let more = page.truncated;
         let count = page.rows.len() as u64;
-
-        match &mut combined {
-            None => combined = Some(page),
-            Some(acc) => acc.rows.extend(page.rows),
-        }
+        on_page(page)?;
 
         if !more || count == 0 {
             break;
         }
         offset += count;
     }
+    Ok(())
+}
+
+/// Read an entire table into one `ResultSet`, a page at a time.
+///
+/// For XLSX and JSON, which need every row before either can produce a valid
+/// file. CSV, TSV and SQL go through `export_table_streaming` instead, which
+/// writes each page straight to disk rather than holding the whole table in
+/// memory.
+pub async fn read_table_paged(
+    driver: &dyn crate::driver::Driver,
+    table: &crate::model::TableRef,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<ResultSet> {
+    let mut combined: Option<ResultSet> = None;
+    walk_table_pages(driver, table, cancel, |page| {
+        match &mut combined {
+            None => combined = Some(page),
+            Some(acc) => acc.rows.extend(page.rows),
+        }
+        Ok(())
+    })
+    .await?;
 
     let mut result = combined.unwrap_or(ResultSet {
         columns: vec![],
@@ -178,6 +198,45 @@ pub async fn read_table_paged(
     // tell the caller it was looking at a partial table.
     result.truncated = false;
     Ok(result)
+}
+
+/// Export an entire table straight to disk, one page at a time — for CSV,
+/// TSV and SQL, whose writers already emit one row at a time and never
+/// needed the whole table in memory to begin with. `format` on `options`
+/// must be one of those three; XLSX and JSON still go through
+/// `read_table_paged` + `write_file` (see `export_table` in
+/// `commands/transfer.rs`), since producing either genuinely does require
+/// every row before the first byte can be written.
+pub async fn export_table_streaming(
+    driver: &dyn crate::driver::Driver,
+    table: &crate::model::TableRef,
+    path: &Path,
+    options: &ExportOptions,
+    dialect: Option<&dyn Dialect>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<u64> {
+    let mut sink: Option<TableSink> = None;
+    let mut total_rows = 0u64;
+
+    walk_table_pages(driver, table, cancel, |page| {
+        if sink.is_none() {
+            sink = Some(TableSink::open(path, &page.columns, options, dialect)?);
+        }
+        let s = sink.as_mut().expect("just initialized above");
+        for row in &page.rows {
+            s.write_row(row)?;
+        }
+        total_rows += page.rows.len() as u64;
+        Ok(())
+    })
+    .await?;
+
+    // The loop always runs at least once (even a 0-row table gets one query,
+    // for its column list), so the sink was always opened.
+    if let Some(s) = sink {
+        s.finish()?;
+    }
+    Ok(total_rows)
 }
 
 pub fn write_file(
@@ -195,45 +254,83 @@ pub fn write_file(
     }
 }
 
+/// A CSV/TSV destination that can be written to one row at a time.
+///
+/// Shared by `write_delimited` (a whole `ResultSet` already in hand) and
+/// `export_table_streaming` (one page at a time, never accumulated) so the
+/// formula-sanitizing and cell-rendering logic exists in exactly one place.
+struct DelimitedSink {
+    writer: csv::Writer<std::fs::File>,
+    sanitize: bool,
+}
+
+impl DelimitedSink {
+    fn open(
+        path: &Path,
+        delimiter: u8,
+        columns: &[crate::model::ColumnInfo],
+        include_header: bool,
+        sanitize: bool,
+    ) -> Result<Self> {
+        let mut writer = csv::WriterBuilder::new()
+            .delimiter(delimiter)
+            .from_path(path)
+            .map_err(|e| FaroError::Io(e.to_string()))?;
+
+        if include_header {
+            // Column names are database-supplied too, so they get the same
+            // treatment as the data.
+            writer
+                .write_record(columns.iter().map(|c| {
+                    if sanitize {
+                        sanitize_formula(c.name.clone())
+                    } else {
+                        c.name.clone()
+                    }
+                }))
+                .map_err(|e| FaroError::Io(e.to_string()))?;
+        }
+
+        Ok(Self { writer, sanitize })
+    }
+
+    fn write_row(&mut self, row: &[Value]) -> Result<()> {
+        self.writer
+            .write_record(row.iter().map(|v| {
+                let text = cell_text(v);
+                if self.sanitize {
+                    sanitize_formula(text)
+                } else {
+                    text
+                }
+            }))
+            .map_err(|e| FaroError::Io(e.to_string()))
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.writer
+            .flush()
+            .map_err(|e| FaroError::Io(e.to_string()))
+    }
+}
+
 fn write_delimited(
     path: &Path,
     result: &ResultSet,
     options: &ExportOptions,
     delimiter: u8,
 ) -> Result<u64> {
-    let mut writer = csv::WriterBuilder::new()
-        .delimiter(delimiter)
-        .from_path(path)
-        .map_err(|e| FaroError::Io(e.to_string()))?;
-
-    if options.include_header {
-        // Column names are database-supplied too, so they get the same
-        // treatment as the data.
-        writer
-            .write_record(result.columns.iter().map(|c| {
-                if options.sanitize_formulas {
-                    sanitize_formula(c.name.clone())
-                } else {
-                    c.name.clone()
-                }
-            }))
-            .map_err(|e| FaroError::Io(e.to_string()))?;
-    }
-
+    let mut sink = DelimitedSink::open(
+        path,
+        delimiter,
+        &result.columns,
+        options.include_header,
+        options.sanitize_formulas,
+    )?;
     for row in &result.rows {
-        writer
-            .write_record(row.iter().map(|v| {
-                let text = cell_text(v);
-                if options.sanitize_formulas {
-                    sanitize_formula(text)
-                } else {
-                    text
-                }
-            }))
-            .map_err(|e| FaroError::Io(e.to_string()))?;
+        sink.write_row(row)?;
     }
-
-    writer.flush().map_err(|e| FaroError::Io(e.to_string()))?;
+    sink.finish()?;
     Ok(result.rows.len() as u64)
 }
 
@@ -290,35 +387,45 @@ fn unique_key(obj: &serde_json::Map<String, serde_json::Value>, name: &str) -> S
     format!("{name}_{n}")
 }
 
-fn write_sql(
-    path: &Path,
-    result: &ResultSet,
-    options: &ExportOptions,
-    dialect: Option<&dyn Dialect>,
-) -> Result<u64> {
-    let table = options.table_name.as_deref().unwrap_or("exported_data");
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+/// A SQL-dump destination that can be written to one row at a time.
+///
+/// Shared for the same reason as `DelimitedSink`.
+struct SqlSink<'a> {
+    file: std::io::BufWriter<std::fs::File>,
+    prefix: String,
+    dialect: Option<&'a dyn Dialect>,
+}
 
-    let quote_ident = |s: &str| match dialect {
-        Some(d) => d.quote_ident(s),
-        None => format!("\"{}\"", s.replace('"', "\"\"")),
-    };
+impl<'a> SqlSink<'a> {
+    fn open(
+        path: &Path,
+        columns: &[crate::model::ColumnInfo],
+        options: &ExportOptions,
+        dialect: Option<&'a dyn Dialect>,
+    ) -> Result<Self> {
+        let table = options.table_name.as_deref().unwrap_or("exported_data");
+        let quote_ident = |s: &str| match dialect {
+            Some(d) => d.quote_ident(s),
+            None => format!("\"{}\"", s.replace('"', "\"\"")),
+        };
+        let column_list: Vec<String> = columns.iter().map(|c| quote_ident(&c.name)).collect();
+        let prefix = format!(
+            "INSERT INTO {} ({}) VALUES ",
+            quote_ident(table),
+            column_list.join(", ")
+        );
+        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        Ok(Self {
+            file,
+            prefix,
+            dialect,
+        })
+    }
 
-    let columns: Vec<String> = result
-        .columns
-        .iter()
-        .map(|c| quote_ident(&c.name))
-        .collect();
-    let prefix = format!(
-        "INSERT INTO {} ({}) VALUES ",
-        quote_ident(table),
-        columns.join(", ")
-    );
-
-    for row in &result.rows {
+    fn write_row(&mut self, row: &[Value]) -> Result<()> {
         let values: Vec<String> = row
             .iter()
-            .map(|v| match dialect {
+            .map(|v| match self.dialect {
                 Some(d) => d.literal(v),
                 // Fall back to SQLite-style byte literals and standard string
                 // quoting when no connection is in play, e.g. exporting a
@@ -330,11 +437,84 @@ fn write_sql(
                 ),
             })
             .collect();
-        writeln!(file, "{prefix}({});", values.join(", "))?;
+        writeln!(self.file, "{}({});", self.prefix, values.join(", "))?;
+        Ok(())
     }
 
-    file.flush()?;
+    fn finish(mut self) -> Result<()> {
+        self.file.flush()?;
+        Ok(())
+    }
+}
+
+fn write_sql(
+    path: &Path,
+    result: &ResultSet,
+    options: &ExportOptions,
+    dialect: Option<&dyn Dialect>,
+) -> Result<u64> {
+    let mut sink = SqlSink::open(path, &result.columns, options, dialect)?;
+    for row in &result.rows {
+        sink.write_row(row)?;
+    }
+    sink.finish()?;
     Ok(result.rows.len() as u64)
+}
+
+/// Dispatches to whichever streaming sink `options.format` calls for.
+///
+/// Only `Csv`, `Tsv` and `Sql` are valid here — `export_table_streaming` is
+/// never called for `Json`/`Xlsx`, which read the whole table first instead
+/// (see `commands/transfer.rs`).
+enum TableSink<'a> {
+    Delimited(Box<DelimitedSink>),
+    Sql(SqlSink<'a>),
+}
+
+impl<'a> TableSink<'a> {
+    fn open(
+        path: &Path,
+        columns: &[crate::model::ColumnInfo],
+        options: &ExportOptions,
+        dialect: Option<&'a dyn Dialect>,
+    ) -> Result<Self> {
+        match options.format {
+            ExportFormat::Csv => Ok(Self::Delimited(Box::new(DelimitedSink::open(
+                path,
+                b',',
+                columns,
+                options.include_header,
+                options.sanitize_formulas,
+            )?))),
+            ExportFormat::Tsv => Ok(Self::Delimited(Box::new(DelimitedSink::open(
+                path,
+                b'\t',
+                columns,
+                options.include_header,
+                options.sanitize_formulas,
+            )?))),
+            ExportFormat::Sql => Ok(Self::Sql(SqlSink::open(path, columns, options, dialect)?)),
+            ExportFormat::Json | ExportFormat::Xlsx => unreachable!(
+                "export_table_streaming is only called for Csv/Tsv/Sql; \
+                 {:?} goes through read_table_paged + write_file instead",
+                options.format
+            ),
+        }
+    }
+
+    fn write_row(&mut self, row: &[Value]) -> Result<()> {
+        match self {
+            Self::Delimited(s) => s.write_row(row),
+            Self::Sql(s) => s.write_row(row),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        match self {
+            Self::Delimited(s) => s.finish(),
+            Self::Sql(s) => s.finish(),
+        }
+    }
 }
 
 fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Result<u64> {

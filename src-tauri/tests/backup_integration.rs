@@ -130,7 +130,7 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
         out
     };
 
-    let result = backup::write_backup(&*src, &f.dump, &options(), |_| {})
+    let result = backup::write_backup(&*src, &f.dump, &options(), CancellationToken::new(), |_| {})
         .await
         .unwrap();
 
@@ -156,6 +156,7 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -181,7 +182,7 @@ async fn a_database_backs_up_and_restores_into_an_empty_one() {
 async fn restored_values_match_including_awkward_ones() {
     let f = fixture_or_skip!("values");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+    backup::write_backup(&*src, &f.dump, &options(), CancellationToken::new(), |_| {})
         .await
         .unwrap();
     src.close().await;
@@ -194,6 +195,7 @@ async fn restored_values_match_including_awkward_ones() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -236,7 +238,7 @@ async fn restored_values_match_including_awkward_ones() {
 async fn blobs_survive_the_round_trip() {
     let f = fixture_or_skip!("blobs");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+    backup::write_backup(&*src, &f.dump, &options(), CancellationToken::new(), |_| {})
         .await
         .unwrap();
     src.close().await;
@@ -249,6 +251,7 @@ async fn blobs_survive_the_round_trip() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -270,7 +273,7 @@ async fn blobs_survive_the_round_trip() {
 async fn the_restored_schema_carries_keys_and_indexes() {
     let f = fixture_or_skip!("schema");
     let src = open(&f.source).await;
-    backup::write_backup(&*src, &f.dump, &options(), |_| {})
+    backup::write_backup(&*src, &f.dump, &options(), CancellationToken::new(), |_| {})
         .await
         .unwrap();
     src.close().await;
@@ -283,6 +286,7 @@ async fn the_restored_schema_carries_keys_and_indexes() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -329,7 +333,7 @@ async fn selecting_tables_limits_what_is_dumped() {
         schema: None,
         name: "authors".into(),
     }];
-    let result = backup::write_backup(&*src, &f.dump, &o, |_| {})
+    let result = backup::write_backup(&*src, &f.dump, &o, CancellationToken::new(), |_| {})
         .await
         .unwrap();
 
@@ -351,7 +355,7 @@ async fn a_schema_only_backup_has_no_inserts() {
 
     let mut o = options();
     o.include_data = false;
-    let result = backup::write_backup(&*src, &f.dump, &o, |_| {})
+    let result = backup::write_backup(&*src, &f.dump, &o, CancellationToken::new(), |_| {})
         .await
         .unwrap();
     assert_eq!(result.rows, 0);
@@ -370,7 +374,7 @@ async fn progress_is_reported_while_backing_up() {
     let src = open(&f.source).await;
 
     let mut updates = Vec::new();
-    backup::write_backup(&*src, &f.dump, &options(), |p| {
+    backup::write_backup(&*src, &f.dump, &options(), CancellationToken::new(), |p| {
         updates.push((p.table.clone(), p.rows_written));
     })
     .await
@@ -396,6 +400,7 @@ async fn restore_stops_at_the_first_error_by_default() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -454,6 +459,7 @@ async fn a_successful_restore_still_commits() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -478,6 +484,7 @@ async fn restore_can_be_told_to_continue_past_errors() {
         &RestoreOptions {
             stop_on_error: false,
         },
+        CancellationToken::new(),
         |_, _| {},
     )
     .await
@@ -508,6 +515,7 @@ async fn an_empty_script_is_rejected_rather_than_silently_doing_nothing() {
         &RestoreOptions {
             stop_on_error: true
         },
+        CancellationToken::new(),
         |_, _| {}
     )
     .await
@@ -518,6 +526,7 @@ async fn an_empty_script_is_rejected_rather_than_silently_doing_nothing() {
         &RestoreOptions {
             stop_on_error: true
         },
+        CancellationToken::new(),
         |_, _| {}
     )
     .await

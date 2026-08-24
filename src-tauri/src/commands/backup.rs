@@ -15,6 +15,10 @@ const RESTORE_PROGRESS: &str = "faro://restore-progress";
 ///
 /// Progress is emitted as events rather than returned at the end: a backup of a
 /// large table takes long enough that silence is indistinguishable from a hang.
+///
+/// `query_id` is registered with the same connection-scoped cancellation
+/// registry a query uses, so the existing `cancel_query` command can stop a
+/// backup mid-flight too — there is nothing backup-specific about it.
 #[tauri::command]
 pub async fn backup_database(
     app: tauri::AppHandle,
@@ -22,15 +26,26 @@ pub async fn backup_database(
     connection_id: String,
     path: String,
     options: BackupOptions,
+    query_id: String,
 ) -> Result<BackupResult> {
     let driver = state.registry.get(&connection_id).await?;
     let target = PathBuf::from(&path);
+    let cancel = state.registry.begin_query(&connection_id, &query_id).await;
 
-    backup::write_backup(&*driver, &target, &options, |progress: BackupProgress| {
-        // A dropped listener must not fail the backup.
-        let _ = app.emit(BACKUP_PROGRESS, &progress);
-    })
-    .await
+    let result = backup::write_backup(
+        &*driver,
+        &target,
+        &options,
+        cancel,
+        |progress: BackupProgress| {
+            // A dropped listener must not fail the backup.
+            let _ = app.emit(BACKUP_PROGRESS, &progress);
+        },
+    )
+    .await;
+
+    state.registry.end_query(&connection_id, &query_id).await;
+    result
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -48,14 +63,19 @@ pub async fn restore_database(
     connection_id: String,
     path: String,
     options: RestoreOptions,
+    query_id: String,
 ) -> Result<RestoreResult> {
     let driver = state.registry.get_writable(&connection_id).await?;
     let script = std::fs::read_to_string(&path)?;
+    let cancel = state.registry.begin_query(&connection_id, &query_id).await;
 
-    backup::restore(&*driver, &script, &options, |done, total| {
+    let result = backup::restore(&*driver, &script, &options, cancel, |done, total| {
         let _ = app.emit(RESTORE_PROGRESS, RestoreProgress { done, total });
     })
-    .await
+    .await;
+
+    state.registry.end_query(&connection_id, &query_id).await;
+    result
 }
 
 /// Statement count for a dump file, so the UI can warn before running it.
