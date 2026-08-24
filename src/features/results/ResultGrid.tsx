@@ -105,6 +105,16 @@ export function ResultGrid({
     overscan: 12,
   });
 
+  // Holds the active drag's teardown so it can be run from the unmount effect
+  // below too, not just from `pointerup` — otherwise a resize that is still in
+  // progress when the grid unmounts (switching tabs, the result reloading)
+  // leaves these listeners on `window` for the rest of the app's life.
+  const activeResizeCleanup = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => activeResizeCleanup.current?.();
+  }, []);
+
   const startResize = useCallback(
     (colIndex: number, e: React.PointerEvent) => {
       e.preventDefault();
@@ -120,9 +130,11 @@ export function ResultGrid({
       const onUp = () => {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        activeResizeCleanup.current = null;
       };
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
+      activeResizeCleanup.current = onUp;
     },
     [columnKeys, widths],
   );
@@ -602,6 +614,24 @@ function CellEditor({
 }) {
   const [draft, setDraft] = useState(initial);
 
+  // Enter/Escape/⌘⌫ all unmount this input once they resolve the edit, and
+  // removing a focused element can still deliver a trailing native `blur` —
+  // React's delegated `onBlur` would otherwise fire a second, redundant
+  // commit, or (worse, after Escape) commit a value the user just cancelled.
+  // This flag makes the first resolution final.
+  const resolved = useRef(false);
+
+  const commit = (value: EditValue) => {
+    if (resolved.current) return;
+    resolved.current = true;
+    onCommit(value);
+  };
+  const cancel = () => {
+    if (resolved.current) return;
+    resolved.current = true;
+    onCancel();
+  };
+
   return (
     <input
       // This input is mounted only because the user just chose to edit this
@@ -620,17 +650,17 @@ function CellEditor({
       }}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => onCommit({ kind: 'text', value: draft })}
+      onBlur={() => commit({ kind: 'text', value: draft })}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
-          onCommit({ kind: 'text', value: draft });
+          commit({ kind: 'text', value: draft });
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          onCancel();
+          cancel();
         } else if ((e.metaKey || e.ctrlKey) && e.key === 'Backspace') {
           e.preventDefault();
-          onCommit({ kind: 'null' });
+          commit({ kind: 'null' });
         }
       }}
       title="Enter to save · Esc to cancel · ⌘⌫ for NULL"

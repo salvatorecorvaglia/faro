@@ -28,7 +28,7 @@ use super::dialect::Dialect;
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    BrowseOptions, ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, FilterOp,
+    BrowseOptions, ColumnDetail, ColumnFilter, ColumnInfo, ConnectionConfig, ExecResult, FilterOp,
     GuardedStatement, QueryOutcome, ResultSet, SchemaInfo, TableColumns, TableDetail, TableInfo,
     TableKind, TableRef, Value,
 };
@@ -372,6 +372,61 @@ fn split_json_args(inner: &str) -> Result<Vec<serde_json::Value>> {
             })
         })
         .collect()
+}
+
+/// Turn the grid's column filters into a MongoDB query document.
+///
+/// Split out from `Driver::browse` so it can be unit tested without a live
+/// server.
+fn build_filter(filters: &[ColumnFilter]) -> Document {
+    let mut filter = Document::new();
+    for f in filters {
+        let condition = match f.op {
+            FilterOp::Equals => coerce_filter_value(&f.value),
+            FilterOp::NotEquals => {
+                Bson::Document(bson::doc! { "$ne": coerce_filter_value(&f.value) })
+            }
+            FilterOp::GreaterThan => {
+                Bson::Document(bson::doc! { "$gt": coerce_filter_value(&f.value) })
+            }
+            FilterOp::LessThan => {
+                Bson::Document(bson::doc! { "$lt": coerce_filter_value(&f.value) })
+            }
+            // Regex-escaped so a filter for "a.b" does not match "axb".
+            FilterOp::Contains => Bson::Document(bson::doc! {
+                "$regex": regex_escape(&f.value), "$options": "i"
+            }),
+            FilterOp::StartsWith => Bson::Document(bson::doc! {
+                "$regex": format!("^{}", regex_escape(&f.value)), "$options": "i"
+            }),
+            // `$type: "null"` would match only an explicit null; a missing
+            // field is the other half of what a user means by "is null".
+            FilterOp::IsNull => Bson::Document(bson::doc! { "$eq": Bson::Null }),
+            FilterOp::IsNotNull => Bson::Document(bson::doc! { "$ne": Bson::Null }),
+        };
+        filter.insert(f.column.clone(), condition);
+    }
+    filter
+}
+
+/// Read a grid filter's raw text as the type it looks like, not always a string.
+///
+/// The grid sends every filter value as plain text, but MongoDB's comparison
+/// operators are type-sensitive: `{"age": "30"}` never matches a document
+/// where `age` is stored as the number `30`. A value that parses as JSON (or
+/// MongoDB Extended JSON, e.g. `{"$oid": "..."}` or `{"$date": "..."}`) is
+/// read as that type, so numbers, booleans, dates and ids compare against
+/// what is actually stored; ordinary text such as `hello` is not valid JSON
+/// on its own and falls back to a plain string, which is what most fields
+/// actually are. This is a heuristic, not a schema lookup — a string field
+/// that happens to hold digit-only text (with no leading zero) will still be
+/// coerced to a number, since Mongo's per-document typing gives no fixed
+/// column type to consult.
+fn coerce_filter_value(raw: &str) -> Bson {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| Bson::try_from(v).ok())
+        .unwrap_or_else(|| Bson::String(raw.to_string()))
 }
 
 /// Convert a JSON argument into a BSON document, honouring Extended JSON.
@@ -764,27 +819,7 @@ impl Driver for MongoDriver {
 
         // Grid filters become a query document. Their semantics map cleanly:
         // MongoDB has native regex, comparison and existence operators.
-        let mut filter = Document::new();
-        for f in &options.filters {
-            let condition = match f.op {
-                FilterOp::Equals => Bson::String(f.value.clone()),
-                FilterOp::NotEquals => Bson::Document(bson::doc! { "$ne": &f.value }),
-                FilterOp::GreaterThan => Bson::Document(bson::doc! { "$gt": &f.value }),
-                FilterOp::LessThan => Bson::Document(bson::doc! { "$lt": &f.value }),
-                // Regex-escaped so a filter for "a.b" does not match "axb".
-                FilterOp::Contains => Bson::Document(bson::doc! {
-                    "$regex": regex_escape(&f.value), "$options": "i"
-                }),
-                FilterOp::StartsWith => Bson::Document(bson::doc! {
-                    "$regex": format!("^{}", regex_escape(&f.value)), "$options": "i"
-                }),
-                // `$type: "null"` would match only an explicit null; a missing
-                // field is the other half of what a user means by "is null".
-                FilterOp::IsNull => Bson::Document(bson::doc! { "$eq": Bson::Null }),
-                FilterOp::IsNotNull => Bson::Document(bson::doc! { "$ne": Bson::Null }),
-            };
-            filter.insert(f.column.clone(), condition);
-        }
+        let filter = build_filter(&options.filters);
 
         let collection = self
             .db(table.schema.as_deref())
@@ -914,6 +949,71 @@ mod tests {
         // This flag is what makes the editor, formatter and backup behave.
         assert!(!MongoDialect.is_sql());
         assert!(!MongoDialect.supports_transactions());
+    }
+
+    fn filter(column: &str, op: FilterOp, value: &str) -> Vec<ColumnFilter> {
+        vec![ColumnFilter {
+            column: column.to_string(),
+            op,
+            value: value.to_string(),
+        }]
+    }
+
+    #[test]
+    fn equals_compares_a_numeric_field_as_a_number_not_a_string() {
+        let doc = build_filter(&filter("age", FilterOp::Equals, "30"));
+        assert_eq!(doc.get("age"), Some(&Bson::Int32(30)));
+    }
+
+    #[test]
+    fn equals_compares_a_boolean_field_as_a_boolean() {
+        let doc = build_filter(&filter("active", FilterOp::Equals, "true"));
+        assert_eq!(doc.get("active"), Some(&Bson::Boolean(true)));
+    }
+
+    #[test]
+    fn equals_still_compares_ordinary_text_as_a_string() {
+        let doc = build_filter(&filter("name", FilterOp::Equals, "hello"));
+        assert_eq!(doc.get("name"), Some(&Bson::String("hello".to_string())));
+    }
+
+    #[test]
+    fn a_leading_zero_keeps_zip_code_like_values_as_strings() {
+        // "02139" is not a valid JSON number (no leading zeros), so it falls
+        // back to a string, which is what a value like this almost always is.
+        let doc = build_filter(&filter("zip", FilterOp::Equals, "02139"));
+        assert_eq!(doc.get("zip"), Some(&Bson::String("02139".to_string())));
+    }
+
+    #[test]
+    fn not_equals_and_range_operators_coerce_the_wrapped_value_too() {
+        let doc = build_filter(&filter("age", FilterOp::NotEquals, "30"));
+        assert_eq!(
+            doc.get_document("age").unwrap().get("$ne"),
+            Some(&Bson::Int32(30))
+        );
+
+        let doc = build_filter(&filter("price", FilterOp::GreaterThan, "19.99"));
+        assert_eq!(
+            doc.get_document("price").unwrap().get("$gt"),
+            Some(&Bson::Double(19.99))
+        );
+
+        let doc = build_filter(&filter("price", FilterOp::LessThan, "100"));
+        assert_eq!(
+            doc.get_document("price").unwrap().get("$lt"),
+            Some(&Bson::Int32(100))
+        );
+    }
+
+    #[test]
+    fn extended_json_ids_and_dates_are_recognised_as_their_real_type() {
+        let doc = build_filter(&filter(
+            "_id",
+            FilterOp::Equals,
+            r#"{"$oid": "0192e8f00000000000000000"}"#,
+        ));
+        assert!(matches!(doc.get("_id"), Some(Bson::ObjectId(_))));
     }
 
     #[test]

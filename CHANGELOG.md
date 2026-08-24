@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **TypeScript Path Mapping & Test Mock Cleanup**: Configured `@/*` path mapping in `tsconfig.json` for consistent module resolution, and refined mock cleanup handling in Vitest test suites (`ImportDialog.test.tsx`).
 - **Dependency & Docs Drift**: Regenerated `Cargo.lock` so it actually satisfies `Cargo.toml` again (`bson` now resolves to the declared `3.1.0`; `rusqlite` reverted from an undeclarable `0.40.2` back to the working `0.39`). Corrected `package.json`'s declared `@codemirror/view` version (`6.43.9` → `6.43.8`) to match what the pnpm override actually installs. Aligned the documented `cargo clippy` command in README/CONTRIBUTING with the one CI actually runs, keeping the `--no-default-features` variant as a documented fast-iteration alternative.
+- **MongoDB Browse Filters on Non-String Fields**: Equals/Not Equals/Greater Than/Less Than filters on the table grid now compare against a field's real BSON type (number, boolean, date, ObjectId, ...) instead of always comparing as a string, which previously made these filters silently match nothing on non-string fields.
+- **Result Grid Column-Resize Listener Leak**: Dragging a column wider or narrower registered `window` listeners that were only removed on mouse-up; switching tabs or reloading the result mid-drag left them attached for the rest of the session. They are now torn down on unmount too.
+- **Result Grid Cell Editor Double-Commit**: Pressing Escape to cancel an in-progress cell edit could, in rare cases, still be followed by a trailing blur event that re-committed the discarded value. The edit is now resolved (committed or cancelled) exactly once.
+- **Case-Sensitive Text Filter Fallback**: A grid's Greater Than/Less Than filter fell back to case-sensitive text ordering on non-numeric columns, unlike every other filter operator (Equals, Contains, Starts With), which are case-insensitive.
 
 ## [1.2.0] - 2026-08-19
 

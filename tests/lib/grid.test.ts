@@ -78,6 +78,16 @@ describe('matchesFilter', () => {
     expect(matchesFilter(text('m'), 'greaterThan', 'a')).toBe(true);
     expect(matchesFilter(text('a'), 'greaterThan', 'm')).toBe(false);
   });
+
+  it('text-ordering fallback is case-insensitive, like every other operator', () => {
+    // Same word, different case only: a case-sensitive comparison treats
+    // these as unequal (one sorts before the other), so a filter built on it
+    // would report a cell as strictly greater/less than an equal value —
+    // inconsistent with contains/equals/startsWith, which are all
+    // case-insensitive above.
+    expect(matchesFilter(text('apple'), 'greaterThan', 'APPLE')).toBe(false);
+    expect(matchesFilter(text('apple'), 'lessThan', 'APPLE')).toBe(false);
+  });
 });
 
 describe('applyGridOps', () => {

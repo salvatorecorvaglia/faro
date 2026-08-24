@@ -89,7 +89,7 @@ export function matchesFilter(cell: Value | undefined, op: FilterOp, needle: str
       const cmp =
         a !== null && Number.isFinite(b)
           ? a - b
-          : text.localeCompare(needle, undefined, { numeric: true });
+          : lower.localeCompare(target, undefined, { numeric: true });
       return op === 'greaterThan' ? cmp > 0 : cmp < 0;
     }
     default:
