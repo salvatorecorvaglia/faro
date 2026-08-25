@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-25
+
 ### Added
 - **`cargo audit` in CI**: A new scheduled + PR-triggered workflow (`.github/workflows/audit.yml`) runs `cargo audit` against `src-tauri/Cargo.lock`, closing a gap where the last two RUSTSEC advisories (see the 1.1.0 Security section below) had to be found and fixed manually. The weekly schedule catches an advisory published against a dependency already on `main`, which a push/PR-only check never would. Also added `.github/dependabot.yml` for npm, Cargo and GitHub Actions, with `@codemirror/view`/`@codemirror/state` and `rusqlite` excluded (see the comments there for why those three need a deliberate, coordinated bump rather than an automated one).
 - **Cancellable Table Export, Backup & Restore**: `export_table`, `backup_database` and `restore_database` now register with the same connection-scoped cancellation registry a query uses, so `cancelQuery(connectionId, queryId)` can stop any of them mid-flight — previously each passed a fresh, untriggerable `CancellationToken::new()` into every `query`/`execute` call, so a "cancel" was structurally impossible no matter what called for it. A cancelled restore rolls back cleanly when it was running inside a transaction. This is a breaking IPC change: the three commands, and the `exportTable`/`backupDatabase`/`restoreDatabase` wrappers in `src/ipc/index.ts`, now require a `queryId` argument. No UI currently calls `cancelQuery` for these three — that's a follow-up, not part of this change.
