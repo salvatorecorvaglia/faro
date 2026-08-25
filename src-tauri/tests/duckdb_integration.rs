@@ -490,6 +490,7 @@ async fn a_duckdb_database_backs_up_and_restores() {
             include_data: true,
             drop_existing: false,
         },
+        tokio_util::sync::CancellationToken::new(),
         |_| {},
     )
     .await
@@ -520,6 +521,7 @@ async fn a_duckdb_database_backs_up_and_restores() {
         &RestoreOptions {
             stop_on_error: true,
         },
+        tokio_util::sync::CancellationToken::new(),
         |_, _| {},
     )
     .await

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Fast, clean, cross-platform database client",
   "icon": "resources/faro.png",
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.23.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -44,7 +44,7 @@
 Ensure you have the following installed on your machine:
 
 - **Node.js**: `v20.0.0` or higher (v22 recommended)
-- **pnpm**: `v11.17.0`+ (`corepack enable` or `npm i -g pnpm`)
+- **pnpm**: `v11.23.0`+ (`corepack enable` or `npm i -g pnpm`)
 - **Rust Toolchain**: `1.85`+ (`rustup update stable`)
 - **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk-4.1-dev`, or Windows C++ Build Tools).
 

@@ -42,7 +42,7 @@ If you'd like to implement a feature or fix a bug:
 Make sure you have installed:
 
 - **Node.js**: `v20.0.0` or higher (v22 recommended)
-- **pnpm**: `v11.17.0` or higher (`corepack enable` or `npm i -g pnpm`)
+- **pnpm**: `v11.23.0` or higher (`corepack enable` or `npm i -g pnpm`)
 - **Rust**: `1.85` or higher (`rustup update stable`)
 - **Docker & Docker Compose**: Required for running integration tests against real database engines.
 - **Tauri Prerequisites**: Refer to [Tauri v2 Documentation](https://v2.tauri.app/start/prerequisites/) for OS-specific native build tools (e.g. `libwebkit2gtk-4.1-dev` on Linux, Xcode command line tools on macOS).
