@@ -79,9 +79,9 @@ Make sure you have installed:
 
 ### Backend Guidelines (Rust)
 
-- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.40, `duckdb` 1, `mongodb` 3, `bson` 3.1, `tiberius` 0.12 (with `native-tls`), `tauri-plugin-updater`.
+- **Stack**: Rust 2021 edition (MSRV 1.85), Tauri v2.11, Tokio async runtime, `sqlx` 0.9, `rusqlite` 0.39 (pinned below 0.40 — see the comment in `src-tauri/Cargo.toml` for why), `duckdb` 1, `mongodb` 3, `bson` 3.1, `tiberius` 0.12 (with `native-tls`), `tauri-plugin-updater`.
 - **Security & Validation**:
-  - **Read-Only Mode**: Any new SQL execution paths must respect the strict read-only validator (`src-tauri/src/sql.rs`) when operating under read-only connections.
+  - **Read-Only Mode**: Any new SQL execution paths must respect the strict read-only validator (`src-tauri/src/sql.rs`) when operating under read-only connections. Treat that validator as the actual guarantee, not the server-side session flags drivers additionally set where the engine supports one — a standalone (non–Always On) SQL Server silently ignores `ApplicationIntent=ReadOnly` and accepts writes regardless (see the README's engine table), so for that engine the validator is the *only* real enforcement.
   - **Export Sanitization**: Any new export routines (CSV/TSV/delimited) must sanitize potential spreadsheet formula injection characters (`=`, `+`, `-`, `@`, `\t`, `\r`) by escaping them.
   - **SSL/TLS Drivers**: When adding or updating database drivers, support SSL connection modes and custom CA/client certificate configurations where applicable (`native-tls` for Tiberius/MSSQL, `rustls-ring` for `sqlx`, `rustls` for `reqwest`/ClickHouse and `mongodb`).
   - **Numeric Precision & Normalization**: Decode high-precision decimal values (`NUMERIC`/`DECIMAL`) into `bigdecimal::BigDecimal` rather than float or fixed-precision types, normalizing with `.normalized()` to strip trailing fractional zeros while preserving exact precision.

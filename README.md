@@ -33,6 +33,8 @@
 | **ClickHouse** | Analytical Columnar | HTTP Interface (`reqwest`) | `58123` |
 | **SQL Server (MSSQL)** | Relational | Native TDS (`tiberius` with `native-tls` + `bb8`) | `51433` |
 
+> **SQL Server read-only mode, specifically:** Faro's read-only setting is enforced two ways — its own SQL statement validator, and (where the engine supports it) a server-side session flag. For SQL Server that flag is `ApplicationIntent=ReadOnly`, which Azure SQL Database and an Always On availability group both enforce server-side, but a **standalone** SQL Server instance — including the one in this project's own test containers — silently ignores it and accepts writes anyway. Against a standalone instance, Faro's own statement validator is the only thing actually preventing a write; every other supported engine additionally rejects writes at the server itself.
+
 ---
 
 ## 🚀 Quick Start
