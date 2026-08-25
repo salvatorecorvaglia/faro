@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TabBar } from '@/features/tabs/TabBar';
@@ -37,11 +37,11 @@ afterEach(() => {
 });
 
 describe('TabBar', () => {
-  it('renders every open tab and highlights the active one', () => {
+  it('renders every open tab and highlights the active one', async () => {
     useConnections.setState({ items: [connection()] });
     const a = useTabs.getState().openQueryTab('c1', 'select 1', 'Query 1');
     useTabs.getState().openQueryTab('c1', 'select 2', 'Query 2');
-    useTabs.getState().setActive(a);
+    await useTabs.getState().setActive(a);
 
     render(<TabBar />);
     expect(screen.getByText('Query 1')).toBeInTheDocument();
@@ -49,32 +49,32 @@ describe('TabBar', () => {
     expect(useTabs.getState().activeId).toBe(a);
   });
 
-  it('activates a tab on click', () => {
+  it('activates a tab on click', async () => {
     useConnections.setState({ items: [connection()] });
     useTabs.getState().openQueryTab('c1', 'select 1', 'Query 1');
     const b = useTabs.getState().openQueryTab('c1', 'select 2', 'Query 2');
     // openQueryTab focuses the newly opened tab, so start from the first one.
-    useTabs.getState().setActive(useTabs.getState().tabs[0]!.id);
+    await useTabs.getState().setActive(useTabs.getState().tabs[0]!.id);
 
     render(<TabBar />);
     fireEvent.click(screen.getByText('Query 2'));
-    expect(useTabs.getState().activeId).toBe(b);
+    await waitFor(() => expect(useTabs.getState().activeId).toBe(b));
   });
 
-  it('closes a tab via its close button', () => {
+  it('closes a tab via its close button', async () => {
     useConnections.setState({ items: [connection()] });
     useTabs.getState().openQueryTab('c1', 'select 1', 'Query 1');
 
     render(<TabBar />);
     fireEvent.click(screen.getByRole('button', { name: 'Close Query 1' }));
-    expect(useTabs.getState().tabs).toHaveLength(0);
+    await waitFor(() => expect(useTabs.getState().tabs).toHaveLength(0));
   });
 
-  it('closes a tab on a middle click, without activating it first', () => {
+  it('closes a tab on a middle click, without activating it first', async () => {
     useConnections.setState({ items: [connection()] });
     const a = useTabs.getState().openQueryTab('c1', 'select 1', 'Query 1');
     useTabs.getState().openQueryTab('c1', 'select 2', 'Query 2');
-    useTabs.getState().setActive(a);
+    await useTabs.getState().setActive(a);
 
     render(<TabBar />);
     fireEvent(
@@ -82,7 +82,7 @@ describe('TabBar', () => {
       new MouseEvent('auxclick', { button: 1, bubbles: true }),
     );
 
-    expect(useTabs.getState().tabs.map((t) => t.id)).toEqual([a]);
+    await waitFor(() => expect(useTabs.getState().tabs.map((t) => t.id)).toEqual([a]));
     expect(useTabs.getState().activeId).toBe(a);
   });
 

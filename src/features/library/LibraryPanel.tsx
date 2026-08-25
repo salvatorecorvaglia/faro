@@ -6,6 +6,7 @@ import { ErrorBanner, FilterInput, rowActivation, Spinner } from '@/components/u
 import type { HistoryEntry, SavedQuery } from '@/ipc/types';
 import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
 import { formatDuration, formatRowCount } from '@/lib/value';
+import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { groupByFolder, useLibrary } from '@/state/library';
 import { useTabs } from '@/state/tabs';
@@ -169,9 +170,13 @@ function SavedList() {
                       type="button"
                       className="btn btn-ghost px-1"
                       title="Delete"
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation();
-                        if (confirm(`Delete the saved query "${q.name}"?`)) remove(q.id);
+                        const proceed = await confirmDialog(`Delete the saved query "${q.name}"?`, {
+                          confirmLabel: 'Delete',
+                          danger: true,
+                        });
+                        if (proceed) remove(q.id);
                       }}
                     >
                       <IconTrash size={11} />
@@ -227,8 +232,12 @@ function HistoryList() {
             type="button"
             className="btn btn-ghost shrink-0 px-1"
             title="Clear all history"
-            onClick={() => {
-              if (confirm('Delete the entire query history?')) clearHistory();
+            onClick={async () => {
+              const proceed = await confirmDialog('Delete the entire query history?', {
+                confirmLabel: 'Delete',
+                danger: true,
+              });
+              if (proceed) clearHistory();
             }}
           >
             <IconTrash size={11} />

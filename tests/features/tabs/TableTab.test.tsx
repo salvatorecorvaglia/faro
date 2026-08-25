@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ConfirmHost } from '@/components/ConfirmDialog';
 import { TableTab } from '@/features/tabs/TableTab';
 import type { ConnectionStatus, ResultSet, TableDetail, Value } from '@/ipc/types';
 import { useConnections } from '@/state/connections';
@@ -76,7 +77,12 @@ function browseResult(rows: Value[][], overrides: Partial<ResultSet> = {}): Resu
 function Harness({ id }: { id: string }) {
   const tab = useTabs((s) => s.tabs.find((t) => t.id === id));
   if (!tab) return null;
-  return <TableTab tab={tab} />;
+  return (
+    <>
+      <TableTab tab={tab} />
+      <ConfirmHost />
+    </>
+  );
 }
 
 function currentTab(): Tab {
@@ -262,16 +268,13 @@ describe('TableTab', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(currentTab().dirty).toBe(true));
 
-    const confirmSpy = vi.fn(() => false);
-    vi.stubGlobal('confirm', confirmSpy);
-
     fireEvent.click(screen.getByTitle('Refresh'));
 
-    expect(confirmSpy).toHaveBeenCalledOnce();
+    const dialog = (await screen.findByText(/Discard your unsaved changes/)).closest('dialog')!;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
     // Declined: no second load, and the edit is still there.
     expectCallCount('browse_table', 1);
     expect(currentTab().dirty).toBe(true);
-
-    vi.unstubAllGlobals();
   });
 });

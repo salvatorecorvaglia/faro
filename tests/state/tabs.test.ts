@@ -1,8 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
+import { useConfirmStore } from '@/state/confirm';
 import { useTabs } from '@/state/tabs';
 
 const reset = () => useTabs.setState({ tabs: [], activeId: null });
+
+/** Answer the currently pending confirmDialog() request, as ConfirmHost would. */
+function answerConfirm(ok: boolean) {
+  const request = useConfirmStore.getState().request;
+  request?.resolve(ok);
+  useConfirmStore.setState({ request: null });
+}
 
 describe('tab store', () => {
   beforeEach(reset);
@@ -37,31 +45,31 @@ describe('tab store', () => {
     expect(useTabs.getState().tabs).toHaveLength(2);
   });
 
-  it('focuses the left neighbour when the active tab closes', () => {
+  it('focuses the left neighbour when the active tab closes', async () => {
     const a = useTabs.getState().openQueryTab('c1');
     const b = useTabs.getState().openQueryTab('c1');
     const c = useTabs.getState().openQueryTab('c1');
-    useTabs.getState().setActive(c);
+    await useTabs.getState().setActive(c);
 
-    useTabs.getState().closeTab(c);
+    await useTabs.getState().closeTab(c);
     expect(useTabs.getState().activeId).toBe(b);
 
-    useTabs.getState().closeTab(b);
+    await useTabs.getState().closeTab(b);
     expect(useTabs.getState().activeId).toBe(a);
   });
 
-  it('keeps focus when closing a background tab', () => {
+  it('keeps focus when closing a background tab', async () => {
     const a = useTabs.getState().openQueryTab('c1');
     const b = useTabs.getState().openQueryTab('c1');
-    useTabs.getState().setActive(b);
+    await useTabs.getState().setActive(b);
 
-    useTabs.getState().closeTab(a);
+    await useTabs.getState().closeTab(a);
     expect(useTabs.getState().activeId).toBe(b);
   });
 
-  it('clears the active id when the last tab closes', () => {
+  it('clears the active id when the last tab closes', async () => {
     const a = useTabs.getState().openQueryTab('c1');
-    useTabs.getState().closeTab(a);
+    await useTabs.getState().closeTab(a);
     expect(useTabs.getState().activeId).toBeNull();
     expect(useTabs.getState().tabs).toHaveLength(0);
   });
@@ -84,69 +92,64 @@ describe('leaving a tab with staged edits', () => {
 
   beforeEach(() => {
     useTabs.setState({ tabs: [], activeId: null });
-    vi.unstubAllGlobals();
+    useConfirmStore.setState({ request: null });
   });
 
-  function twoTabs() {
+  async function twoTabs() {
     const a = useTabs.getState().openQueryTab(null, 'select 1', 'A');
     const b = useTabs.getState().openQueryTab(null, 'select 2', 'B');
-    useTabs.getState().setActive(a);
+    // Neither tab is dirty yet, so this never actually prompts — just needs
+    // awaiting so `activeId` has settled before the test's own assertions.
+    await useTabs.getState().setActive(a);
     return { a, b };
   }
 
-  it('switches freely when nothing is staged', () => {
-    const { a, b } = twoTabs();
+  it('switches freely when nothing is staged', async () => {
+    const { a, b } = await twoTabs();
     expect(useTabs.getState().activeId).toBe(a);
-    useTabs.getState().setActive(b);
+    await useTabs.getState().setActive(b);
     expect(useTabs.getState().activeId).toBe(b);
   });
 
-  it('asks before switching away from a dirty tab', () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal('confirm', confirm);
-
-    const { a, b } = twoTabs();
+  it('asks before switching away from a dirty tab', async () => {
+    const { a, b } = await twoTabs();
     useTabs.getState().update(a, { dirty: true });
-    useTabs.getState().setActive(b);
 
-    expect(confirm).toHaveBeenCalledOnce();
+    const switching = useTabs.getState().setActive(b);
+    expect(useConfirmStore.getState().request?.message).toContain('"A"');
+    answerConfirm(true);
+    await switching;
+
     expect(useTabs.getState().activeId).toBe(b);
   });
 
-  it('stays put when the user declines', () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => false),
-    );
-
-    const { a, b } = twoTabs();
+  it('stays put when the user declines', async () => {
+    const { a } = await twoTabs();
     useTabs.getState().update(a, { dirty: true });
-    useTabs.getState().setActive(b);
+
+    const switching = useTabs.getState().setActive(useTabs.getState().tabs[1]!.id);
+    answerConfirm(false);
+    await switching;
 
     expect(useTabs.getState().activeId).toBe(a);
   });
 
-  it('asks before closing a dirty tab and keeps it when declined', () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => false),
-    );
-
-    const { a } = twoTabs();
+  it('asks before closing a dirty tab and keeps it when declined', async () => {
+    const { a } = await twoTabs();
     useTabs.getState().update(a, { dirty: true });
-    useTabs.getState().closeTab(a);
+
+    const closing = useTabs.getState().closeTab(a);
+    answerConfirm(false);
+    await closing;
 
     expect(useTabs.getState().tabs.map((t) => t.id)).toContain(a);
   });
 
-  it('does not prompt when re-selecting the tab already active', () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal('confirm', confirm);
-
-    const { a } = twoTabs();
+  it('does not prompt when re-selecting the tab already active', async () => {
+    const { a } = await twoTabs();
     useTabs.getState().update(a, { dirty: true });
-    useTabs.getState().setActive(a);
+    await useTabs.getState().setActive(a);
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(useConfirmStore.getState().request).toBeNull();
   });
 });

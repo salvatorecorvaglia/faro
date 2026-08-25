@@ -1,8 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ConfirmHost } from '@/components/ConfirmDialog';
 import { ApplyBar } from '@/features/results/ApplyBar';
+import { useConfirmStore } from '@/state/confirm';
 
 const noop = () => {};
 
@@ -17,37 +19,40 @@ function renderBar(overrides: Partial<Parameters<typeof ApplyBar>[0]> = {}) {
     onDismissError: noop,
     ...overrides,
   };
-  render(<ApplyBar {...(props as Parameters<typeof ApplyBar>[0])} />);
+  render(
+    <>
+      <ApplyBar {...(props as Parameters<typeof ApplyBar>[0])} />
+      <ConfirmHost />
+    </>,
+  );
   return props;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
+beforeEach(() => {
+  useConfirmStore.setState({ request: null });
 });
 
 describe('ApplyBar', () => {
   it('confirms before writing to the database', async () => {
     // Applying is irreversible and the SQL preview is opt-in, so this is the
     // only thing standing between a stray click and a committed write.
-    const confirm = vi.fn((_message?: string) => true);
-    vi.stubGlobal('confirm', confirm);
-
     const props = renderBar({ changeCount: 3 });
     await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
-    expect(confirm).toHaveBeenCalledOnce();
-    expect(confirm.mock.calls[0]?.[0]).toContain('3 changes');
+    const dialog = (await screen.findByText(/3 changes/)).closest('dialog')!;
+    expect(dialog).toHaveTextContent('cannot be undone');
+    expect(props.onApply).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
     expect(props.onApply).toHaveBeenCalledOnce();
   });
 
   it('does not apply when the confirmation is declined', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => false),
-    );
-
     const props = renderBar();
     await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    const dialog = (await screen.findByText(/2 changes/)).closest('dialog')!;
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
     expect(props.onApply).not.toHaveBeenCalled();
   });

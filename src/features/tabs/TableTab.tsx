@@ -21,6 +21,7 @@ import {
   toPendingChanges,
 } from '@/lib/edits';
 import type { GridFilter, SortState } from '@/lib/grid';
+import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { type Tab, useTabs } from '@/state/tabs';
 
@@ -154,8 +155,10 @@ export function TableTab({ tab }: { tab: Tab }) {
 
   /** Confirm before throwing away unsaved work. */
   const guardUnsaved = useCallback(
-    (action: () => void) => {
-      if (dirty && !confirm('Discard your unsaved changes?')) return;
+    async (action: () => void) => {
+      if (dirty && !(await confirmDialog('Discard your unsaved changes?', { danger: true }))) {
+        return;
+      }
       action();
     },
     [dirty],

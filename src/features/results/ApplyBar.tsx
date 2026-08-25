@@ -4,6 +4,7 @@ import { IconClose, IconWarning } from '@/components/icons';
 import { ErrorBanner, Spinner } from '@/components/ui';
 import * as ipc from '@/ipc';
 import type { GuardedStatement } from '@/ipc/types';
+import { confirmDialog } from '@/state/confirm';
 
 /**
  * The bar that appears once there are unsaved changes.
@@ -51,10 +52,13 @@ export function ApplyBar({
   // Applying writes to the database and cannot be undone, and the SQL preview
   // that would show what is about to run is opt-in. Every other destructive
   // action in the app confirms first; this one did not.
-  function confirmAndApply() {
+  async function confirmAndApply() {
     const summary = `Apply ${changeCount} ${changeCount === 1 ? 'change' : 'changes'} to the database?`;
-    if (!window.confirm(`${summary}\n\nThis cannot be undone.`)) return;
-    onApply();
+    const proceed = await confirmDialog(`${summary}\n\nThis cannot be undone.`, {
+      confirmLabel: 'Apply',
+      danger: true,
+    });
+    if (proceed) onApply();
   }
 
   return (

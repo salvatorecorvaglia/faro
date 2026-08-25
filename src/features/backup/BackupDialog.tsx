@@ -6,6 +6,7 @@ import { useAsyncAction, useBackendProgress } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type { BackupProgress, TableInfo } from '@/ipc/types';
 import { formatBytes, formatRowCount } from '@/lib/value';
+import { confirmDialog } from '@/state/confirm';
 
 let backupCounter = 0;
 let restoreCounter = 0;
@@ -322,14 +323,12 @@ export function RestoreDialog({
   async function runRestore() {
     if (!path || !connectionId) return;
     // Naming the target explicitly: this is the step that cannot be undone.
-    if (
-      !confirm(
-        `Run ${info?.statements ?? '?'} statements against "${connectionName}"?\n\n` +
-          `This modifies that database and cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    const proceed = await confirmDialog(
+      `Run ${info?.statements ?? '?'} statements against "${connectionName}"?\n\n` +
+        `This modifies that database and cannot be undone.`,
+      { confirmLabel: 'Restore', danger: true },
+    );
+    if (!proceed) return;
 
     const ok = await run(async () => {
       const result = await ipc.restoreDatabase(

@@ -4,6 +4,17 @@ import { create } from 'zustand';
 
 export type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
 
+// Development-only tracing. Every call site below used to reach `console.*`
+// directly, gated only by the separate check that skips update checks
+// entirely in dev — `downloadAndInstall` and `restartApp` have no such
+// check, so their logging shipped to every user's console unconditionally.
+const log = (...args: unknown[]) => {
+  if (import.meta.env.DEV) console.log(...args);
+};
+const logError = (...args: unknown[]) => {
+  if (import.meta.env.DEV) console.error(...args);
+};
+
 interface UpdaterState {
   status: UpdaterStatus;
   version: string | null;
@@ -29,17 +40,17 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
   checkForUpdates: async () => {
     // Only run in production builds
     if (!import.meta.env.PROD) {
-      console.log('[Updater] Skipping update check in development mode.');
+      log('[Updater] Skipping update check in development mode.');
       return;
     }
 
     try {
       set({ status: 'checking', error: null });
-      console.log('[Updater] Checking for updates...');
+      log('[Updater] Checking for updates...');
       const update = await check();
 
       if (update?.available) {
-        console.log(`[Updater] Update v${update.version} is available.`);
+        log(`[Updater] Update v${update.version} is available.`);
         set({
           status: 'available',
           version: update.version,
@@ -47,11 +58,11 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
           dismissed: false,
         });
       } else {
-        console.log('[Updater] No updates available.');
+        log('[Updater] No updates available.');
         set({ status: 'idle', updateRef: null });
       }
     } catch (err) {
-      console.error('[Updater] Error checking for updates:', err);
+      logError('[Updater] Error checking for updates:', err);
       set({
         status: 'idle',
         error: err instanceof Error ? err.message : String(err),
@@ -87,7 +98,7 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
 
       set({ status: 'ready', progress: 100 });
     } catch (err) {
-      console.error('[Updater] Failed to download/install update:', err);
+      logError('[Updater] Failed to download/install update:', err);
       set({
         status: 'error',
         error: err instanceof Error ? err.message : String(err),
@@ -99,7 +110,7 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
     try {
       await relaunch();
     } catch (err) {
-      console.error('[Updater] Failed to relaunch app:', err);
+      logError('[Updater] Failed to relaunch app:', err);
       set({
         status: 'error',
         error: err instanceof Error ? err.message : String(err),

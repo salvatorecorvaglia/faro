@@ -21,6 +21,7 @@ import { LibraryPanel } from '@/features/library/LibraryPanel';
 import * as ipc from '@/ipc';
 import type { ConnectionConfig, ConnectionStatus, SchemaInfo, TableInfo } from '@/ipc/types';
 import { isSqlEngine, starterQuery } from '@/lib/engine';
+import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { useSchemaCache } from '@/state/schemaCache';
 import { useTabs } from '@/state/tabs';
@@ -326,13 +327,17 @@ function ConnectionNode({
             type="button"
             className="btn btn-ghost px-1"
             title={conn.connected ? 'Disconnect' : 'Delete'}
-            onClick={(e) => {
+            onClick={async (e) => {
               e.stopPropagation();
               if (conn.connected) {
                 onDisconnect();
-              } else if (confirm(`Delete the connection "${conn.name}"?`)) {
-                onRemove();
+                return;
               }
+              const proceed = await confirmDialog(`Delete the connection "${conn.name}"?`, {
+                confirmLabel: 'Delete',
+                danger: true,
+              });
+              if (proceed) onRemove();
             }}
           >
             <IconTrash size={12} />
@@ -505,23 +510,29 @@ function SchemaNode({
             </p>
           )}
 
-          {shown.map((t) => (
-            <div
-              key={`${t.schema}.${t.name}`}
-              className="flex h-6 cursor-pointer items-center gap-1.5 pl-9 pr-2 hover:bg-[var(--bg-inset)]"
-              onClick={() => openTableTab(connectionId, { schema: t.schema, name: t.name })}
-              title={
-                t.estimatedRows != null ? `~${t.estimatedRows.toLocaleString()} rows` : undefined
-              }
-            >
-              {t.kind === 'table' ? (
-                <IconTable size={12} className="shrink-0 opacity-55" />
-              ) : (
-                <IconView size={12} className="shrink-0 opacity-55" />
-              )}
-              <span className="min-w-0 flex-1 truncate text-[11.5px]">{t.name}</span>
-            </div>
-          ))}
+          {shown.map((t) => {
+            const open = () => openTableTab(connectionId, { schema: t.schema, name: t.name });
+            return (
+              <div
+                key={`${t.schema}.${t.name}`}
+                className="flex h-6 cursor-pointer items-center gap-1.5 pl-9 pr-2 hover:bg-[var(--bg-inset)]"
+                role="button"
+                tabIndex={0}
+                onKeyDown={rowActivation(open).onKeyDown}
+                onClick={open}
+                title={
+                  t.estimatedRows != null ? `~${t.estimatedRows.toLocaleString()} rows` : undefined
+                }
+              >
+                {t.kind === 'table' ? (
+                  <IconTable size={12} className="shrink-0 opacity-55" />
+                ) : (
+                  <IconView size={12} className="shrink-0 opacity-55" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-[11.5px]">{t.name}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

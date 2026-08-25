@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import type { ResultSet, StatementResult, TableRef } from '@/ipc/types';
+import { confirmDialog } from './confirm';
 
 export type TabKind = 'query' | 'table';
 
@@ -55,8 +56,8 @@ interface TabState {
 
   openQueryTab: (connectionId: string | null, sql?: string, title?: string) => string;
   openTableTab: (connectionId: string, table: TableRef) => string;
-  closeTab: (id: string) => void;
-  setActive: (id: string) => void;
+  closeTab: (id: string) => Promise<void>;
+  setActive: (id: string) => Promise<void>;
   update: (id: string, patch: Partial<Tab>) => void;
   activeTab: () => Tab | undefined;
 }
@@ -85,12 +86,15 @@ function baseTab(kind: TabKind, connectionId: string | null): Tab {
 /**
  * Ask before abandoning a tab holding unapplied edits.
  *
- * Returns true when it is safe to proceed. Kept out of the store actions so
+ * Resolves true when it is safe to proceed. Kept out of the store actions so
  * both `setActive` and `closeTab` phrase it identically.
  */
-function confirmLeaving(tab: Tab | undefined): boolean {
-  if (!tab?.dirty) return true;
-  return confirm(`"${tab.title}" has unsaved changes that have not been applied.\n\nDiscard them?`);
+function confirmLeaving(tab: Tab | undefined): Promise<boolean> {
+  if (!tab?.dirty) return Promise.resolve(true);
+  return confirmDialog(
+    `"${tab.title}" has unsaved changes that have not been applied.\n\nDiscard them?`,
+    { confirmLabel: 'Discard', danger: true },
+  );
 }
 
 export const useTabs = create<TabState>((set, get) => ({
@@ -131,9 +135,9 @@ export const useTabs = create<TabState>((set, get) => ({
     return tab.id;
   },
 
-  closeTab: (id) => {
+  closeTab: async (id) => {
     // Closing a tab with staged edits throws them away for good.
-    if (!confirmLeaving(get().tabs.find((t) => t.id === id))) return;
+    if (!(await confirmLeaving(get().tabs.find((t) => t.id === id)))) return;
     set((s) => {
       const index = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
@@ -147,10 +151,10 @@ export const useTabs = create<TabState>((set, get) => ({
   // Switching away unmounts the tab, which discards its staged edits. Every
   // other route out of a dirty grid — refresh, sort, filter, paging — already
   // confirms; this one silently destroyed the work.
-  setActive: (id) => {
+  setActive: async (id) => {
     const { activeId, tabs } = get();
     if (id === activeId) return;
-    if (!confirmLeaving(tabs.find((t) => t.id === activeId))) return;
+    if (!(await confirmLeaving(tabs.find((t) => t.id === activeId)))) return;
     set({ activeId: id });
   },
 

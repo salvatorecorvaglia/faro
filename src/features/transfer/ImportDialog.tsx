@@ -11,6 +11,7 @@ import type {
   ImportPreview,
   TableRef,
 } from '@/ipc/types';
+import { confirmDialog } from '@/state/confirm';
 
 /**
  * Import a file into a table.
@@ -87,9 +88,11 @@ export function ImportDialog({
     // data into the wrong columns, which is both easy to miss and hard to
     // undo — the same reason restore and apply confirm before they write.
     const rows = preview?.totalRows?.toLocaleString() ?? 'these';
-    if (!confirm(`Import ${rows} rows into "${table.name}"?\n\nThis modifies that table.`)) {
-      return;
-    }
+    const proceed = await confirmDialog(
+      `Import ${rows} rows into "${table.name}"?\n\nThis modifies that table.`,
+      { confirmLabel: 'Import' },
+    );
+    if (!proceed) return;
 
     const ok = await run(async () => {
       const outcome = await ipc.importFile(connectionId, table, path, {

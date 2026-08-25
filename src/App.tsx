@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { ConfirmHost } from '@/components/ConfirmDialog';
 import { IconDatabase, IconLighthouse } from '@/components/icons';
 import { SplitGroup, SplitHandle, SplitPanel } from '@/components/panels';
 import { UpdaterToast } from '@/components/UpdaterToast';
@@ -166,6 +167,7 @@ export default function App() {
       />
 
       <UpdaterToast />
+      <ConfirmHost />
     </>
   );
 }
