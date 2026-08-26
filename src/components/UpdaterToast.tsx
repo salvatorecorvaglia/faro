@@ -54,7 +54,7 @@ export function UpdaterToast() {
 
       <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
         {status === 'available' && 'A new version of Faro is ready to download.'}
-        {status === 'downloading' && `Downloading update files... ${progress}%`}
+        {status === 'downloading' && `Downloading update... ${progress}%`}
         {status === 'ready' && 'Faro will update when you restart the application.'}
         {status === 'error' && (error || 'An error occurred during update.')}
       </p>
