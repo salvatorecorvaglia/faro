@@ -55,7 +55,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 keyring = "4"
 
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1.26.0", features = ["v4", "serde"] }
 # Arbitrary-precision decimals. Version tracks sqlx's, so the `BigDecimal`
 # decoded out of a row is the same type this crate names.
 bigdecimal = "0.4"

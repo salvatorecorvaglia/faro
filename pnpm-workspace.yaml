@@ -8,6 +8,7 @@ minimumReleaseAgeExclude:
   - '@rolldown/binding-linux-arm64-gnu@1.2.5'
   - '@vitejs/plugin-react@6.1.0'
   - vite@8.2.2
+  - '@types/node@26.4.0'
 
 # CodeMirror breaks if two copies of @codemirror/view load: the packages
 # exchange class instances, and duplicate module identities fail instanceof
