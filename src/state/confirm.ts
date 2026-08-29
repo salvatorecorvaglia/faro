@@ -43,6 +43,17 @@ export interface ConfirmOptions {
  */
 export function confirmDialog(message: string, options: ConfirmOptions = {}): Promise<boolean> {
   return new Promise((resolve) => {
+    // Settle any request this one displaces.
+    //
+    // `ConfirmHost` only ever resolves whatever is currently in the store, so
+    // overwriting a pending request left its promise permanently unsettled and
+    // the `await` behind it hanging forever. That is reachable: a table tab's
+    // debounced filter guard can fire while `setActive`/`closeTab` is already
+    // awaiting an answer, and the tab switch would then silently never happen.
+    // Declining the displaced question is the safe reading — it is the same
+    // answer the user gives by dismissing it.
+    useConfirmStore.getState().request?.resolve(false);
+
     useConfirmStore.setState({
       request: {
         message,

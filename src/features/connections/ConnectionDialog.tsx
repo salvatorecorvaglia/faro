@@ -37,6 +37,28 @@ function readOnlyHint(engine: Engine): string {
     : `${faroSide} The database is asked to enforce it as well.`;
 }
 
+/**
+ * What each SSL mode actually promises.
+ *
+ * `Prefer` is the default and the one worth being explicit about: it encrypts
+ * only if the server offers it and never authenticates the server, so it is not
+ * a substitute for the Verify modes on a network you do not control.
+ */
+function sslHint(mode: SslMode): string | undefined {
+  switch (mode) {
+    case 'prefer':
+      return 'Encrypts only if the server offers it, and never checks the certificate';
+    case 'require':
+      return 'Encrypts, but accepts any certificate';
+    case 'verifyCa':
+      return 'Encrypts and checks the certificate chain';
+    case 'verifyFull':
+      return 'Encrypts and checks both the chain and the hostname';
+    case 'disable':
+      return 'No encryption — credentials cross the network in the clear';
+  }
+}
+
 export function ConnectionDialog({
   open,
   onClose,
@@ -262,14 +284,7 @@ export function ConnectionDialog({
                 </Field>
               </div>
               <div className="w-40">
-                <Field
-                  label="SSL"
-                  hint={
-                    config.sslMode === 'require'
-                      ? 'Encrypts, but accepts any certificate'
-                      : undefined
-                  }
-                >
+                <Field label="SSL" hint={sslHint(config.sslMode)}>
                   <select
                     className="input"
                     value={config.sslMode}

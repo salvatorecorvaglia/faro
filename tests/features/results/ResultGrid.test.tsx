@@ -220,5 +220,71 @@ describe('ResultGrid', () => {
       );
       expect(removedOnUnmount).toHaveLength(0);
     });
+
+    it('keeps a resized width when only the rows change', () => {
+      // Client-side sorting and filtering hand the grid `{ ...result, rows }`
+      // — a fresh object carrying the *same* columns array. Resetting the
+      // layout on that identity threw away the user's column widths every
+      // time they sorted or typed a character into a filter box.
+      const result = makeResult();
+      const { container, rerender } = renderGrid({ result });
+
+      const widthOf = () =>
+        (container.querySelector('.cursor-col-resize')!.parentElement as HTMLElement).style.width;
+
+      const before = widthOf();
+      const grip = container.querySelector('.cursor-col-resize');
+      fireEvent.pointerDown(grip!, { clientX: 100 });
+      fireEvent.pointerMove(window, { clientX: 260 });
+      fireEvent.pointerUp(window);
+
+      const resized = widthOf();
+      expect(resized).not.toBe(before);
+
+      // Re-sorted rows, same columns — as applyGridOps produces.
+      rerender(
+        <ResultGrid
+          result={{ ...result, rows: [...result.rows].reverse() }}
+          sort={{ column: 'id', desc: true }}
+          onSortChange={vi.fn()}
+          filters={[]}
+          onFiltersChange={vi.fn()}
+          showFilters={false}
+        />,
+      );
+
+      expect(widthOf()).toBe(resized);
+    });
+
+    it('re-measures when the result genuinely has new columns', () => {
+      const { container, rerender } = renderGrid();
+      const widthOf = () =>
+        (container.querySelector('.cursor-col-resize')!.parentElement as HTMLElement).style.width;
+
+      const grip = container.querySelector('.cursor-col-resize');
+      fireEvent.pointerDown(grip!, { clientX: 100 });
+      fireEvent.pointerMove(window, { clientX: 300 });
+      fireEvent.pointerUp(window);
+      const resized = widthOf();
+
+      // A different query: keeping the old widths would size these arbitrarily.
+      rerender(
+        <ResultGrid
+          result={makeResult({
+            columns: [
+              { name: 'total', typeName: 'numeric' },
+              { name: 'label', typeName: 'text' },
+            ],
+          })}
+          sort={null}
+          onSortChange={vi.fn()}
+          filters={[]}
+          onFiltersChange={vi.fn()}
+          showFilters={false}
+        />,
+      );
+
+      expect(widthOf()).not.toBe(resized);
+    });
   });
 });

@@ -135,6 +135,56 @@ describe('QueryTab', () => {
     expect(currentTab().results).toHaveLength(1);
   });
 
+  it('opens the save dialog on Cmd+S', async () => {
+    // The shortcut used to live in App with its own SaveQueryDialog, so two
+    // were mounted and the key and the toolbar button opened different ones.
+    mockInvoke({ run_query: () => runResult(), list_saved_queries: () => [] });
+    renderQueryTab('select 1');
+
+    fireEvent.keyDown(document.body, { key: 's', metaKey: true });
+
+    expect(await screen.findByRole('heading', { name: /Save query/i })).toBeInTheDocument();
+  });
+
+  it('ignores Cmd+S when the tab has no SQL to save', () => {
+    mockInvoke({ list_saved_queries: () => [] });
+    useConnections.setState({ items: [connection()] });
+    const id = useTabs.getState().openQueryTab('c1', '   ', 'Query 1');
+    render(<Harness id={id} />);
+
+    fireEvent.keyDown(document.body, { key: 's', metaKey: true });
+
+    expect(screen.queryByRole('heading', { name: /Save query/i })).not.toBeInTheDocument();
+  });
+
+  it('sends the tab’s row limit with the run', async () => {
+    // Every run was pinned to the backend's default page and the UI offered no
+    // way to raise it, so a truncated result could only be widened by editing
+    // the query itself.
+    mockInvoke({ run_query: () => runResult() });
+    renderQueryTab('select * from users');
+
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+    await screen.findByRole('button', { name: /Run/ });
+
+    expect(callsTo('run_query')[0]).toMatchObject({ limit: 1000 });
+  });
+
+  it('runs with a raised row limit once the user picks one', async () => {
+    mockInvoke({ run_query: () => runResult() });
+    renderQueryTab('select * from users');
+
+    fireEvent.change(screen.getByTitle('Most rows a run may return'), {
+      target: { value: '50000' },
+    });
+    expect(currentTab().rowLimit).toBe(50000);
+
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+    await screen.findByRole('button', { name: /Run/ });
+
+    expect(callsTo('run_query')[0]).toMatchObject({ limit: 50000 });
+  });
+
   it('runs only the selected text when the editor reports a selection', async () => {
     mockInvoke({ run_query: () => runResult() });
     renderQueryTab('select * from users');

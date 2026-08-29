@@ -28,14 +28,30 @@ pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionConf
 #[tauri::command]
 pub async fn list_connection_status(state: State<'_, AppState>) -> Result<Vec<ConnectionStatus>> {
     let configs = state.store.list_connections()?;
+
+    // The keychain lookups go to a blocking thread, all at once.
+    //
+    // `secrets::get_password` is a synchronous OS call — a DBus round trip to
+    // the Secret Service on Linux — and this ran one per saved connection
+    // directly on the async runtime, on every sidebar refresh. That stalled a
+    // runtime worker for as long as the whole loop took, with nothing else on
+    // that thread able to make progress meanwhile.
+    let keys: Vec<String> = configs.iter().map(|c| c.secret_key()).collect();
+    let stored: Vec<bool> = tokio::task::spawn_blocking(move || {
+        keys.iter()
+            .map(|k| secrets::get_password(k).is_some())
+            .collect()
+    })
+    .await
+    .map_err(|e| FaroError::Other(format!("could not read stored passwords: {e}")))?;
+
     let mut out = Vec::with_capacity(configs.len());
-    for config in configs {
+    for (index, config) in configs.into_iter().enumerate() {
         let connected = state.registry.is_connected(&config.id).await;
-        let has_password = secrets::get_password(&config.secret_key()).is_some();
         out.push(ConnectionStatus {
             config,
             connected,
-            has_password,
+            has_password: stored.get(index).copied().unwrap_or(false),
         });
     }
     Ok(out)
@@ -64,10 +80,24 @@ pub fn save_connection(
 
     state.store.upsert_connection(&config)?;
 
-    match password {
-        Some(pw) if pw.is_empty() => secrets::delete_password(&config.secret_key())?,
-        Some(pw) => secrets::set_password(&config.secret_key(), &pw)?,
-        None => {}
+    // The row goes in first, so a keychain failure leaves a saved connection
+    // whose password did not make it — the recoverable half of the split, since
+    // the user can simply re-enter it. But it has to be said out loud: bubbling
+    // the raw keychain error up made it look like nothing had been saved, and
+    // staying silent meant the next connect failed with a bare authentication
+    // error that pointed nowhere near the real cause.
+    let stored = match password {
+        Some(pw) if pw.is_empty() => secrets::delete_password(&config.secret_key()),
+        Some(pw) => secrets::set_password(&config.secret_key(), &pw),
+        None => Ok(()),
+    };
+
+    if let Err(e) = stored {
+        return Err(FaroError::Keychain(format!(
+            "\"{}\" was saved, but its password could not be stored: {e}\n\n\
+             Edit the connection and re-enter the password to try again.",
+            config.name
+        )));
     }
 
     Ok(config)
@@ -76,9 +106,17 @@ pub fn save_connection(
 #[tauri::command]
 pub async fn delete_connection(state: State<'_, AppState>, id: String) -> Result<()> {
     state.registry.remove(&id).await;
-    if let Some(config) = state.store.get_connection(&id)? {
-        secrets::delete_password(&config.secret_key())?;
+
+    // Best effort on the secret, then delete the row regardless. Failing the
+    // whole delete because the keychain was unreachable left the connection
+    // visibly undeleted, which reads as the button not working; a stale
+    // keychain entry for an id nothing references any more is harmless by
+    // comparison, and `secret_key` is derived from the id so it can never be
+    // handed to a different connection.
+    if let Ok(Some(config)) = state.store.get_connection(&id) {
+        let _ = secrets::delete_password(&config.secret_key());
     }
+
     state.store.delete_connection(&id)
 }
 

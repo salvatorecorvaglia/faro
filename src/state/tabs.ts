@@ -24,6 +24,14 @@ export interface Tab {
 
   /** Query tabs: editor contents. */
   sql: string;
+  /**
+   * Query tabs: most rows a run may return.
+   *
+   * Lives on the tab rather than in the component so it survives being
+   * switched away from, like everything else here — and so two tabs can hold
+   * different limits. The backend clamps whatever arrives to `MAX_PAGE`.
+   */
+  rowLimit: number;
   /** Table tabs: which table is being browsed. */
   table: TableRef | null;
 
@@ -65,6 +73,17 @@ interface TabState {
 let counter = 0;
 const nextId = () => `tab-${++counter}`;
 
+/**
+ * Rows a query returns unless the user asks for more.
+ *
+ * Mirrors `DEFAULT_PAGE` in the Rust driver layer. The backend is the authority
+ * and clamps anything larger than its `MAX_PAGE`.
+ */
+export const DEFAULT_ROW_LIMIT = 1_000;
+
+/** The choices offered in the query toolbar. The largest is the backend cap. */
+export const ROW_LIMIT_CHOICES = [1_000, 10_000, 50_000, 100_000] as const;
+
 function baseTab(kind: TabKind, connectionId: string | null): Tab {
   return {
     id: nextId(),
@@ -72,6 +91,7 @@ function baseTab(kind: TabKind, connectionId: string | null): Tab {
     title: '',
     connectionId,
     sql: '',
+    rowLimit: DEFAULT_ROW_LIMIT,
     table: null,
     results: [],
     browseResult: null,
@@ -97,6 +117,40 @@ function confirmLeaving(tab: Tab | undefined): Promise<boolean> {
   );
 }
 
+/**
+ * Move focus to `id`, asking first when the outgoing tab holds staged edits.
+ *
+ * `App` mounts only the active tab, so *any* focus change unmounts the previous
+ * one and takes its `edits` with it. `setActive` and `closeTab` already guarded
+ * that; the two openers set `activeId` directly and slipped past it, so opening
+ * a table from the sidebar or pressing ⌘T discarded staged edits silently.
+ *
+ * Focus moves synchronously when there is nothing to lose, which is almost
+ * always — only a genuinely dirty outgoing tab defers it behind the prompt.
+ * That keeps the openers' synchronous contract intact for every ordinary open.
+ *
+ * Declining leaves the newly opened tab in the background rather than throwing
+ * away the click that created it; no work is lost either way.
+ */
+function focusAfterGuard(
+  set: (partial: Partial<TabState>) => void,
+  get: () => TabState,
+  id: string,
+): void {
+  const { activeId, tabs } = get();
+  if (id === activeId) return;
+
+  const outgoing = tabs.find((t) => t.id === activeId);
+  if (!outgoing?.dirty) {
+    set({ activeId: id });
+    return;
+  }
+
+  void confirmLeaving(outgoing).then((ok) => {
+    if (ok) set({ activeId: id });
+  });
+}
+
 export const useTabs = create<TabState>((set, get) => ({
   tabs: [],
   activeId: null,
@@ -107,7 +161,8 @@ export const useTabs = create<TabState>((set, get) => ({
       title: title ?? `Query ${get().tabs.filter((t) => t.kind === 'query').length + 1}`,
       sql,
     };
-    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+    set((s) => ({ tabs: [...s.tabs, tab] }));
+    focusAfterGuard(set, get, tab.id);
     return tab.id;
   },
 
@@ -122,7 +177,7 @@ export const useTabs = create<TabState>((set, get) => ({
         t.table?.schema === table.schema,
     );
     if (existing) {
-      set({ activeId: existing.id });
+      focusAfterGuard(set, get, existing.id);
       return existing.id;
     }
 
@@ -131,7 +186,8 @@ export const useTabs = create<TabState>((set, get) => ({
       title: table.name,
       table,
     };
-    set((s) => ({ tabs: [...s.tabs, tab], activeId: tab.id }));
+    set((s) => ({ tabs: [...s.tabs, tab] }));
+    focusAfterGuard(set, get, tab.id);
     return tab.id;
   },
 

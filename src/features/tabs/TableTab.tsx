@@ -91,6 +91,9 @@ export function TableTab({ tab }: { tab: Tab }) {
   const tabRef = useRef(tab);
   tabRef.current = tab;
 
+  /** The filter set the currently displayed page was loaded with. */
+  const appliedFilters = useRef<GridFilter[]>([]);
+
   const editable =
     !connectionReadOnly && (detail?.primaryKey.length ? detail.kind === 'table' : false);
   const dirty = hasChanges(edits);
@@ -130,6 +133,9 @@ export function TableTab({ tab }: { tab: Tab }) {
         if (tabRef.current.queryId !== queryId) return;
         update(t.id, { running: false, queryId: null, browseResult: result });
         setOffset(nextOffset);
+        // Remember what the displayed page was actually loaded with, so a
+        // filter edit the user later declines to apply can be rolled back to it.
+        appliedFilters.current = nextFilters;
         // Staged edits address rows by their position in the page, so any
         // reload invalidates them. Discarding is the honest outcome — silently
         // reapplying them to different rows would be far worse.
@@ -153,13 +159,19 @@ export function TableTab({ tab }: { tab: Tab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.connectionId, tab.table?.schema, tab.table?.name]);
 
-  /** Confirm before throwing away unsaved work. */
+  /**
+   * Confirm before throwing away unsaved work.
+   *
+   * Reports whether it went ahead, so a caller that already moved some UI state
+   * optimistically can put it back when the user declines.
+   */
   const guardUnsaved = useCallback(
-    async (action: () => void) => {
+    async (action: () => void): Promise<boolean> => {
       if (dirty && !(await confirmDialog('Discard your unsaved changes?', { danger: true }))) {
-        return;
+        return false;
       }
       action();
+      return true;
     },
     [dirty],
   );
@@ -189,7 +201,13 @@ export function TableTab({ tab }: { tab: Tab }) {
       setFilters(next);
       clearTimeout(filterTimer.current ?? undefined);
       filterTimer.current = setTimeout(() => {
-        guardUnsaved(() => load(0, sort, next));
+        void guardUnsaved(() => load(0, sort, next)).then((applied) => {
+          // Declining keeps the staged edits, which means the query still
+          // reflects the previous filters. Without this the filter row went on
+          // displaying a filter that was never run — the grid and the boxes
+          // above it disagreeing about what the user is looking at.
+          if (!applied) setFilters(appliedFilters.current);
+        });
       }, FILTER_DEBOUNCE_MS);
     },
     [guardUnsaved, load, sort],

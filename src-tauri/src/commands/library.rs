@@ -73,8 +73,27 @@ pub fn delete_history_entry(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.store.delete_history_entry(id)
 }
 
-/// Trim history to its cap. Called after each write.
+/// How many recorded runs between prunes.
+///
+/// `prune_history` finds what falls outside the cap with a `NOT IN (SELECT …)`
+/// that scans the table, and it ran after *every* query — so the cost grew with
+/// the history and was paid on the hot path of running a statement. Batching
+/// lets the table overshoot `HISTORY_CAP` by at most this many rows, which
+/// nobody can perceive, and takes the scan out of the common case entirely.
+const PRUNE_EVERY: usize = 100;
+
+/// Trim history to its cap. Called after each write, acts every `PRUNE_EVERY`.
 pub fn prune(state: &AppState) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SINCE_PRUNE: AtomicUsize = AtomicUsize::new(0);
+
+    // `fetch_add` returns the previous value, so this also prunes on the first
+    // run of a session — which is when an install that has been closed for a
+    // while has the most to clear out.
+    if SINCE_PRUNE.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY != 0 {
+        return;
+    }
+
     // Best effort: failing to prune must never fail the query the user ran.
     let _ = state.store.prune_history(HISTORY_CAP);
 }

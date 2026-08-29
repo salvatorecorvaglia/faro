@@ -32,7 +32,18 @@ pub enum FaroError {
     #[error("{0}")]
     ReadOnly(String),
 
-    #[error("query cancelled")]
+    /// The user stopped a query, an export or a backup.
+    ///
+    /// Worded carefully because the cancellation is client-side: the row stream
+    /// is abandoned and the connection released, but no engine is sent an
+    /// out-of-band cancel, so the server goes on executing the statement until
+    /// it finishes on its own. Saying a bare "cancelled" implied Faro had
+    /// stopped the work on the database too, which it has not — and someone
+    /// who cancelled a runaway `UPDATE` deserves to know it is still running.
+    #[error(
+        "Stopped. Faro is no longer waiting for this statement, but the database \
+         may still be running it until it finishes on its own."
+    )]
     Cancelled,
 
     #[error("{0} support is not implemented yet")]

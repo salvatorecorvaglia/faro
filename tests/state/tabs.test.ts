@@ -152,4 +152,58 @@ describe('leaving a tab with staged edits', () => {
 
     expect(useConfirmStore.getState().request).toBeNull();
   });
+
+  // The openers set `activeId` directly and so slipped past the guard that
+  // `setActive` and `closeTab` apply, which meant clicking a table in the
+  // sidebar or pressing Cmd-T threw away staged edits with no prompt at all.
+
+  it('asks before opening a query tab over a dirty one', async () => {
+    const { a } = await twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+
+    const opened = useTabs.getState().openQueryTab(null, 'select 3', 'C');
+    // The new tab exists immediately, but focus has not moved yet.
+    expect(useTabs.getState().activeId).toBe(a);
+    expect(useConfirmStore.getState().request?.message).toContain('"A"');
+
+    answerConfirm(true);
+    await Promise.resolve();
+    expect(useTabs.getState().activeId).toBe(opened);
+  });
+
+  it('keeps focus on the dirty tab when the user declines an open', async () => {
+    const { a } = await twoTabs();
+    useTabs.getState().update(a, { dirty: true });
+
+    useTabs.getState().openTableTab('c1', { schema: 'public', name: 'users' });
+    answerConfirm(false);
+    await Promise.resolve();
+
+    // Focus stays put, so the staged edits are still there to apply.
+    expect(useTabs.getState().activeId).toBe(a);
+    expect(useTabs.getState().tabs.find((t) => t.id === a)!.dirty).toBe(true);
+  });
+
+  it('asks before focusing a table tab that is already open', async () => {
+    const { a } = await twoTabs();
+    const existing = useTabs.getState().openTableTab('c1', { schema: 'public', name: 'users' });
+    await useTabs.getState().setActive(a);
+    useTabs.getState().update(a, { dirty: true });
+
+    // Re-opening the same table reuses its tab; that is still a focus change.
+    useTabs.getState().openTableTab('c1', { schema: 'public', name: 'users' });
+    expect(useConfirmStore.getState().request).not.toBeNull();
+
+    answerConfirm(true);
+    await Promise.resolve();
+    expect(useTabs.getState().activeId).toBe(existing);
+  });
+
+  it('moves focus synchronously when nothing is staged', () => {
+    // The common path must stay synchronous: callers use the returned id
+    // immediately and never await these.
+    const id = useTabs.getState().openQueryTab(null, 'select 1', 'A');
+    expect(useTabs.getState().activeId).toBe(id);
+    expect(useConfirmStore.getState().request).toBeNull();
+  });
 });

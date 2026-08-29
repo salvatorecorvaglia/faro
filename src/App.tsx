@@ -6,7 +6,6 @@ import { SplitGroup, SplitHandle, SplitPanel } from '@/components/panels';
 import { UpdaterToast } from '@/components/UpdaterToast';
 import { EmptyState } from '@/components/ui';
 import { Sidebar } from '@/features/connections/Sidebar';
-import { SaveQueryDialog } from '@/features/library/SaveQueryDialog';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { ShortcutSheet } from '@/features/palette/ShortcutSheet';
 import { QueryTab } from '@/features/tabs/QueryTab';
@@ -29,7 +28,6 @@ export default function App() {
   const refreshHistory = useLibrary((s) => s.refreshHistory);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [saveOpen, setSaveOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const active = tabs.find((t) => t.id === activeId);
@@ -67,16 +65,6 @@ export default function App() {
           e.preventDefault();
           setPaletteOpen((v) => !v);
           break;
-        case 's': {
-          // Only meaningful for a query tab with something in it.
-          const state = useTabs.getState();
-          const current = state.tabs.find((t) => t.id === state.activeId);
-          if (current?.kind === 'query' && current.sql.trim()) {
-            e.preventDefault();
-            setSaveOpen(true);
-          }
-          break;
-        }
         case 't': {
           e.preventDefault();
           const state = useTabs.getState();
@@ -158,13 +146,6 @@ export default function App() {
       />
 
       <ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-
-      <SaveQueryDialog
-        open={saveOpen}
-        onClose={() => setSaveOpen(false)}
-        sql={active?.sql ?? ''}
-        connectionId={active?.connectionId ?? null}
-      />
 
       <UpdaterToast />
       <ConfirmHost />

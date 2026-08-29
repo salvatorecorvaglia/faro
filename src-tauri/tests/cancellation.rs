@@ -38,7 +38,12 @@ async fn open_in_memory() -> Box<dyn Driver> {
         .expect("connect failed")
 }
 
-#[tokio::test]
+// Multi-threaded on purpose: the cancel has to land while the query is still
+// streaming, and on the single-threaded runtime that depended on the query
+// future returning `Pending` at least once. An in-memory SQLite stream can hand
+// back many rows without ever doing so, which left the canceller unpolled and
+// made this test fail sporadically under parallel load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_a_query_frees_the_connection_for_the_next_one() {
     let d = open_in_memory().await;
     let none = CancellationToken::new();
@@ -59,12 +64,21 @@ async fn cancelling_a_query_frees_the_connection_for_the_next_one() {
     .expect("seed rows");
 
     let cancel = CancellationToken::new();
-    let query = d.query("SELECT n FROM big", 1_000_000, cancel.clone());
-    let trigger = async {
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        cancel.cancel();
-    };
-    let (result, ()) = tokio::join!(query, trigger);
+    // Cancel from a task on another worker, so it runs whether or not the query
+    // future ever yields. Streaming half a million rows takes far longer than
+    // this sleep, so the cancel reliably arrives mid-stream.
+    let canceller = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            cancel.cancel();
+        }
+    });
+
+    let result = d
+        .query("SELECT n FROM big", 1_000_000, cancel.clone())
+        .await;
+    canceller.await.expect("canceller task panicked");
 
     assert!(
         matches!(result, Err(FaroError::Cancelled)),

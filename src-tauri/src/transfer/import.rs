@@ -119,11 +119,73 @@ pub fn preview(path: &Path, format: ImportFormat, has_header: bool) -> Result<Im
     })
 }
 
-fn read_delimited(
+/// Read a file's rows in bounded batches, handing each batch to `sink`.
+///
+/// The whole-file [`read_rows`] materializes a `Vec<Vec<String>>` for every row
+/// before anything is inserted, so importing a large CSV meant holding the file
+/// in memory as several million individually-allocated `String`s — far larger
+/// than the file itself, and with `panic = "abort"` in release an allocation
+/// failure takes the app down rather than surfacing as an error.
+///
+/// Delimited files stream: `csv::Reader` yields records one at a time, so only
+/// `batch` rows are ever live. JSON and XLSX cannot — both formats have to be
+/// parsed as a whole document before any row is addressable — so they fall back
+/// to reading fully and are handed to `sink` in batches for a uniform caller.
+///
+/// Returns the column names and the total number of rows passed to `sink`.
+pub fn read_rows_batched(
+    path: &Path,
+    format: ImportFormat,
+    has_header: bool,
+    batch: usize,
+    sink: &mut dyn FnMut(&[Vec<String>]) -> Result<()>,
+) -> Result<(Vec<String>, usize)> {
+    let delimiter = match format {
+        ImportFormat::Csv => Some(b','),
+        ImportFormat::Tsv => Some(b'\t'),
+        ImportFormat::Json | ImportFormat::Xlsx => None,
+    };
+
+    let Some(delimiter) = delimiter else {
+        let (columns, rows) = read_rows(path, format, has_header)?;
+        let total = rows.len();
+        for chunk in rows.chunks(batch.max(1)) {
+            sink(chunk)?;
+        }
+        return Ok((columns, total));
+    };
+
+    let (columns, mut reader) = delimited_reader(path, delimiter, has_header)?;
+
+    let mut buffer: Vec<Vec<String>> = Vec::with_capacity(batch.max(1));
+    let mut total = 0usize;
+    for record in reader.records() {
+        let record = record.map_err(|e| FaroError::Io(e.to_string()))?;
+        buffer.push(record.iter().map(String::from).collect());
+        if buffer.len() >= batch.max(1) {
+            total += buffer.len();
+            sink(&buffer)?;
+            buffer.clear();
+        }
+    }
+    if !buffer.is_empty() {
+        total += buffer.len();
+        sink(&buffer)?;
+    }
+
+    Ok((columns, total))
+}
+
+/// Open a delimited file and resolve its column names, leaving the reader
+/// positioned at the first data record.
+///
+/// Shared by the whole-file and batched readers so the header handling — which
+/// has to re-open the file when there is no header row — cannot drift apart.
+fn delimited_reader(
     path: &Path,
     delimiter: u8,
     has_header: bool,
-) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+) -> Result<(Vec<String>, csv::Reader<std::fs::File>)> {
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .has_headers(has_header)
@@ -158,6 +220,16 @@ fn read_delimited(
             .map_err(|e| FaroError::Io(e.to_string()))?;
         (1..=width).map(|i| format!("Column {i}")).collect()
     };
+
+    Ok((columns, reader))
+}
+
+fn read_delimited(
+    path: &Path,
+    delimiter: u8,
+    has_header: bool,
+) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    let (columns, mut reader) = delimited_reader(path, delimiter, has_header)?;
 
     let mut rows = Vec::new();
     for record in reader.records() {
@@ -295,6 +367,103 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(contents.as_bytes()).unwrap();
         path
+    }
+
+    /// Collect every batch `read_rows_batched` produces, with its size.
+    fn batches(
+        path: &std::path::Path,
+        format: ImportFormat,
+        has_header: bool,
+        batch: usize,
+    ) -> (Vec<String>, Vec<usize>, Vec<Vec<String>>) {
+        let mut sizes = Vec::new();
+        let mut all = Vec::new();
+        let (columns, total) = read_rows_batched(path, format, has_header, batch, &mut |chunk| {
+            sizes.push(chunk.len());
+            all.extend(chunk.iter().cloned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            total,
+            all.len(),
+            "reported total disagrees with what was sent"
+        );
+        (columns, sizes, all)
+    }
+
+    #[test]
+    fn batched_reading_bounds_each_chunk() {
+        // The point of the batched reader: never hold more than `batch` parsed
+        // rows at once, however large the file is.
+        let body: String = (1..=10).map(|i| format!("{i},name{i}\n")).collect();
+        let path = write_temp("batched.csv", &format!("id,name\n{body}"));
+
+        let (columns, sizes, rows) = batches(&path, ImportFormat::Csv, true, 3);
+
+        assert_eq!(columns, ["id", "name"]);
+        assert_eq!(sizes, [3, 3, 3, 1], "chunks were not bounded at 3");
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[0], ["1", "name1"]);
+        assert_eq!(rows[9], ["10", "name10"]);
+    }
+
+    #[test]
+    fn batched_reading_agrees_with_reading_the_whole_file() {
+        // The two paths must not drift: the batched one is what imports use.
+        let path = write_temp("batched_same.csv", "id,name\n1,a\n2,b\n3,c\n");
+
+        let (whole_columns, whole_rows) = read_rows(&path, ImportFormat::Csv, true).unwrap();
+        let (columns, _, rows) = batches(&path, ImportFormat::Csv, true, 2);
+
+        assert_eq!(columns, whole_columns);
+        assert_eq!(rows, whole_rows);
+    }
+
+    #[test]
+    fn batched_reading_names_columns_positionally_without_a_header() {
+        // The header-less path re-opens the file, which is the fiddly bit the
+        // whole-file and batched readers now share rather than duplicate.
+        let path = write_temp("batched_noheader.csv", "1,a\n2,b\n3,c\n");
+
+        let (columns, _, rows) = batches(&path, ImportFormat::Csv, false, 2);
+
+        assert_eq!(columns, ["Column 1", "Column 2"]);
+        assert_eq!(rows.len(), 3, "the first row must not be eaten as a header");
+        assert_eq!(rows[0], ["1", "a"]);
+    }
+
+    #[test]
+    fn batched_reading_handles_a_format_that_cannot_stream() {
+        // JSON has to be parsed whole; it is still delivered in batches so the
+        // caller has one shape to handle.
+        let path = write_temp(
+            "batched.json",
+            r#"[{"id":1},{"id":2},{"id":3},{"id":4},{"id":5}]"#,
+        );
+
+        let (columns, sizes, rows) = batches(&path, ImportFormat::Json, true, 2);
+
+        assert_eq!(columns, ["id"]);
+        assert_eq!(sizes, [2, 2, 1]);
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn a_sink_error_stops_the_read() {
+        // A failure building statements must abort rather than carry on
+        // consuming the rest of a very large file.
+        let body: String = (1..=100).map(|i| format!("{i}\n")).collect();
+        let path = write_temp("batched_err.csv", &format!("id\n{body}"));
+
+        let mut seen = 0usize;
+        let result = read_rows_batched(&path, ImportFormat::Csv, true, 10, &mut |chunk| {
+            seen += chunk.len();
+            Err(FaroError::Other("stop".into()))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(seen, 10, "read continued past the failing batch");
     }
 
     #[test]

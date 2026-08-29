@@ -44,6 +44,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Assert a single CodeMirror view
+        run: |
+          # Counts what is actually linked into the tree, not what happens to
+          # be left in the pnpm store, so a stale store entry is not a failure.
+          found=$(pnpm ls @codemirror/view --depth=Infinity \
+            | grep -oE '@codemirror/view@[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
+          count=$(printf '%s\n' "$found" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "Expected exactly one @codemirror/view, found $count:"
+            printf '%s\n' "$found"
+            echo "Align package.json with the override in pnpm-workspace.yaml."
+            exit 1
+          fi
+          echo "Single CodeMirror view: $found"
+
       - name: Biome Lint
         run: pnpm lint
 
@@ -78,6 +93,9 @@ jobs:
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cargo Manifest And Lock Agree
+        run: cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml > /dev/null
 
       - name: Cargo Format Check
         run: cargo fmt --check --manifest-path src-tauri/Cargo.toml

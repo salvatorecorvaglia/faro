@@ -483,7 +483,7 @@ const LIKE_ESCAPE: char = '\\';
 /// treat backslash as the default escape, but SQLite, DuckDB and SQL Server have
 /// **no** default — there, an unaccompanied `\%` matches a literal backslash
 /// followed by anything, so the filter silently returns the wrong rows.
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")

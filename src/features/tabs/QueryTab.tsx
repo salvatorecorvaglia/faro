@@ -13,7 +13,7 @@ import { isSqlEngine } from '@/lib/engine';
 import { formatSql } from '@/lib/format';
 import { useConnections } from '@/state/connections';
 import { toCompletionSchema, useSchemaCache } from '@/state/schemaCache';
-import { type Tab, useTabs } from '@/state/tabs';
+import { ROW_LIMIT_CHOICES, type Tab, useTabs } from '@/state/tabs';
 
 let queryCounter = 0;
 
@@ -75,7 +75,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
     const queryId = `q-${++queryCounter}`;
     update(t.id, { running: true, queryId, error: null, activeResultIndex: 0 });
     try {
-      const result = await ipc.runQuery(t.connectionId, sqlText, queryId);
+      const result = await ipc.runQuery(t.connectionId, sqlText, queryId, t.rowLimit);
       update(t.id, {
         running: false,
         queryId: null,
@@ -114,7 +114,21 @@ export function QueryTab({ tab }: { tab: Tab }) {
   // and the second result overwriting the first.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!(e.metaKey || e.ctrlKey) || e.key !== 'Enter') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+
+      // Cmd+S lives here rather than in `App` because this is where the tab's
+      // SQL and its save dialog are. `App` had its own copy of both, so two
+      // SaveQueryDialogs were mounted at once and the shortcut and the toolbar
+      // button opened different ones. Only the active tab is mounted, so this
+      // fires exactly when the old guard in `App` did.
+      if (e.key.toLowerCase() === 's') {
+        if (!tabRef.current.sql.trim()) return;
+        e.preventDefault();
+        setSaveOpen(true);
+        return;
+      }
+
+      if (e.key !== 'Enter') return;
       const target = e.target;
       if (target instanceof Element && target.closest('.cm-editor')) return;
       e.preventDefault();
@@ -187,6 +201,28 @@ export function QueryTab({ tab }: { tab: Tab }) {
             {cached.length} tables indexed
           </span>
         )}
+
+        {/* Every run was capped at the backend's default page and there was no
+            way to ask for more, so the only recourse for a truncated result was
+            to rewrite the query with a LIMIT of its own. */}
+        <label
+          className="flex items-center gap-1 text-[10.5px]"
+          style={{ color: 'var(--text-faint)' }}
+        >
+          Rows
+          <select
+            className="input w-auto py-1 text-[11.5px]"
+            value={tab.rowLimit}
+            onChange={(e) => update(tab.id, { rowLimit: Number(e.target.value) })}
+            title="Most rows a run may return"
+          >
+            {ROW_LIMIT_CHOICES.map((n) => (
+              <option key={n} value={n}>
+                {n.toLocaleString()}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <select
           className="input w-auto py-1 text-[11.5px]"

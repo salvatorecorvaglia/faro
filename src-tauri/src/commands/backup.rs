@@ -66,7 +66,9 @@ pub async fn restore_database(
     query_id: String,
 ) -> Result<RestoreResult> {
     let driver = state.registry.get_writable(&connection_id).await?;
-    let script = std::fs::read_to_string(&path)?;
+    // Read on a blocking thread: a dump is arbitrarily large and this is a
+    // synchronous whole-file read that was stalling an async runtime worker.
+    let script = read_to_string_blocking(path.clone()).await?;
     let cancel = state.registry.begin_query(&connection_id, &query_id).await;
 
     let result = backup::restore(&*driver, &script, &options, cancel, |done, total| {
@@ -78,10 +80,26 @@ pub async fn restore_database(
     result
 }
 
+/// Read a whole file without blocking the async runtime.
+///
+/// `tokio::fs` is not available — the runtime is built without the `fs`
+/// feature — so the synchronous read is handed to the blocking pool, which is
+/// what `tokio::fs` would do underneath anyway.
+async fn read_to_string_blocking(path: String) -> Result<String> {
+    tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
+        .await
+        .map_err(|e| crate::error::FaroError::Io(format!("could not read the file: {e}")))?
+        .map_err(Into::into)
+}
+
 /// Statement count for a dump file, so the UI can warn before running it.
+///
+/// Async so the read lands on the blocking pool. As a synchronous command it
+/// ran on the IPC thread and froze the window for as long as reading the dump
+/// took, which for a large backup is exactly when the user is watching.
 #[tauri::command]
-pub fn inspect_backup(path: String) -> Result<BackupFileInfo> {
-    let script = std::fs::read_to_string(&path)?;
+pub async fn inspect_backup(path: String) -> Result<BackupFileInfo> {
+    let script = read_to_string_blocking(path).await?;
     let statements = crate::sql::split_statements(&script);
 
     Ok(BackupFileInfo {

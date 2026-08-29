@@ -7,7 +7,7 @@ use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
     ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
 };
 
 pub struct ClickHouseDialect;
@@ -81,28 +81,65 @@ pub struct ClickHouseDriver {
 impl ClickHouseDriver {
     pub async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
         let port = if config.port == 0 { 8123 } else { config.port };
+        let ssl_mode = config.ssl_mode;
+
         // Faro authenticates with HTTP Basic, so the scheme decides whether the
-        // password crosses the network in the clear. `Prefer` is the default
-        // mode, and http is what a local container speaks.
-        let scheme = if config.ssl_mode.requires_tls() {
-            "https"
-        } else {
-            "http"
+        // password crosses the network in the clear.
+        //
+        // `Prefer` is the default mode, and it used to mean plain http here —
+        // so a default connection to a remote ClickHouse sent the password in
+        // the clear. On every other engine `Prefer` means "encrypt if the
+        // server will, without authenticating it", and there is no reason this
+        // one should be the exception. ClickHouse cannot upgrade an existing
+        // connection the way the wire protocols do, so the equivalent is to try
+        // https first and fall back to http only if that fails.
+        let attempts: &[&str] = match ssl_mode {
+            SslMode::Disable => &["http"],
+            SslMode::Prefer => &["https", "http"],
+            _ => &["https"],
         };
 
+        let mut last_error = None;
+        for scheme in attempts {
+            let driver = Self::build(config, password, scheme, port)?;
+            // Proves the host, the scheme and the credentials in one round trip,
+            // rather than surfacing any of them on the user's first query.
+            match driver.ping().await {
+                Ok(()) => return Ok(driver),
+                Err(e) => last_error = Some(e),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            FaroError::Connection("could not reach the ClickHouse HTTP interface".into())
+        }))
+    }
+
+    /// One configured client for one scheme. Split out so `connect` can try
+    /// more than one without duplicating the setup.
+    fn build(
+        config: &ConnectionConfig,
+        password: Option<&str>,
+        scheme: &str,
+        port: u16,
+    ) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .connect_timeout(std::time::Duration::from_secs(15));
-        // `Require` means "encrypt, do not authenticate"; the Verify modes get
-        // reqwest's default, which validates against the platform trust store.
-        if config.ssl_mode == crate::model::SslMode::Require {
+
+        // `Require` means "encrypt, do not authenticate", and `Prefer` promises
+        // no authentication either — so neither validates the certificate. The
+        // Verify modes get reqwest's default, which checks the chain against
+        // the platform trust store.
+        if matches!(config.ssl_mode, SslMode::Require | SslMode::Prefer) {
             builder = builder.danger_accept_invalid_certs(true);
         }
+
         let http = builder
             .build()
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        let driver = Self {
+        Ok(Self {
             http,
             url: format!("{scheme}://{}:{port}/", config.host),
             user: config.username.clone(),
@@ -114,11 +151,7 @@ impl ClickHouseDriver {
             },
             read_only: config.read_only,
             dialect: ClickHouseDialect,
-        };
-
-        // Prove the credentials and host now rather than on the first query.
-        driver.ping().await?;
-        Ok(driver)
+        })
     }
 
     /// POST a statement and return the raw response body.

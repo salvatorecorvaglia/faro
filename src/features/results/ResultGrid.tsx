@@ -5,8 +5,16 @@ import { IconFilter, IconKey, IconSortAsc, IconSortDesc, IconTrash } from '@/com
 import type { EditValue, FilterOp, ResultSet, Value } from '@/ipc/types';
 import type { EditState } from '@/lib/edits';
 import { isRowDeleted, stagedValue } from '@/lib/edits';
-import type { GridFilter, SortState } from '@/lib/grid';
-import { formatValue, isNumeric } from '@/lib/value';
+import { type GridFilter, nextSort, type SortState } from '@/lib/grid';
+import { Cell } from './GridCell';
+import {
+  FILTER_HEIGHT,
+  HEADER_HEIGHT,
+  MIN_COL_WIDTH,
+  measureWidths,
+  ROW_HEIGHT,
+  ROW_NUM_WIDTH,
+} from './gridLayout';
 
 /** Editing hooks the grid calls; absent when the result is read-only. */
 export interface GridEditing {
@@ -16,12 +24,6 @@ export interface GridEditing {
   onInsertCellEdit: (insertIndex: number, column: string, value: EditValue) => void;
   onRemoveInsert: (insertIndex: number) => void;
 }
-
-const ROW_HEIGHT = 26;
-const HEADER_HEIGHT = 28;
-const FILTER_HEIGHT = 26;
-const ROW_NUM_WIDTH = 52;
-const MIN_COL_WIDTH = 56;
 
 /**
  * The result grid.
@@ -73,6 +75,14 @@ export function ResultGrid({
   // Reset layout whenever the shape of the result changes. Keeping widths from
   // a previous query's columns would size the new ones arbitrarily.
   //
+  // Keyed on `result.columns`, not `result`. In client-side mode `applyGridOps`
+  // returns `{ ...result, rows }` — a fresh object — on every sort and every
+  // debounced filter keystroke, so depending on `result` threw away the user's
+  // column widths, their column ordering and the selected cell each time they
+  // sorted or typed in a filter box. `applyGridOps` passes the same `columns`
+  // array straight through, so this identity changes only when the result
+  // genuinely has a new shape, which is what the reset is actually for.
+  //
   // `editingCell` resets here too: it addresses a cell by row/column index
   // into *this* `result`, so a new one makes that index meaningless — most
   // refreshes already blur the open editor first, which commits or discards
@@ -84,7 +94,8 @@ export function ResultGrid({
     setOrder(result.columns.map((_, i) => i));
     setSelected(null);
     setEditingCell(null);
-  }, [result]);
+    // `result` is read inside but deliberately not a dependency; see above.
+  }, [result.columns]);
 
   const visible = order.length === result.columns.length ? order : result.columns.map((_, i) => i);
 
@@ -261,6 +272,12 @@ export function ResultGrid({
               return (
                 <div
                   key={columnKeys[ci]}
+                  role="columnheader"
+                  // Sorting was mouse-only: the header was a plain div with a
+                  // click handler, so nothing announced the current sort and
+                  // there was no way to reach it from the keyboard.
+                  aria-sort={sorted ? (sort!.desc ? 'descending' : 'ascending') : 'none'}
+                  tabIndex={0}
                   className="group relative flex shrink-0 cursor-pointer select-none items-center gap-1 border-r border-b px-2"
                   style={{
                     width: widthOf(ci),
@@ -268,7 +285,13 @@ export function ResultGrid({
                     opacity: dragCol === ci ? 0.4 : 1,
                   }}
                   title={`${col.name} · ${col.typeName}`}
-                  onClick={() => onSortChange(nextFor(sort, col.name))}
+                  onClick={() => onSortChange(nextSort(sort, col.name))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSortChange(nextSort(sort, col.name));
+                    }
+                  }}
                   draggable
                   onDragStart={() => setDragCol(ci)}
                   onDragEnd={() => setDragCol(null)}
@@ -332,6 +355,9 @@ export function ResultGrid({
                       style={{ color: 'var(--text-faint)', width: 22 }}
                       value={f?.op ?? 'contains'}
                       onChange={(e) => setFilter(col.name, { op: e.target.value as FilterOp })}
+                      // Named per column: a screen reader otherwise hears the
+                      // same "Filter operator" on every one of them.
+                      aria-label={`Filter operator for ${col.name}`}
                       title="Filter operator"
                     >
                       <option value="contains">⊃</option>
@@ -349,6 +375,7 @@ export function ResultGrid({
                       value={f?.value ?? ''}
                       disabled={f?.op === 'isNull' || f?.op === 'isNotNull'}
                       placeholder="filter"
+                      aria-label={`Filter ${col.name}`}
                       onChange={(e) => setFilter(col.name, { value: e.target.value })}
                     />
                   </div>
@@ -366,6 +393,8 @@ export function ResultGrid({
             return (
               <div
                 key={v.key}
+                role="row"
+                aria-rowindex={v.index + 1}
                 className="absolute left-0 flex"
                 style={{
                   top: 0,
@@ -498,13 +527,6 @@ export function ResultGrid({
   );
 }
 
-/** Cycle ascending → descending → unsorted, mirroring `nextSort` in lib/grid. */
-function nextFor(current: SortState | null, column: string): SortState | null {
-  if (current?.column !== column) return { column, desc: false };
-  if (!current.desc) return { column, desc: true };
-  return null;
-}
-
 function moveItem(list: number[], from: number, to: number): number[] {
   const fromPos = list.indexOf(from);
   const toPos = list.indexOf(to);
@@ -513,186 +535,4 @@ function moveItem(list: number[], from: number, to: number): number[] {
   const [moved] = next.splice(fromPos, 1);
   next.splice(toPos, 0, moved!);
   return next;
-}
-
-function Cell({
-  value,
-  staged,
-  width,
-  selected,
-  editing,
-  editable,
-  onClick,
-  onStartEdit,
-  onCommit,
-  onCancel,
-}: {
-  value: Value | undefined;
-  staged: EditValue | undefined;
-  width: number;
-  selected: boolean;
-  editing: boolean;
-  editable: boolean;
-  onClick: () => void;
-  onStartEdit: () => void;
-  onCommit: (value: EditValue) => void;
-  onCancel: () => void;
-}) {
-  // What is displayed: the staged edit if there is one, otherwise the stored
-  // value. A staged cell is tinted so unsaved work is never mistaken for data
-  // that is actually in the database.
-  const dirty = staged !== undefined;
-  const showsNull = dirty ? staged.kind === 'null' : !value || value.kind === 'null';
-  const isDefault = dirty && staged.kind === 'default';
-
-  const text = dirty
-    ? staged.kind === 'text'
-      ? staged.value
-      : ''
-    : value
-      ? formatValue(value)
-      : '';
-  const numeric = !dirty && value ? isNumeric(value) : false;
-
-  if (editing) {
-    return <CellEditor width={width} initial={text} onCommit={onCommit} onCancel={onCancel} />;
-  }
-
-  const placeholder = isDefault ? 'default' : showsNull ? 'NULL' : text;
-
-  return (
-    <div
-      className="selectable shrink-0 cursor-default truncate border-r px-2 leading-[26px]"
-      style={{
-        width,
-        borderColor: 'var(--border)',
-        textAlign: numeric ? 'right' : 'left',
-        fontFamily: numeric || showsNull || isDefault ? 'var(--font-mono)' : undefined,
-        // NULL is rendered as a dimmed italic marker so it cannot be confused
-        // with an empty string or the literal text 'NULL'.
-        color: showsNull || isDefault ? 'var(--null)' : undefined,
-        fontStyle: showsNull || isDefault ? 'italic' : undefined,
-        boxShadow: selected ? 'inset 0 0 0 2px var(--accent)' : undefined,
-        background: dirty
-          ? 'color-mix(in srgb, var(--warning) 22%, transparent)'
-          : selected
-            ? 'var(--accent-soft)'
-            : undefined,
-      }}
-      onClick={onClick}
-      onDoubleClick={() => editable && onStartEdit()}
-      title={
-        editable
-          ? `${showsNull ? 'NULL' : text}\n\nDouble-click to edit`
-          : showsNull
-            ? 'NULL'
-            : text
-      }
-    >
-      {placeholder}
-    </div>
-  );
-}
-
-/**
- * Inline text entry for one cell.
- *
- * Enter commits, Escape abandons, and ⌘⌫ writes a real NULL — the grid has no
- * other way to express "no value" as distinct from the empty string, and
- * guessing from an emptied box would write the wrong one half the time.
- */
-function CellEditor({
-  width,
-  initial,
-  onCommit,
-  onCancel,
-}: {
-  width: number;
-  initial: string;
-  onCommit: (value: EditValue) => void;
-  onCancel: () => void;
-}) {
-  const [draft, setDraft] = useState(initial);
-
-  // Enter/Escape/⌘⌫ all unmount this input once they resolve the edit, and
-  // removing a focused element can still deliver a trailing native `blur` —
-  // React's delegated `onBlur` would otherwise fire a second, redundant
-  // commit, or (worse, after Escape) commit a value the user just cancelled.
-  // This flag makes the first resolution final.
-  const resolved = useRef(false);
-
-  const commit = (value: EditValue) => {
-    if (resolved.current) return;
-    resolved.current = true;
-    onCommit(value);
-  };
-  const cancel = () => {
-    if (resolved.current) return;
-    resolved.current = true;
-    onCancel();
-  };
-
-  return (
-    <input
-      // This input is mounted only because the user just chose to edit this
-      // cell, so focusing it is completing their action, not stealing focus.
-      // biome-ignore lint/a11y/noAutofocus: see above
-      autoFocus
-      className="shrink-0 border-r px-2 text-[12px] leading-[26px] outline-none"
-      style={{
-        width,
-        height: ROW_HEIGHT,
-        borderColor: 'var(--accent)',
-        background: 'var(--bg)',
-        color: 'var(--text)',
-        boxShadow: 'inset 0 0 0 2px var(--accent)',
-        fontFamily: 'var(--font-mono)',
-      }}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => commit({ kind: 'text', value: draft })}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          commit({ kind: 'text', value: draft });
-        } else if (e.key === 'Escape') {
-          e.preventDefault();
-          cancel();
-        } else if ((e.metaKey || e.ctrlKey) && e.key === 'Backspace') {
-          e.preventDefault();
-          commit({ kind: 'null' });
-        }
-      }}
-      title="Enter to save · Esc to cancel · ⌘⌫ for NULL"
-    />
-  );
-}
-
-/**
- * Pick a width per column from the header plus a sample of rows.
- *
- * Sampling the first 100 rows keeps this cheap while still sizing sensibly;
- * measuring every row of a large result would cost more than rendering it.
- */
-function measureWidths(result: ResultSet): Record<string, number> {
-  const CHAR = 7.1;
-  const MAX = 420;
-  const sample = result.rows.slice(0, 100);
-  const out: Record<string, number> = {};
-
-  result.columns.forEach((col, i) => {
-    let longest = col.name.length + col.typeName.length + 3;
-    for (const row of sample) {
-      const cell = row[i];
-      if (!cell) continue;
-      const len = cell.kind === 'null' ? 4 : formatValue(cell).length;
-      if (len > longest) longest = len;
-    }
-    out[`${col.name}\u0000${i}`] = Math.min(
-      MAX,
-      Math.max(MIN_COL_WIDTH + 16, Math.round(longest * CHAR) + 28),
-    );
-  });
-
-  return out;
 }
