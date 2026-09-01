@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-08-29
+
+### Added
+- **Batched Delimited File Import**: `read_rows_batched` (`src-tauri/src/transfer/import.rs`) reads CSV and TSV files in bounded streaming chunks (e.g. 5,000 rows per batch) and inserts them within managed transactions, replacing whole-file in-memory materialization that previously caused memory exhaustion on large datasets. Also added cancellation support for import operations via `cancellation::register` / `check_cancelled`.
+- **Query Tab Row Limit Selector**: Added a configurable row limit selector (`1,000`, `10,000`, `50,000`, `100,000`) to query tabs (`src/features/tabs/QueryTab.tsx`). The limit is persisted in the tab store across tab switches and clamped by the backend's `MAX_PAGE` limit.
+- **Dynamic OS Keyring Re-probing & Dual-Store Lookup**: `keychain_available` (`src-tauri/src/secrets.rs`) now dynamically re-probes for OS keychain availability with an atomic check throttled to a 5-second backoff, allowing keyrings unlocked after application startup (such as Linux login keyrings) to be seamlessly used without restarting Faro. In addition, `get_password` and `delete_password` now query and clear both the OS keychain and in-memory fallback stores to prevent orphaned credentials during keyring state transitions.
+- **ClickHouse Protocol Probing (`SslMode::Prefer`)**: `ClickHouseDriver` (`src-tauri/src/driver/clickhouse.rs`) now supports `SslMode::Prefer` (probing `https` and falling back to `http`), skips certificate verification on `Require` and `Prefer` SSL modes (encrypt without authenticating) while verifying trust store chains on `VerifyCa` and `VerifyFull`, and executes a proactive ping on connect to validate host, scheme, and credentials in a single round-trip.
+
+### Changed
+- **Modular SQLite Store Architecture**: Decomposed the monolithic backend store (`src-tauri/src/store.rs`) into modular components under `src-tauri/src/store/`: `connections.rs` (connection metadata, passwords, validation), `library.rs` (saved queries and execution history), and `mod.rs` (schema migration, store initialization, and shared utilities).
+- **Frontend Component Decomposition**: Extracted `SchemaTree.tsx` from `Sidebar.tsx` for cleaner hierarchy and maintainability, and split `ResultGrid.tsx` into dedicated `GridCell.tsx` (for cell rendering and clipboard copying) and `gridLayout.ts` (for virtualized column width and layout calculations).
+- **Toolchain & Dependency Upgrades**: Bumped `@types/node` (`^26.4.0`), `uuid` (`1.26.0`), and updated updater toast messaging (`src/components/UpdaterToast.tsx`).
+
+### Fixed
+- **Unsaved Edits Protection on Tab Navigation**: `openQueryTab` and `openTableTab` in `useTabs` (`src/state/tabs.ts`) now route focus changes through `focusAfterGuard`, prompting the user before discarding unsaved staged edits when opening tabs from the sidebar schema tree or keyboard shortcuts.
+- **Debounced Filter Rollback**: When editing table filters in `TableTab` (`src/features/tabs/TableTab.tsx`), declining the confirmation prompt to discard unsaved staged edits now rolls back the filter inputs to the currently displayed filter set, preventing UI filter inputs and displayed grid data from becoming desynchronized.
+- **Hanging Promises on Displaced Confirmation Dialogs**: `confirmDialog` (`src/state/confirm.ts`) now cleanly resolves any displaced pending confirmation promise with `false`, preventing chained async operations from stalling indefinitely when a new dialog request arrives.
+- **SQL History Search Wildcard Escaping**: Added `escape_like` in `src-tauri/src/store/mod.rs` so searching execution history with `Store::list_history` properly escapes `%`, `_`, and `\` characters rather than interpreting them as SQL wildcards.
+
+### Testing
+- **Frontend Lifecycle & State Coverage**: Added unit test suites for root `App` (`tests/App.test.tsx`), `useAsyncAction` and `useBackendProgress` hooks (`tests/hooks/useAsyncAction.test.ts`), `confirmDialog` displacement and resolution (`tests/state/confirm.test.ts`), `useTabs` dirty guard navigation (`tests/state/tabs.test.ts`), and query toolbar row limits (`tests/features/tabs/QueryTab.test.tsx`).
+- **Batched Import & Keyring Fallback Verification**: Added Rust integration tests covering bounded batch chunking and format parity in `read_rows_batched` (`src-tauri/src/transfer/import.rs`), as well as session-fallback keyring recovery and cleanup (`src-tauri/src/secrets.rs`).
 
 ## [1.3.0] - 2026-08-25
 

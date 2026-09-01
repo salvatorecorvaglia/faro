@@ -8,12 +8,12 @@
 
 ## ✨ Features
 
-- ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes and custom CA/client certificate authentication.
+- ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes, automatic protocol fallback probing (`Prefer` HTTPS to HTTP), and custom CA/client certificate authentication.
 - 🛡️ **Read-Only Mode & Safety**: Enhanced SQL statement parser and validator for strict connection-level read-only enforcement, preventing accidental data mutations or destructive DDL queries on production environments.
-- 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`).
-- 📝 **Advanced SQL Editor & Command Palette**: Built with CodeMirror 6 featuring schema-aware autocompletion, query formatting (`sql-formatter`), multi-query execution, and a keyboard-first Command Palette (`Cmd+K` / `Ctrl+K`).
-- 📊 **Virtualized Data Grid & High Precision**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, high-precision `BigDecimal` numerical decoding with normalized zero-stripping formatting, dynamic filtering, and column sorting.
-- 📂 **Flexible Import, Export & Transfer**: Import and export data seamlessly across CSV (with automatic formula injection protection and pre-import confirmation safety prompts), Excel (`.xlsx`), JSON, and raw SQL dumps, or stream data directly between databases.
+- 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`) with dynamic runtime re-probing and synchronized session fallback handling.
+- 📝 **Advanced SQL Editor & Command Palette**: Built with CodeMirror 6 featuring schema-aware autocompletion, configurable per-tab row limits, query formatting (`sql-formatter`), multi-query execution, and a keyboard-first Command Palette (`Cmd+K` / `Ctrl+K`).
+- 📊 **Virtualized Data Grid & High Precision**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, dirty-state protection against accidental navigation loss, high-precision `BigDecimal` numerical decoding with normalized zero-stripping formatting, dynamic filtering, and column sorting.
+- 📂 **Flexible Import, Export & Transfer**: Streamed exports and batched imports (bounded chunk processing for large CSV/TSV files with background cancellation support, formula injection sanitization, and pre-import confirmation prompts), Excel (`.xlsx`), JSON, and raw SQL dumps.
 - ⚙️ **Embedded Databases**: Full zero-config support for embedded SQLite (`rusqlite`) and analytical DuckDB (`duckdb-rs`) workloads directly inside the client process.
 - 🔄 **Automatic Application Updates**: Built-in update notifications and one-click upgrades powered by `tauri-plugin-updater` with native toast animations.
 - 🎨 **Modern Interface**: Designed with Tailwind CSS v4 and dynamic resizable panels (`react-resizable-panels`) for an uncluttered user experience.
