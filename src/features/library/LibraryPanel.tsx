@@ -1,0 +1,346 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+
+import { IconChevron, IconClose, IconEdit, IconTrash, IconWarning } from '@/components/icons';
+import { ErrorBanner, FilterInput, rowActivation, Spinner } from '@/components/ui';
+import type { HistoryEntry, SavedQuery } from '@/ipc/types';
+import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
+import { formatDuration, formatRowCount } from '@/lib/value';
+import { confirmDialog } from '@/state/confirm';
+import { useConnections } from '@/state/connections';
+import { groupByFolder, useLibrary } from '@/state/library';
+import { useTabs } from '@/state/tabs';
+import { SaveQueryDialog } from './SaveQueryDialog';
+
+type LibraryTab = 'saved' | 'history';
+
+/**
+ * The saved-queries and history panel, below the connection tree.
+ *
+ * Opening an entry creates a new tab rather than overwriting the current one —
+ * clobbering unsaved SQL to show an old query would be a poor trade.
+ */
+export function LibraryPanel() {
+  const [tab, setTab] = useState<LibraryTab>('saved');
+  const [collapsed, setCollapsed] = useState(false);
+  // Shallow-selected: a bare `useLibrary()` subscribes to the whole store, so
+  // an unrelated field changing re-rendered the panel and both its lists.
+  const { saved, history, refreshSaved, refreshHistory, loading, error, clearError } = useLibrary(
+    useShallow((s) => ({
+      saved: s.saved,
+      history: s.history,
+      refreshSaved: s.refreshSaved,
+      refreshHistory: s.refreshHistory,
+      loading: s.loading,
+      error: s.error,
+      clearError: s.clearError,
+    })),
+  );
+
+  useEffect(() => {
+    refreshSaved();
+    refreshHistory();
+  }, [refreshSaved, refreshHistory]);
+
+  return (
+    <div
+      className="flex min-h-0 shrink-0 flex-col border-t"
+      style={{
+        borderColor: 'var(--border)',
+        // Collapsed shows just the header bar; expanded takes a fixed slice so
+        // the connection tree above keeps a usable amount of room.
+        height: collapsed ? 30 : 280,
+      }}
+    >
+      <div className="flex h-8 shrink-0 items-center gap-1 px-1.5">
+        <button
+          type="button"
+          className="btn btn-ghost px-1"
+          onClick={() => setCollapsed((c) => !c)}
+          title={collapsed ? 'Expand' : 'Collapse'}
+        >
+          <IconChevron size={12} style={{ transform: collapsed ? undefined : 'rotate(90deg)' }} />
+        </button>
+
+        {(['saved', 'history'] as const).map((t) => (
+          <button
+            type="button"
+            key={t}
+            className="btn px-1.5 py-0.5 text-xs"
+            onClick={() => {
+              setTab(t);
+              setCollapsed(false);
+            }}
+            aria-pressed={tab === t && !collapsed}
+            style={
+              tab === t && !collapsed
+                ? { color: 'var(--accent)', background: 'var(--accent-soft)' }
+                : { color: 'var(--text-muted)' }
+            }
+          >
+            {t === 'saved' ? 'Saved' : 'History'}
+            <span className="ml-1 text-2xs tabular-nums opacity-70">
+              {t === 'saved' ? saved.length : history.length}
+            </span>
+          </button>
+        ))}
+
+        <div className="flex-1" />
+        {loading && <Spinner size={11} />}
+      </div>
+
+      {!collapsed && (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* A failed delete or history wipe used to be an unhandled rejection
+              with no visible trace, so the user believed it had worked. */}
+          {error && (
+            <div className="px-1.5 pb-1.5">
+              <ErrorBanner message={error} onDismiss={clearError} />
+            </div>
+          )}
+          <div className="min-h-0 flex-1">{tab === 'saved' ? <SavedList /> : <HistoryList />}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SavedList() {
+  const saved = useLibrary((s) => s.saved);
+  const remove = useLibrary((s) => s.remove);
+  const openQueryTab = useTabs((s) => s.openQueryTab);
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<SavedQuery | null>(null);
+
+  // Search matches the name, folder and SQL together, so a half-remembered
+  // fragment of the query itself is enough to find it.
+  const shown = useMemo(
+    () =>
+      fuzzyRank(saved, search, (q) => `${q.folder ?? ''} ${q.name} ${q.sql}`).map((r) => r.item),
+    [saved, search],
+  );
+
+  const groups = useMemo(() => groupByFolder(shown), [shown]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <FilterInput value={search} onChange={setSearch} placeholder="Search saved queries" />
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {saved.length === 0 ? (
+          <Hint text="No saved queries yet. Save one with ⌘S from a query tab." />
+        ) : shown.length === 0 ? (
+          <Hint text="Nothing matches." />
+        ) : (
+          groups.map((g) => (
+            <div key={g.folder ?? '__loose'}>
+              {g.folder && (
+                <div
+                  className="px-2 pt-1.5 pb-0.5 text-2xs font-semibold uppercase tracking-wide"
+                  style={{ color: 'var(--text-faint)' }}
+                >
+                  {g.folder}
+                </div>
+              )}
+              {g.queries.map((q) => (
+                <div
+                  key={q.id}
+                  className="group flex h-6 cursor-pointer items-center gap-1.5 px-2 hover:bg-[var(--bg-inset)]"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={
+                    rowActivation(() => openQueryTab(q.connectionId, q.sql, q.name)).onKeyDown
+                  }
+                  onClick={() => openQueryTab(q.connectionId, q.sql, q.name)}
+                  title={q.sql}
+                >
+                  <span className="min-w-0 flex-1 truncate text-xs">{q.name}</span>
+                  <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                    <button
+                      type="button"
+                      className="btn btn-ghost px-1"
+                      title="Rename"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditing(q);
+                      }}
+                    >
+                      <IconEdit size={11} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost px-1"
+                      title="Delete"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const proceed = await confirmDialog(`Delete the saved query "${q.name}"?`, {
+                          confirmLabel: 'Delete',
+                          danger: true,
+                        });
+                        if (proceed) remove(q.id);
+                      }}
+                    >
+                      <IconTrash size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+
+      <SaveQueryDialog
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        sql=""
+        connectionId={null}
+        editing={editing}
+      />
+    </div>
+  );
+}
+
+function HistoryList() {
+  const { history, historySearch, refreshHistory, clearHistory, deleteHistoryEntry } = useLibrary(
+    useShallow((s) => ({
+      history: s.history,
+      historySearch: s.historySearch,
+      refreshHistory: s.refreshHistory,
+      clearHistory: s.clearHistory,
+      deleteHistoryEntry: s.deleteHistoryEntry,
+    })),
+  );
+  const openQueryTab = useTabs((s) => s.openQueryTab);
+  const connections = useConnections((s) => s.items);
+  const [term, setTerm] = useState(historySearch);
+
+  // History lives in SQL, not memory, so searching goes back to the store —
+  // the table holds far more rows than the panel ever loads.
+  useEffect(() => {
+    const timer = setTimeout(() => refreshHistory(term), 200);
+    return () => clearTimeout(timer);
+  }, [term, refreshHistory]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-1 pr-1.5">
+        <div className="min-w-0 flex-1">
+          <FilterInput value={term} onChange={setTerm} placeholder="Search history" />
+        </div>
+        {history.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-ghost shrink-0 px-1"
+            title="Clear all history"
+            onClick={async () => {
+              const proceed = await confirmDialog('Delete the entire query history?', {
+                confirmLabel: 'Delete',
+                danger: true,
+              });
+              if (proceed) clearHistory();
+            }}
+          >
+            <IconTrash size={11} />
+          </button>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {history.length === 0 ? (
+          <Hint text={term ? 'Nothing matches.' : 'Queries you run appear here.'} />
+        ) : (
+          history.map((h) => (
+            <HistoryRow
+              key={h.id}
+              entry={h}
+              // A connection may have been deleted since; fall back to the name
+              // recorded at run time.
+              stillExists={connections.some((c) => c.id === h.connectionId)}
+              onOpen={() => openQueryTab(h.connectionId, h.sql)}
+              onDelete={() => deleteHistoryEntry(h.id)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HistoryRow({
+  entry,
+  stillExists,
+  onOpen,
+  onDelete,
+}: {
+  entry: HistoryEntry;
+  stillExists: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className="group flex cursor-pointer flex-col gap-0.5 border-b px-2 py-1 hover:bg-[var(--bg-inset)]"
+      style={{ borderColor: 'var(--border)' }}
+      role="button"
+      tabIndex={0}
+      onKeyDown={rowActivation(onOpen).onKeyDown}
+      onClick={onOpen}
+      title={entry.sql}
+    >
+      <div className="flex items-center gap-1">
+        {!entry.succeeded && (
+          <IconWarning size={10} style={{ color: 'var(--danger)' }} className="shrink-0" />
+        )}
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-xs"
+          style={{ color: entry.succeeded ? 'var(--text)' : 'var(--danger)' }}
+        >
+          {oneLine(entry.sql, 90)}
+        </span>
+        <button
+          type="button"
+          className="hidden shrink-0 opacity-60 hover:opacity-100 group-hover:block"
+          title="Remove from history"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <IconClose size={10} />
+        </button>
+      </div>
+      <div className="flex items-center gap-1.5 text-2xs" style={{ color: 'var(--text-faint)' }}>
+        <span>{relativeTime(entry.executedAt)}</span>
+        {entry.connectionName && (
+          <>
+            <span>·</span>
+            <span
+              className="truncate"
+              style={{ textDecoration: stillExists ? undefined : 'line-through' }}
+              title={stillExists ? undefined : 'This connection no longer exists'}
+            >
+              {entry.connectionName}
+            </span>
+          </>
+        )}
+        <span>·</span>
+        <span className="tabular-nums">{formatDuration(entry.durationMs)}</span>
+        {entry.succeeded && (
+          <>
+            <span>·</span>
+            <span className="tabular-nums">{formatRowCount(entry.rowCount)} rows</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Hint({ text }: { text: string }) {
+  return (
+    <p className="px-3 py-4 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
+      {text}
+    </p>
+  );
+}

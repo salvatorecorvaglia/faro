@@ -1,0 +1,373 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+import {
+  IconDatabase,
+  IconPlay,
+  IconPlus,
+  IconSearch,
+  IconTable,
+  IconWarning,
+} from '@/components/icons';
+import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
+import { useConnections } from '@/state/connections';
+import { useLibrary } from '@/state/library';
+import { useSchemaCache } from '@/state/schemaCache';
+import { useTabs } from '@/state/tabs';
+
+interface Item {
+  id: string;
+  /** Text the fuzzy matcher searches. */
+  search: string;
+  label: string;
+  detail?: string;
+  group: string;
+  icon: React.ReactNode;
+  danger?: boolean;
+  run: () => void;
+}
+
+/**
+ * ⌘K palette over everything in the app: saved queries, history, tables,
+ * connections and actions.
+ *
+ * With no query typed it shows a useful default set rather than nothing, so it
+ * doubles as a launcher. Results are capped because the list is not
+ * virtualized — beyond a screenful or two nobody scrolls anyway, they type.
+ */
+/**
+ * Palette width.
+ *
+ * Wide enough for a query name and its folder on one line, narrow enough that
+ * the list still reads as a menu rather than a page. Capped by `max-w-[92vw]`
+ * on a narrow window.
+ */
+const PALETTE_WIDTH = 560;
+
+export function CommandPalette({
+  open,
+  onClose,
+  onShowShortcuts,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onShowShortcuts?: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [cursor, setCursor] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  const connections = useConnections((s) => s.items);
+  const connect = useConnections((s) => s.connect);
+  const saved = useLibrary((s) => s.saved);
+  const history = useLibrary((s) => s.history);
+  const schemaByConnection = useSchemaCache((s) => s.byConnection);
+  // Selected individually rather than destructured off `useTabs()`. All three
+  // are stable store actions, so this subscribes to nothing that changes —
+  // whereas the whole-store form re-ran this component's hooks on every
+  // keystroke in the editor, even while the palette is closed.
+  const openQueryTab = useTabs((s) => s.openQueryTab);
+  const openTableTab = useTabs((s) => s.openTableTab);
+  const activeTab = useTabs((s) => s.activeTab);
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery('');
+    setCursor(0);
+  }, [open]);
+
+  const items = useMemo<Item[]>(() => {
+    const out: Item[] = [];
+    const current = activeTab();
+
+    if (onShowShortcuts) {
+      out.push({
+        id: 'action:shortcuts',
+        search: 'keyboard shortcuts help keys',
+        label: 'Keyboard shortcuts',
+        detail: '?',
+        group: 'Actions',
+        icon: <IconSearch size={12} />,
+        run: onShowShortcuts,
+      });
+    }
+
+    out.push({
+      id: 'action:new-query',
+      search: 'new query tab',
+      label: 'New query tab',
+      group: 'Actions',
+      icon: <IconPlus size={12} />,
+      run: () =>
+        openQueryTab(current?.connectionId ?? connections.find((c) => c.connected)?.id ?? null),
+    });
+
+    for (const c of connections) {
+      out.push({
+        id: `conn:${c.id}`,
+        search: `${c.name} ${c.host} ${c.database} connection`,
+        label: c.name,
+        detail: c.connected ? 'connected' : 'connect',
+        group: 'Connections',
+        icon: <IconDatabase size={12} />,
+        run: () => (c.connected ? openQueryTab(c.id) : connect(c.id)),
+      });
+    }
+
+    for (const q of saved) {
+      out.push({
+        id: `saved:${q.id}`,
+        search: `${q.folder ?? ''} ${q.name} ${q.sql}`,
+        label: q.name,
+        detail: q.folder ?? oneLine(q.sql, 50),
+        group: 'Saved queries',
+        icon: <IconPlay size={11} />,
+        run: () => openQueryTab(q.connectionId, q.sql, q.name),
+      });
+    }
+
+    // Tables come from whichever connections have been browsed, so the palette
+    // never blocks on a schema fetch just to open.
+    for (const [connectionId, tables] of Object.entries(schemaByConnection)) {
+      const conn = connections.find((c) => c.id === connectionId);
+      if (!conn?.connected) continue;
+      for (const t of tables) {
+        out.push({
+          id: `table:${connectionId}:${t.schema ?? ''}:${t.name}`,
+          search: `${t.name} ${t.schema ?? ''} ${conn.name} table`,
+          label: t.name,
+          detail: `${conn.name}${t.schema ? ` · ${t.schema}` : ''}`,
+          group: 'Tables',
+          icon: <IconTable size={11} />,
+          run: () => openTableTab(connectionId, { schema: t.schema, name: t.name }),
+        });
+      }
+    }
+
+    for (const h of history) {
+      out.push({
+        id: `history:${h.id}`,
+        search: h.sql,
+        label: oneLine(h.sql, 70),
+        detail: `${relativeTime(h.executedAt)}${h.connectionName ? ` · ${h.connectionName}` : ''}`,
+        group: 'History',
+        icon: h.succeeded ? <IconPlay size={11} /> : <IconWarning size={11} />,
+        danger: !h.succeeded,
+        run: () => openQueryTab(h.connectionId, h.sql),
+      });
+    }
+
+    return out;
+  }, [
+    connections,
+    saved,
+    history,
+    schemaByConnection,
+    openQueryTab,
+    openTableTab,
+    connect,
+    activeTab,
+    onShowShortcuts,
+  ]);
+
+  const RESULT_CAP = 60;
+  const { results, totalMatches } = useMemo(() => {
+    const ranked = fuzzyRank(items, query, (i) => i.search).map((r) => r.item);
+    return { results: ranked.slice(0, RESULT_CAP), totalMatches: ranked.length };
+  }, [items, query]);
+
+  // Clamp rather than reset, so narrowing the query does not always jump the
+  // selection back to the top.
+  useEffect(() => {
+    setCursor((c) => Math.min(c, Math.max(0, results.length - 1)));
+  }, [results.length]);
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${cursor}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [cursor]);
+
+  // `showModal` is what gives the platform focus trap, the top layer and the
+  // ::backdrop element. Mirrors `Modal` in components/ui.tsx.
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    if (open && !el.open) el.showModal();
+    if (!open && el.open) el.close();
+  }, [open]);
+
+  if (!open) return null;
+
+  function choose(item: Item | undefined) {
+    if (!item) return;
+    item.run();
+    onClose();
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setCursor((c) => (c + 1) % Math.max(1, results.length));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setCursor((c) => (c - 1 + results.length) % Math.max(1, results.length));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      choose(results[cursor]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose();
+    }
+  }
+
+  let lastGroup = '';
+
+  const activeId = results[cursor] ? `palette-item-${results[cursor].id}` : undefined;
+
+  return (
+    // A native <dialog>, like `Modal`. As a plain overlay div this trapped no
+    // focus, restored none on close, announced nothing to a screen reader, and
+    // bound Escape only to the input's onKeyDown — so Escape stopped working
+    // the moment focus moved anywhere else in the panel.
+    <dialog
+      ref={dialogRef}
+      aria-label="Command palette"
+      className="m-0 max-h-none max-w-none bg-transparent p-0"
+      style={{
+        width: '100vw',
+        height: '100vh',
+        // The scrim is the dialog's own backdrop; see the ::backdrop rule.
+        background: 'transparent',
+      }}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      // Backdrop dismissal on a native <dialog>; Escape goes through onCancel.
+      onClick={(e) => {
+        if (e.target === dialogRef.current) onClose();
+      }}
+      onKeyDown={onKeyDown}
+    >
+      <div className="flex h-full items-start justify-center pt-[12vh]">
+        <div
+          className="flex max-h-[60vh] w-full max-w-[92vw] flex-col overflow-hidden rounded-xl"
+          style={{
+            width: PALETTE_WIDTH,
+            background: 'var(--bg)',
+            border: '1px solid var(--border-strong)',
+            boxShadow: 'var(--shadow-modal)',
+          }}
+        >
+          <div
+            className="flex shrink-0 items-center gap-2 border-b px-3"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <IconSearch size={14} className="opacity-45" />
+            <input
+              className="flex-1 bg-transparent py-3 text-base outline-none"
+              style={{ color: 'var(--text)' }}
+              placeholder="Search queries, tables, connections…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+              role="combobox"
+              aria-expanded
+              aria-controls="palette-results"
+              aria-activedescendant={activeId}
+              aria-autocomplete="list"
+            />
+            <kbd
+              className="rounded px-1.5 py-0.5 text-2xs"
+              style={{ background: 'var(--bg-inset)', color: 'var(--text-faint)' }}
+            >
+              esc
+            </kbd>
+          </div>
+
+          <div
+            ref={listRef}
+            id="palette-results"
+            role="listbox"
+            aria-label="Results"
+            className="min-h-0 flex-1 overflow-y-auto py-1"
+          >
+            {results.length === 0 ? (
+              <p className="px-3 py-6 text-center text-sm" style={{ color: 'var(--text-faint)' }}>
+                Nothing matches “{query}”.
+              </p>
+            ) : (
+              results.map((item, i) => {
+                const showGroup = item.group !== lastGroup;
+                lastGroup = item.group;
+                const active = i === cursor;
+                return (
+                  <div key={item.id}>
+                    {showGroup && (
+                      <div
+                        className="px-3 pt-2 pb-1 text-2xs font-semibold uppercase tracking-wide"
+                        style={{ color: 'var(--text-faint)' }}
+                      >
+                        {item.group}
+                      </div>
+                    )}
+                    <div
+                      data-index={i}
+                      id={`palette-item-${item.id}`}
+                      // Listbox options are not tab stops: focus stays on the
+                      // combobox input, which owns arrows and Enter and names the
+                      // active option via aria-activedescendant.
+                      role="option"
+                      aria-selected={active}
+                      className="mx-1 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
+                      style={{
+                        background: active ? 'var(--accent)' : undefined,
+                        color: active ? 'var(--on-accent)' : undefined,
+                      }}
+                      onMouseEnter={() => setCursor(i)}
+                      onClick={() => choose(item)}
+                    >
+                      <span
+                        className="shrink-0"
+                        style={{
+                          color: active
+                            ? 'var(--on-accent-muted)'
+                            : item.danger
+                              ? 'var(--danger)'
+                              : 'var(--text-faint)',
+                        }}
+                      >
+                        {item.icon}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-base">{item.label}</span>
+                      {item.detail && (
+                        <span
+                          className="shrink-0 truncate text-xs"
+                          style={{
+                            maxWidth: '45%',
+                            color: active ? 'var(--on-accent-faint)' : 'var(--text-faint)',
+                          }}
+                        >
+                          {item.detail}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
+            {/* The list is capped because it is not virtualized. Applying that
+                silently let someone conclude their table simply was not there. */}
+            {totalMatches > results.length && (
+              <p className="px-3 pt-2 pb-1 text-xs" style={{ color: 'var(--text-faint)' }}>
+                Showing {results.length} of {totalMatches} matches — keep typing to narrow.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </dialog>
+  );
+}

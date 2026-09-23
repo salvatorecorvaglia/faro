@@ -1,0 +1,62 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Faro",
+  "version": "1.0.0",
+  "identifier": "app.faro.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Faro",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "A fast, clean SQL client",
+    "longDescription": "Faro is a cross-platform database client for PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB, ClickHouse and MongoDB. Connect, browse tables, run queries with autocomplete, edit data safely, import and export, and back up your databases \u2014 without installing any command-line tools.",
+    "publisher": "Faro",
+    "copyright": "MIT licensed",
+    "licenseFile": "../LICENSE",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/salvatorecorvaglia/faro/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1OTdEQ0ZBOURENzUxRTcKUldUblVkZWQrdHlYTlZSK3lYN3ppNGdCNFMwT05ybjQraXpUZytuald3Y28rQUhGeFF3cTc2VGEK",
+      "dialog": false
+    }
+  }
+}

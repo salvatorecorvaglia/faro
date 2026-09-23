@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+/*
+ * Faro's palette. Defined as CSS variables rather than Tailwind utilities so
+ * the same tokens can be used by CodeMirror's theme, which is configured in JS.
+ */
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  /*
+   * Type scale. Faro's UI sits a step below the browser default, and before
+   * these existed the components reached for arbitrary values — seven distinct
+   * hardcoded sizes between 10px and 13px, with no rule about which to use.
+   * Named steps so a size is a choice from a scale, not a guess.
+   */
+  --text-2xs: 0.625rem; /* 10px — badges, counts */
+  --text-xs: 0.6875rem; /* 11px — secondary and hint text */
+  --text-sm: 0.75rem; /* 12px — the default UI size */
+  --text-base: 0.8125rem; /* 13px — titles and the editor */
+
+  /*
+   * These steps set a size and nothing else.
+   *
+   * Tailwind pairs each of its built-in `text-*` steps with a line-height, so
+   * `text-sm` would set both. The sizes above are Faro's own, but the paired
+   * line-heights would still be Tailwind's — computed from *its* font sizes,
+   * not these — and they would land on the ~90 places that previously wrote
+   * a pixel size directly and set no line-height at all. Unsetting them keeps leading
+   * where each component already put it, so choosing a size stays one
+   * decision. Use `leading-*` where a component wants the other one.
+   */
+  --text-xs--line-height: initial;
+  --text-sm--line-height: initial;
+  --text-base--line-height: initial;
+}
+
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f7f8fa;
+  --bg-inset: #eef0f4;
+  --border: #dfe3ea;
+  --border-strong: #c6ccd8;
+  --text: #16191f;
+  --text-muted: #646c7a;
+  --text-faint: #99a1b0;
+  --accent: #2f6feb;
+  --accent-soft: #e6efff;
+  --danger: #d1373a;
+  --warning: #b06a00;
+  --success: #1f7a45;
+  --null: #a0a6b4;
+  --row-alt: #fafbfc;
+  --selection: #cfe0ff;
+
+  --syntax-keyword: #8b3dbd;
+  --syntax-string: #1f7a45;
+  --syntax-number: #b3541e;
+  --syntax-comment: #8a93a3;
+  --syntax-function: #2f6feb;
+  --syntax-type: #0d7377;
+  --syntax-operator: #646c7a;
+
+  /*
+   * Elevation and scrim. Previously every raised surface invented its own
+   * shadow inline, so the palette and the autocomplete popup did not match.
+   * `--on-accent` is the foreground for anything sitting on `--accent`; it was
+   * a hardcoded #fff in two places, which is wrong the moment the accent
+   * changes.
+   */
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 0.18);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.28);
+  --scrim: rgb(0 0 0 / 0.4);
+  --on-accent: #ffffff;
+  --on-accent-muted: rgb(255 255 255 / 0.85);
+  --on-accent-faint: rgb(255 255 255 / 0.7);
+}
+
+:root.dark {
+  --bg: #0f1319;
+  --bg-subtle: #151a22;
+  --bg-inset: #1c222c;
+  --border: #262d38;
+  --border-strong: #38414f;
+  --text: #e6eaf0;
+  --text-muted: #949cab;
+  --text-faint: #656d7b;
+  --accent: #5b9bff;
+  --accent-soft: #17263f;
+  --danger: #ef6b6e;
+  --warning: #e0a34a;
+  --success: #56c88a;
+  --null: #5b6373;
+  --row-alt: #121720;
+  --selection: #24385c;
+
+  --syntax-keyword: #c792ea;
+  --syntax-string: #7ed99a;
+  --syntax-number: #f0a86a;
+  --syntax-comment: #5f6979;
+  --syntax-function: #6cb6ff;
+  --syntax-type: #4fd1c5;
+  --syntax-operator: #949cab;
+
+  /* Deeper shadows and a heavier scrim: on a dark surface a soft shadow
+     disappears, so elevation has to be carried by contrast instead. */
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 0.5);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 0.6);
+  --scrim: rgb(0 0 0 / 0.6);
+  --on-accent: #ffffff;
+  --on-accent-muted: rgb(255 255 255 / 0.85);
+  --on-accent-faint: rgb(255 255 255 / 0.7);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  /* The app is a tool window, not a document; text selection outside inputs
+     and result cells reads as accidental. */
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+textarea,
+[contenteditable],
+.selectable {
+  user-select: text;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+/* Slim, unobtrusive scrollbars — a data grid otherwise loses real estate. */
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Keyboard focus stays visible; mouse focus does not add noise. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Native checkboxes and radios otherwise paint in the browser's own accent —
+   system blue on a surface that is not the system's. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none whitespace-nowrap;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .btn-ghost {
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--bg-inset);
+    color: var(--text);
+  }
+  .btn-outline {
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+  .btn-outline:hover:not(:disabled) {
+    background: var(--bg-inset);
+  }
+
+  .input {
+    @apply w-full rounded-md px-2.5 py-1.5 text-sm transition-colors;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .label {
+    @apply mb-1 block text-xs font-medium;
+    color: var(--text-muted);
+  }
+
+  .panel {
+    background: var(--bg-subtle);
+  }
+
+  /*
+   * The updater toast's entrance. Previously written as `animate-in fade-in
+   * slide-in-from-bottom-2`, which are `tailwindcss-animate` classes — a
+   * plugin this project never installed, so the toast just appeared with no
+   * transition at all.
+   */
+  .toast-in {
+    animation: toast-in 180ms ease-out;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/*
+ * Dialog scrim. Both `Modal` and the command palette are native <dialog>
+ * elements, so the overlay is the platform's ::backdrop rather than a
+ * hand-rolled fixed div — which is what lets the browser handle the top layer
+ * and inert the page behind.
+ */
+dialog::backdrop {
+  background: var(--scrim);
+}

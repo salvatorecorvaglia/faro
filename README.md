@@ -1,0 +1,169 @@
+# Faro ⚓
+
+**Fast, clean, cross-platform database client**
+
+**Faro** is a lightweight, high-performance desktop application that provides a unified, intuitive interface to connect, query, edit, import/export, and manage relational, analytical, and document databases without requiring external command-line utilities.
+
+---
+
+## ✨ Features
+
+- ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes, automatic protocol fallback probing (`Prefer` HTTPS to HTTP), and custom CA/client certificate authentication.
+- 🛡️ **Read-Only Mode & Safety**: Enhanced SQL statement parser and validator for strict connection-level read-only enforcement, preventing accidental data mutations or destructive DDL queries on production environments.
+- 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`) with dynamic runtime re-probing and synchronized session fallback handling.
+- 📝 **Advanced SQL Editor & Command Palette**: Built with CodeMirror 6 featuring schema-aware autocompletion, configurable per-tab row limits, query formatting (`sql-formatter`), multi-query execution, and a keyboard-first Command Palette (`Cmd+K` / `Ctrl+K`).
+- 📊 **Virtualized Data Grid & High Precision**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, dirty-state protection against accidental navigation loss, high-precision `BigDecimal` numerical decoding with normalized zero-stripping formatting, dynamic filtering, and column sorting.
+- 📂 **Flexible Import, Export & Transfer**: Streamed exports and batched imports (bounded chunk processing for large CSV/TSV files with background cancellation support, formula injection sanitization, and pre-import confirmation prompts), Excel (`.xlsx`), JSON, and raw SQL dumps.
+- ⚙️ **Embedded Databases**: Full zero-config support for embedded SQLite (`rusqlite`) and analytical DuckDB (`duckdb-rs`) workloads directly inside the client process.
+- 🔄 **Automatic Application Updates**: Built-in update notifications and one-click upgrades powered by `tauri-plugin-updater` with native toast animations.
+- 🎨 **Modern Interface**: Designed with Tailwind CSS v4 and dynamic resizable panels (`react-resizable-panels`) for an uncluttered user experience.
+
+---
+
+## 🗄️ Supported Database Engines
+
+| Database Engine | Type | Connection Protocol / Driver | Test Suite Port |
+| :--- | :--- | :--- | :--- |
+| **PostgreSQL** | Relational | Native (`sqlx-postgres`) | `55432` |
+| **MySQL** | Relational | Native (`sqlx-mysql`) | `53306` |
+| **MariaDB** | Relational | Native (`sqlx-mysql`) | `53307` |
+| **SQLite** | Embedded Relational | Bundled (`rusqlite` / `sqlx-sqlite`) | Local file |
+| **DuckDB** | Embedded Analytical | Bundled (`duckdb-rs`) | Local file |
+| **MongoDB** | Document / NoSQL | Native (`mongodb` Rust driver + BSON parser) | `57017` |
+| **ClickHouse** | Analytical Columnar | HTTP Interface (`reqwest`) | `58123` |
+| **SQL Server (MSSQL)** | Relational | Native TDS (`tiberius` with `native-tls` + `bb8`) | `51433` |
+
+> **SQL Server read-only mode, specifically:** Faro's read-only setting is enforced two ways — its own SQL statement validator, and (where the engine supports it) a server-side session flag. For SQL Server that flag is `ApplicationIntent=ReadOnly`, which Azure SQL Database and an Always On availability group both enforce server-side, but a **standalone** SQL Server instance — including the one in this project's own test containers — silently ignores it and accepts writes anyway. Against a standalone instance, Faro's own statement validator is the only thing actually preventing a write; every other supported engine additionally rejects writes at the server itself.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+Ensure you have the following installed on your machine:
+
+- **Node.js**: `v20.0.0` or higher (v22 recommended)
+- **pnpm**: `v11.23.0`+ (`corepack enable` or `npm i -g pnpm`)
+- **Rust Toolchain**: `1.85`+ (`rustup update stable`)
+- **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk-4.1-dev`, or Windows C++ Build Tools).
+
+### Installation & Local Development
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/salvatorecorvaglia/faro.git
+   cd faro
+   ```
+
+2. **Install frontend dependencies**:
+   ```bash
+   pnpm install
+   ```
+
+3. **Launch Faro in development mode**:
+   ```bash
+   pnpm tauri dev
+   ```
+   *This starts the Vite development server on `http://localhost:1420` and launches the native desktop client window with Hot Module Replacement (HMR).*
+
+---
+
+## 🧪 Testing & Verification
+
+Faro includes a Docker Compose environment containing pre-configured instances of all supported database engines for end-to-end integration testing.
+
+### Running Test Databases
+
+1. **Spin up the test containers**:
+   ```bash
+   docker compose -f tests/docker-compose.test.yml up -d
+   ```
+
+2. **Seed the database fixtures**:
+   ```bash
+   ./scripts/seed.sh
+   ```
+
+### Running Test Suites
+
+- **Run Frontend Tests (Vitest)** (*located in `tests/`*):
+  ```bash
+  pnpm test
+  ```
+
+- **Run Backend Integration Tests (Rust)** (*located in `src-tauri/tests/`*):
+  ```bash
+  # Run all Rust unit and integration tests (includes DuckDB and live driver tests in live_engines.rs)
+  cargo test --manifest-path src-tauri/Cargo.toml
+
+  # Fast iteration mode (skips compiling bundled DuckDB C++ amalgamation)
+  cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
+  ```
+
+- **Linting & Code Quality**:
+  ```bash
+  # Check TypeScript types
+  pnpm typecheck
+
+  # Lint frontend & configuration files with Biome
+  pnpm lint
+
+  # Format frontend files automatically
+  pnpm format
+
+  # Check Rust formatting and clippy lints (matches what CI enforces)
+  cargo fmt --check --manifest-path src-tauri/Cargo.toml
+  cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
+
+  # Faster local iteration: skips compiling the bundled DuckDB C++ amalgamation,
+  # but does not cover the duckdb-engine code path that CI lints
+  cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
+  ```
+
+---
+
+## 💻 Platform-Specific Installation Notes
+
+### macOS
+
+Since pre-built release binaries may not be notarized with an Apple Developer certificate, macOS Gatekeeper may block the app or display a warning saying **`"Faro" is damaged and can't be opened`** (*`"Faro" è danneggiato e non può essere aperto`*).
+
+To resolve this and allow Faro to open:
+
+1. **Remove Quarantine Attribute** (Recommended):
+   Open Terminal and run:
+   ```bash
+   xattr -cr /Applications/Faro.app
+   ```
+   *(If the app is in your Downloads folder, use `xattr -cr ~/Downloads/Faro.app` instead).*
+
+2. **Alternative (First Launch via Finder)**:
+   - Locate `Faro.app` in `Finder`.
+   - Right-click (or Control-click) the application icon and choose **Open**.
+   - Click **Open** in the confirmation dialog.
+
+### Windows
+If Windows SmartScreen blocks execution of unsigned binaries, click **More info** and then choose **Run anyway**.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## 📜 Changelog
+
+Detailed release history and version changes can be found in [CHANGELOG.md](CHANGELOG.md).
+
+## 🔐 Security
+
+If you discover a security vulnerability, please see our [Security Policy](SECURITY.md).
+
+## 📝 License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+
+---
+
+**Author**: [Salvatore Corvaglia](https://github.com/salvatorecorvaglia)

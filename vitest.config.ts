@@ -1,0 +1,50 @@
+import path from 'node:path';
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  // The React plugin is what compiles JSX in `.test.tsx` files.
+  plugins: [react() as never],
+  resolve: {
+    alias: { '@': path.resolve(import.meta.dirname, 'src') },
+  },
+  test: {
+    // jsdom rather than node: component tests need a DOM, and the previous
+    // `node` environment plus a `.test.ts`-only glob meant a `.test.tsx` file
+    // could not even be collected — so there were no component tests at all.
+    environment: 'jsdom',
+    include: ['tests/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
+    setupFiles: ['src/test/setup.ts'],
+    // Each file gets a fresh module registry so a zustand store mutated by one
+    // test cannot leak into the next. The stores are module-level singletons,
+    // which is convenient in the app and a shared-state hazard in tests.
+    isolate: true,
+    restoreMocks: true,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/test/**',
+        'src/vite-env.d.ts',
+        'src/main.tsx',
+        'tests/**',
+      ],
+      // A ratchet, not a target.
+      //
+      // CI generated coverage and threw it away: no threshold, no upload, no
+      // gate — so the numbers existed for nobody and could fall without anyone
+      // noticing. These sit just under where the suite actually stands, so they
+      // catch a regression without blocking work on the day they land. Raise
+      // them as the untested areas get covered rather than picking a round
+      // number now and suppressing it later.
+      thresholds: {
+        statements: 80,
+        branches: 73,
+        functions: 74,
+        lines: 82,
+      },
+    },
+  },
+});

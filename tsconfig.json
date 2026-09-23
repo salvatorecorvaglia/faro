@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": true,
+    // Type-only imports must say so. With `isolatedModules` the bundler erases
+    // imports one file at a time, so a value import used only as a type is a
+    // runtime import of a module that may have side effects — or, for a Tauri
+    // command module, one that need not have been loaded at all.
+    "verbatimModuleSyntax": true,
+
+    // The contract tests read `lib.rs` and `types.ts` off disk to compare them,
+    // which needs the node built-ins. Naming node explicitly rather than
+    // leaving `types` unset, so what is in scope is a decision rather than
+    // whatever happens to be installed under `@types`.
+    "types": ["node"],
+
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["src", "tests"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}

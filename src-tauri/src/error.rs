@@ -1,0 +1,182 @@
+use serde::Serialize;
+
+pub type Result<T> = std::result::Result<T, FaroError>;
+
+/// Errors surfaced to the UI.
+///
+/// These serialize to a tagged JSON object rather than a bare string so the
+/// frontend can react differently to, say, a bad password versus a syntax
+/// error, and so a database's own message survives intact.
+#[derive(Debug, thiserror::Error)]
+pub enum FaroError {
+    #[error("could not connect: {0}")]
+    Connection(String),
+
+    /// A database-reported error. `message` is the engine's own words, which
+    /// are almost always more useful than anything Faro could paraphrase.
+    #[error("{message}")]
+    Database {
+        message: String,
+        code: Option<String>,
+    },
+
+    #[error("no connection is open with id {0}")]
+    NotConnected(String),
+
+    /// A write was attempted on a connection the user marked read-only.
+    ///
+    /// Its own variant rather than `Other` so the UI can present it as a setting
+    /// the user chose and can change, not as a database failure. Built through
+    /// [`FaroError::read_only`] so the wording stays identical wherever a write
+    /// is refused.
+    #[error("{0}")]
+    ReadOnly(String),
+
+    /// The user stopped a query, an export or a backup.
+    ///
+    /// Worded carefully because the cancellation is client-side: the row stream
+    /// is abandoned and the connection released, but no engine is sent an
+    /// out-of-band cancel, so the server goes on executing the statement until
+    /// it finishes on its own. Saying a bare "cancelled" implied Faro had
+    /// stopped the work on the database too, which it has not — and someone
+    /// who cancelled a runaway `UPDATE` deserves to know it is still running.
+    #[error(
+        "Stopped. Faro is no longer waiting for this statement, but the database \
+         may still be running it until it finishes on its own."
+    )]
+    Cancelled,
+
+    #[error("{0} support is not implemented yet")]
+    UnsupportedEngine(String),
+
+    #[error("could not read or write saved settings: {0}")]
+    Store(String),
+
+    #[error("could not reach the system keychain: {0}")]
+    Keychain(String),
+
+    #[error("invalid SQL: {0}")]
+    Sql(String),
+
+    #[error("{0}")]
+    Io(String),
+
+    #[error("{0}")]
+    Other(String),
+}
+
+impl FaroError {
+    /// Refuse a write because the connection is open read-only.
+    ///
+    /// `rejected` names the statement that was turned away, when there is one
+    /// worth quoting — being told *what* was refused is the difference between a
+    /// useful message and a puzzling one when a script has twenty statements.
+    pub fn read_only(connection: &str, rejected: Option<&str>) -> Self {
+        let mut message = format!(
+            "\"{connection}\" is open read-only, so nothing can be written to it. \
+             Turn off \"Open read-only\" in the connection settings to make changes."
+        );
+        if let Some(sql) = rejected {
+            message.push_str(&format!("\n\nRefused: {}", truncate(sql, 80)));
+        }
+        FaroError::ReadOnly(message)
+    }
+
+    /// Short machine-readable discriminant for the frontend.
+    fn kind(&self) -> &'static str {
+        match self {
+            FaroError::Connection(_) => "connection",
+            FaroError::Database { .. } => "database",
+            FaroError::NotConnected(_) => "notConnected",
+            FaroError::ReadOnly(_) => "readOnly",
+            FaroError::Cancelled => "cancelled",
+            FaroError::UnsupportedEngine(_) => "unsupportedEngine",
+            FaroError::Store(_) => "store",
+            FaroError::Keychain(_) => "keychain",
+            FaroError::Sql(_) => "sql",
+            FaroError::Io(_) => "io",
+            FaroError::Other(_) => "other",
+        }
+    }
+}
+
+/// First line of `sql`, capped at `max` characters.
+///
+/// Counts characters rather than bytes: slicing a multi-byte character in half
+/// would panic, and a statement full of non-ASCII text is perfectly ordinary.
+fn truncate(sql: &str, max: usize) -> String {
+    let line = sql.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= max {
+        return line.to_string();
+    }
+    line.chars().take(max).collect::<String>() + "…"
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SerializedError {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+}
+
+impl Serialize for FaroError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let code = match self {
+            FaroError::Database { code, .. } => code.clone(),
+            _ => None,
+        };
+        SerializedError {
+            kind: self.kind(),
+            message: self.to_string(),
+            code,
+        }
+        .serialize(s)
+    }
+}
+
+impl From<sqlx::Error> for FaroError {
+    fn from(e: sqlx::Error) -> Self {
+        match &e {
+            // Preserve SQLSTATE so the UI can tell "relation does not exist"
+            // from "permission denied" without string matching.
+            sqlx::Error::Database(db) => FaroError::Database {
+                message: db.message().to_string(),
+                code: db.code().map(|c| c.to_string()),
+            },
+            sqlx::Error::PoolTimedOut => {
+                FaroError::Connection("timed out waiting for a free connection".into())
+            }
+            sqlx::Error::Io(io) => FaroError::Connection(io.to_string()),
+            _ => FaroError::Database {
+                message: e.to_string(),
+                code: None,
+            },
+        }
+    }
+}
+
+impl From<rusqlite::Error> for FaroError {
+    fn from(e: rusqlite::Error) -> Self {
+        FaroError::Store(e.to_string())
+    }
+}
+
+impl From<keyring::Error> for FaroError {
+    fn from(e: keyring::Error) -> Self {
+        FaroError::Keychain(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for FaroError {
+    fn from(e: std::io::Error) -> Self {
+        FaroError::Io(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for FaroError {
+    fn from(e: serde_json::Error) -> Self {
+        FaroError::Other(e.to_string())
+    }
+}

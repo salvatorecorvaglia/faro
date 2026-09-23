@@ -1,0 +1,107 @@
+# Dependencies & Package Managers
+node_modules/
+.pnpm-store/
+
+# Build Outputs & Caches
+dist/
+dist-isolation/
+.vite/
+.cache/
+*.tsbuildinfo
+
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/
+**/*.rs.bk
+
+# Tauri Mobile Icons (Faro is desktop-only)
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# Tauri updater private keys & secrets
+*.key
+*.pub
+**/tauri-updater.key
+**/tauri-updater.pub
+
+# Databases & Local Storage
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.duckdb.wal
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+scratch/
+tests/fixtures/
+
+# Test Artifacts & Coverage
+coverage/
+.vitest/
+.biome_cache/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Local Overrides
+.env
+.env.*
+.env.local
+.env.*.local
+*.local
+!.env.example
+!.env.template
+
+# IDEs, Editors & Temp Files
+.vscode/
+.idea/
+.zed/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.sublime-project
+*.sublime-workspace
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+.Spotlight-V100
+.Trashes
+
+# AI Tools & Agents
+.openai/
+.chatgpt/
+gpt-config.json
+openai.config.json
+.anthropic/
+.claude/
+claude.config.json
+claude-settings.json
+.prompts/
+.prompt-cache/
+.ai/
+.gemini/
+.antigravity/
+.antigravitycli/
+.copilot/
+.codex/
+.cagent/
+.cursor/
+.windsurf/
+.cline/
+CLAUDE.md

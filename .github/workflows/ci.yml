@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+env:
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend (Lint, Typecheck & Test)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert a single CodeMirror view
+        run: |
+          # Counts what is actually linked into the tree, not what happens to
+          # be left in the pnpm store, so a stale store entry is not a failure.
+          found=$(pnpm ls @codemirror/view --depth=Infinity \
+            | grep -oE '@codemirror/view@[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
+          count=$(printf '%s\n' "$found" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "Expected exactly one @codemirror/view, found $count:"
+            printf '%s\n' "$found"
+            echo "Align package.json with the override in pnpm-workspace.yaml."
+            exit 1
+          fi
+          echo "Single CodeMirror view: $found"
+
+      - name: Biome Lint
+        run: pnpm lint
+
+      - name: TypeScript Check
+        run: pnpm typecheck
+
+      - name: Vitest Unit Tests
+        run: pnpm test:coverage
+
+      - name: Frontend Build
+        run: pnpm build
+
+  rust-lint:
+    name: Rust (Fmt & Clippy)
+    runs-on: ubuntu-24.04
+    env:
+      RUSTC_WRAPPER: ""
+      SCCACHE_GHA_ENABLED: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo Manifest And Lock Agree
+        run: cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml > /dev/null
+
+      - name: Cargo Format Check
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Cargo Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
+
+  rust-test:
+    name: Rust Integration Tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
+
+      - name: Start Test Database Services
+        run: docker compose -f tests/docker-compose.test.yml up -d --wait --wait-timeout 300
+
+      - name: Seed Test Databases
+        run: ./scripts/seed.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Run Rust Integration Tests
+        env:
+          FARO_REQUIRE_LIVE: "1"
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  rust-unit:
+    name: Rust Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cargo Unit Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm Audit
+        run: pnpm audit --audit-level high
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Cargo Audit
+        run: cargo audit --file src-tauri/Cargo.lock
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+
