@@ -86,80 +86,30 @@ pub struct ClickHouseDriver {
 
 impl ClickHouseDriver {
     pub async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
-        let port = if config.port == 0 { 8123 } else { config.port };
-        let ssl_mode = config.ssl_mode;
-
-        // Faro authenticates with HTTP Basic, so the scheme decides whether the
-        // password crosses the network in the clear.
-        //
-        // `Prefer` is the default mode, and it used to mean plain http here —
-        // so a default connection to a remote ClickHouse sent the password in
-        // the clear. On every other engine `Prefer` means "encrypt if the
-        // server will, without authenticating it", and there is no reason this
-        // one should be the exception. ClickHouse cannot upgrade an existing
-        // connection the way the wire protocols do, so the equivalent is to try
-        // https first and fall back to http only if that fails.
-        let attempts: &[&str] = match ssl_mode {
-            SslMode::Disable => &["http"],
-            SslMode::Prefer => &["https", "http"],
-            _ => &["https"],
+        let port = if config.port == 0 {
+            match config.ssl_mode {
+                SslMode::Disable => 8123,
+                _ => 8443,
+            }
+        } else {
+            config.port
         };
-
-        let has_password = password.is_some_and(|p| !p.is_empty());
-
-        let mut last_error = None;
-        for scheme in attempts {
-            // Falling back to plaintext is a decision about credentials, not a
-            // connection detail.
-            //
-            // Faro authenticates with HTTP Basic, so an `http` attempt puts the
-            // password on the wire in the clear. `Prefer` promises "encrypt if
-            // the server will" — it does not promise to hand over the password
-            // regardless — so when https is refused and there is a password to
-            // lose, this stops and says so rather than quietly downgrading.
-            // Choosing `Disable` is how the user says they meant it.
-            if *scheme == "http" && has_password && config.ssl_mode != SslMode::Disable {
-                return Err(FaroError::Connection(
-                    "This ClickHouse server refused HTTPS, and Faro authenticates with HTTP \
-                     Basic — continuing would send the password over the network in the clear. \
-                     Set this connection's SSL mode to \"Disable\" if that is what you want."
-                        .into(),
-                ));
-            }
-
-            let driver = Self::build(config, password, scheme, port)?;
-            // Proves the host, the scheme and the credentials in one round trip,
-            // rather than surfacing any of them on the user's first query.
-            match driver.ping().await {
-                Ok(()) => return Ok(driver),
-                Err(e) => last_error = Some(e),
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| {
-            FaroError::Connection("could not reach the ClickHouse HTTP interface".into())
-        }))
+        let driver = Self::build(config, password, scheme_for(config.ssl_mode), port)?;
+        // Proves the host, the scheme and the credentials in one round trip,
+        // rather than surfacing any of them on the user's first query.
+        driver.ping().await?;
+        Ok(driver)
     }
 
-    /// One configured client for one scheme. Split out so `connect` can try
-    /// more than one without duplicating the setup.
     fn build(
         config: &ConnectionConfig,
         password: Option<&str>,
         scheme: &str,
         port: u16,
     ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .connect_timeout(std::time::Duration::from_secs(15));
-
-        // `Require` means "encrypt, do not authenticate", and `Prefer` promises
-        // no authentication either — so neither validates the certificate. The
-        // Verify modes get reqwest's default, which checks the chain against
-        // the platform trust store.
-        if matches!(config.ssl_mode, SslMode::Require | SslMode::Prefer) {
-            builder = builder.danger_accept_invalid_certs(true);
-        }
 
         let http = builder
             .build()
@@ -284,6 +234,15 @@ impl ClickHouseDriver {
 
     fn literal(&self, text: &str) -> String {
         self.dialect.literal(&Value::Text(text.to_string()))
+    }
+}
+
+// ClickHouse cannot upgrade HTTP to HTTPS. A failed TLS handshake must not
+// downgrade a later query or its Basic credentials to plaintext.
+fn scheme_for(mode: SslMode) -> &'static str {
+    match mode {
+        SslMode::Disable => "http",
+        _ => "https",
     }
 }
 
@@ -631,9 +590,8 @@ fn decode_value(cell: Option<&serde_json::Value>, type_name: &str) -> Value {
 /// `Value::Decimal` is rendered into generated SQL verbatim, unescaped, on the
 /// premise that a decimal is always just digits — see `Value::to_sql_literal`.
 /// That premise holds for a value ClickHouse actually produced, but this text
-/// comes straight from the HTTP response body: a compromised server, or a
-/// MITM under `SslMode::Require` (which does not verify the certificate),
-/// could return anything here. Checked before trusting it as a bare literal;
+/// comes straight from the HTTP response body: a compromised server could
+/// return anything here. Checked before trusting it as a bare literal;
 /// anything else falls back to `Value::Text`, which is quoted and escaped.
 fn looks_numeric(s: &str) -> bool {
     let s = s.strip_prefix('-').unwrap_or(s);
@@ -694,6 +652,19 @@ fn decode_string(s: &str, inner: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_explicit_disable_uses_plain_http() {
+        assert_eq!(scheme_for(SslMode::Disable), "http");
+        for mode in [
+            SslMode::Prefer,
+            SslMode::Require,
+            SslMode::VerifyCa,
+            SslMode::VerifyFull,
+        ] {
+            assert_eq!(scheme_for(mode), "https");
+        }
+    }
 
     #[test]
     fn identifiers_use_backticks_and_escape_them() {

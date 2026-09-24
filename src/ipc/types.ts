@@ -22,7 +22,8 @@ export type Engine =
  * `require` encrypts but accepts any certificate, so it does not protect
  * against a man-in-the-middle. `verifyCa` and `verifyFull` validate the
  * server's certificate and are what a connection over an untrusted network
- * should use.
+ * should use. ClickHouse verifies the certificate and hostname in every mode
+ * except `disable`.
  */
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull';
 

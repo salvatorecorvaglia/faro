@@ -43,7 +43,7 @@ impl Engine {
             Engine::CockroachDb => 26257,
             Engine::MySql | Engine::MariaDb => 3306,
             Engine::SqlServer => 1433,
-            Engine::ClickHouse => 8123,
+            Engine::ClickHouse => 8443,
             Engine::MongoDb => 27017,
             // File-backed engines have no port.
             Engine::Sqlite | Engine::DuckDb => 0,
@@ -96,6 +96,9 @@ impl Engine {
 /// for the self-signed certificates every local container ships with, and the
 /// wrong one for anything over a network you do not control — which is why
 /// `VerifyFull` exists and is what a production connection should use.
+/// ClickHouse is stricter: every mode except `Disable` verifies the certificate
+/// and hostname because its HTTP transport cannot safely downgrade after a
+/// failed TLS handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum SslMode {

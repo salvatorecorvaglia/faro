@@ -40,11 +40,16 @@ function readOnlyHint(engine: Engine): string {
 /**
  * What each SSL mode actually promises.
  *
- * `Prefer` is the default and the one worth being explicit about: it encrypts
- * only if the server offers it and never authenticates the server, so it is not
- * a substitute for the Verify modes on a network you do not control.
+ * ClickHouse requires verified HTTPS in every mode except Disable because its
+ * HTTP protocol cannot negotiate a safe fallback. Other engines retain their
+ * protocol-specific meanings for Prefer and Require.
  */
-function sslHint(mode: SslMode): string | undefined {
+function sslHint(mode: SslMode, engine: Engine): string | undefined {
+  if (engine === 'clickhouse') {
+    return mode === 'disable'
+      ? 'Uses HTTP (usually port 8123); credentials cross the network in the clear'
+      : 'Requires HTTPS (usually port 8443) and checks both the certificate chain and hostname';
+  }
   switch (mode) {
     case 'prefer':
       return 'Encrypts only if the server offers it, and never checks the certificate';
@@ -295,15 +300,21 @@ export function ConnectionDialog({
                 </Field>
               </div>
               <div className="w-40">
-                <Field label="SSL" hint={sslHint(config.sslMode)}>
+                <Field label="SSL" hint={sslHint(config.sslMode, config.engine)}>
                   <select
                     className="input"
                     value={config.sslMode}
                     onChange={(e) => patch({ sslMode: e.target.value as SslMode })}
                   >
-                    <option value="prefer">Prefer</option>
-                    <option value="require">Require (no verification)</option>
-                    <option value="verifyCa">Verify CA</option>
+                    <option value="prefer">
+                      {config.engine === 'clickhouse' ? 'Prefer (verified HTTPS)' : 'Prefer'}
+                    </option>
+                    <option value="require">
+                      {config.engine === 'clickhouse' ? 'Require' : 'Require (no verification)'}
+                    </option>
+                    <option value="verifyCa">
+                      {config.engine === 'clickhouse' ? 'Verify CA and host' : 'Verify CA'}
+                    </option>
                     <option value="verifyFull">Verify full</option>
                     <option value="disable">Disable</option>
                   </select>
