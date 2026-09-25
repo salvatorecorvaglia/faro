@@ -1,4 +1,4 @@
-# Contributing to Faro ⚓
+# Contributing to Faro 🗼
 
 Thank you for your interest in contributing to **Faro**! We welcome contributions, bug reports, feature requests, and security improvements from the community.
 
@@ -179,4 +179,4 @@ Backend integration tests live in `src-tauri/tests/` (including live database en
 
 ---
 
-Happy coding! ⚓
+Happy coding! 🗼

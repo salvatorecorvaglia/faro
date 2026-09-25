@@ -1,4 +1,4 @@
-# Faro ⚓
+# Faro 🗼
 
 **Fast, clean, cross-platform database client**
 
