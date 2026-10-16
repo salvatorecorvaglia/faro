@@ -618,7 +618,10 @@ async fn a_row_with_a_binary_primary_key_can_be_edited_through_its_stored_value(
         .await
         .unwrap();
     let uid = read.rows[0][0].clone();
-    assert!(matches!(uid, Value::Bytes(_)), "{uid:?}");
+    assert!(
+        matches!(uid, Value::Bytes(_)),
+        "the stored primary key did not come back as bytes"
+    );
 
     let affected = apply(
         &*d,

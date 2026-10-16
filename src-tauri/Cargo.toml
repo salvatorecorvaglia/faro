@@ -51,7 +51,7 @@ sqlx = { version = "0.9", default-features = false, features = [
 
 # Pinned to 0.39: it shares libsqlite3-sys 0.37 with sqlx-sqlite. rusqlite 0.40
 # requires 0.38, and two crates cannot both link the native sqlite3 library.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 # The default "v1" feature pulls in the native store for each platform:
 # Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 keyring = "4"
@@ -88,7 +88,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "q
 
 # SQL Server. tiberius is not sqlx: it has no pool of its own and needs a
 # tokio-util compat layer over the socket, so bb8 supplies the pooling.
-tiberius = { version = "0.13.0", default-features = false, features = ["native-tls", "tds73", "chrono"] }
+tiberius = { version = "0.12", default-features = false, features = ["native-tls", "tds73", "chrono"] }
 bb8 = "0.9"
 bb8-tiberius = "0.16"
 
