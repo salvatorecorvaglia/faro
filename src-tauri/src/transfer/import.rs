@@ -284,8 +284,8 @@ fn sniff_delimiter(path: &Path) -> Result<u8> {
 
 /// The delimiter a line of text uses; see [`sniff_delimiter`].
 fn delimiter_of(head: &[u8]) -> u8 {
-    const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
-    let mut counts = [0usize; 4];
+    const CANDIDATES: &[u8] = b",;\t|";
+    let mut counts = [0usize; CANDIDATES.len()];
     let mut in_quotes = false;
     for &b in head {
         match b {
