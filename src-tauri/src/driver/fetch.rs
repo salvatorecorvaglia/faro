@@ -30,8 +30,12 @@ use crate::error::{FaroError, Result};
 use crate::model::{ColumnInfo, ResultSet, Value};
 
 /// Generate a capped `fetch` for one sqlx pool type.
+///
+/// `$query` builds the statement: `sqlx::query` (the extended protocol, which
+/// returns binary values) or `sqlx::raw_sql` (the simple protocol, which
+/// returns every value as the engine's own text).
 macro_rules! impl_fetch_capped {
-    ($name:ident, $pool:ty, $decode:path) => {
+    ($name:ident, $pool:ty, $decode:path, $query:path) => {
         /// Run `sql` and collect at most `limit` rows.
         ///
         /// The statement is passed through untouched, so anything the engine
@@ -54,7 +58,7 @@ macro_rules! impl_fetch_capped {
             // Checked out up front rather than letting `fetch(pool)` do it, so a
             // cancel cannot land mid-checkout — see `pool::acquire`.
             let mut conn = crate::driver::pool::acquire(pool, &cancel).await?;
-            let mut stream = sqlx::query(sqlx::AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
+            let mut stream = $query(sqlx::AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
 
             let mut columns: Vec<ColumnInfo> = Vec::new();
             let mut rows: Vec<Vec<Value>> = Vec::new();
@@ -127,18 +131,26 @@ macro_rules! impl_fetch_capped {
     };
 }
 
+// Postgres runs user SQL over the simple protocol, so every column arrives as
+// Postgres's own text: sqlx's binary decoding knows a fixed set of built-in
+// types, and an enum, an interval, an `inet`, a range, most arrays or any
+// extension type (PostGIS, hstore…) came back as `Unsupported`. See
+// `postgres::decode_text`.
 impl_fetch_capped!(
     fetch_capped_pg,
     sqlx::PgPool,
-    crate::driver::postgres::decode_value
+    crate::driver::postgres::decode_value,
+    sqlx::raw_sql
 );
 impl_fetch_capped!(
     fetch_capped_mysql,
     sqlx::MySqlPool,
-    crate::driver::mysql::decode_value
+    crate::driver::mysql::decode_value,
+    sqlx::query
 );
 impl_fetch_capped!(
     fetch_capped_sqlite,
     sqlx::SqlitePool,
-    crate::driver::sqlite::decode_value
+    crate::driver::sqlite::decode_value,
+    sqlx::query
 );

@@ -586,3 +586,66 @@ async fn the_engine_refuses_writes_on_a_read_only_connection_too() {
 
     assert_eq!(count(&*d, "authors").await, before, "the row was deleted");
 }
+
+// -- Exact keys ---------------------------------------------------------------
+
+#[tokio::test]
+async fn a_row_with_a_binary_primary_key_can_be_edited_through_its_stored_value() {
+    // The key used to travel as its display text, `[16 B]`, which no row has —
+    // so a table keyed on bytes (a BINARY(16) UUID, say) could not be edited.
+    let f = fixture_or_skip!("binary_key");
+    let d = open(&f).await;
+    d.execute(
+        "CREATE TABLE devices (uid BLOB PRIMARY KEY, name TEXT)",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    d.execute(
+        "INSERT INTO devices VALUES (X'00112233445566778899aabbccddeeff', 'old'), (X'ff', 'other')",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    // What the grid now sends: the key exactly as it was read back.
+    let read = d
+        .query(
+            "SELECT uid FROM devices WHERE name = 'old'",
+            1,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let uid = read.rows[0][0].clone();
+    assert!(matches!(uid, Value::Bytes(_)), "{uid:?}");
+
+    let affected = apply(
+        &*d,
+        "devices",
+        &[PendingChange::Update {
+            key: vec![CellEdit {
+                column: "uid".into(),
+                value: EditValue::Stored(uid),
+            }],
+            cells: vec![cell("name", "renamed")],
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(affected, 1);
+    assert_eq!(
+        scalar(&*d, "SELECT name FROM devices WHERE uid = X'ff'").await,
+        Value::Text("other".into()),
+        "the other row was touched"
+    );
+    assert_eq!(
+        scalar(
+            &*d,
+            "SELECT name FROM devices WHERE uid = X'00112233445566778899aabbccddeeff'"
+        )
+        .await,
+        Value::Text("renamed".into())
+    );
+}

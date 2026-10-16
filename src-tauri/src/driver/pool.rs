@@ -28,26 +28,59 @@ type ConnectOptions<DB> = <<DB as Database>::Connection as Connection>::Options;
 /// to the user. Splitting catalog reads onto their own connection means
 /// schema browsing and autocomplete stay responsive while a long user query
 /// runs on the other one.
+///
+/// `session_init`, when set, runs on every connection the *session* pool
+/// opens — not once after connecting. A pool replaces a connection that
+/// breaks, and a setting applied a single time silently disappears with the
+/// connection it was applied to. MySQL's `SET SESSION TRANSACTION READ ONLY`
+/// is the case this exists for.
 pub(crate) async fn dual_pool<DB>(
     options: ConnectOptions<DB>,
     acquire_timeout: Option<std::time::Duration>,
+    session_init: Option<&'static str>,
 ) -> Result<(Pool<DB>, Pool<DB>)>
 where
     DB: Database,
     ConnectOptions<DB>: Clone,
+    for<'c> &'c mut DB::Connection: sqlx::Executor<'c, Database = DB>,
 {
-    let pool = one::<DB>(options.clone(), acquire_timeout).await?;
-    let meta = one::<DB>(options, acquire_timeout).await?;
+    let pool = one::<DB>(options.clone(), acquire_timeout, session_init).await?;
+    let meta = one::<DB>(options, acquire_timeout, None).await?;
     Ok((pool, meta))
 }
 
-async fn one<DB: Database>(
+async fn one<DB>(
     options: ConnectOptions<DB>,
     acquire_timeout: Option<std::time::Duration>,
-) -> Result<Pool<DB>> {
-    let mut builder = sqlx::pool::PoolOptions::<DB>::new().max_connections(1);
+    init: Option<&'static str>,
+) -> Result<Pool<DB>>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: sqlx::Executor<'c, Database = DB>,
+{
+    let mut builder = sqlx::pool::PoolOptions::<DB>::new()
+        .max_connections(1)
+        // Never retire the connection on a timer.
+        //
+        // sqlx's defaults close an idle connection after 10 minutes and any
+        // connection after 30. With one connection holding the user's
+        // session, that silently discarded it: an open `BEGIN` was rolled
+        // back by the server, temp tables and `SET`s vanished, and the next
+        // statement — a `COMMIT`, say — ran on a fresh connection where
+        // Postgres merely warns that no transaction is in progress. The user
+        // saw success; the work was gone.
+        .idle_timeout(None)
+        .max_lifetime(None);
     if let Some(timeout) = acquire_timeout {
         builder = builder.acquire_timeout(timeout);
+    }
+    if let Some(sql) = init {
+        builder = builder.after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                sqlx::raw_sql(sql).execute(&mut *conn).await?;
+                Ok(())
+            })
+        });
     }
     builder
         .connect_with(options)

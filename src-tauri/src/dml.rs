@@ -16,7 +16,8 @@
 use crate::driver::Dialect;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    CellEdit, EditValue, GuardedStatement, PendingChange, TableDetail, TableRef, Value,
+    is_plain_number, CellEdit, EditValue, GuardedStatement, PendingChange, TableDetail, TableRef,
+    Value,
 };
 
 /// Turn staged changes into statements, in an order that is safe to apply.
@@ -186,17 +187,40 @@ fn where_key(detail: &TableDetail, key: &[CellEdit], dialect: &dyn Dialect) -> R
             // `= NULL` is never true. A NULL in a primary key should be
             // impossible, but if one appears, matching zero rows and tripping
             // the guard is far better than matching everything.
-            EditValue::Null => format!("{quoted} IS NULL"),
+            EditValue::Null | EditValue::Stored(Value::Null) => format!("{quoted} IS NULL"),
             EditValue::Default => {
                 return Err(FaroError::Other(format!(
                     "primary key column \"{pk_name}\" has no value to match on"
                 )))
             }
+            // The value as read, rendered as the engine's exact literal —
+            // except where equality on it cannot be trusted to find the row.
+            EditValue::Stored(v) if !matches_exactly(v) => {
+                return Err(FaroError::Other(format!(
+                    "cannot identify the row: primary key column \"{pk_name}\" holds a value \
+                     that cannot be compared exactly"
+                )))
+            }
+            EditValue::Stored(v) => format!("{quoted} = {}", dialect.literal(v)),
             v => format!("{quoted} = {}", literal(v, &column.type_name, dialect)),
         });
     }
 
     Ok(clauses.join(" AND "))
+}
+
+/// Whether a stored value can find its own row through `=`.
+///
+/// A float rendered back to text may not equal the stored binary value (a
+/// `real` column holds `0.1` as 0.100000001…), JSON has no equality operator
+/// on several engines, and an array or an unreadable value has no reliable
+/// literal at all. Matching on any of them risks touching no row — tripping
+/// the guard with a misleading message — so they are refused up front.
+fn matches_exactly(value: &Value) -> bool {
+    !matches!(
+        value,
+        Value::Float(_) | Value::Json(_) | Value::Array(_) | Value::Unsupported(_)
+    )
 }
 
 /// Look up a column, rejecting anything not actually on the table.
@@ -222,6 +246,8 @@ fn column_or_err<'a>(
 pub fn literal(value: &EditValue, type_name: &str, dialect: &dyn Dialect) -> String {
     let text = match value {
         EditValue::Null | EditValue::Default => return "NULL".into(),
+        // Already a typed value: no coercion from text, just its literal.
+        EditValue::Stored(v) => return dialect.literal(v),
         EditValue::Text(t) => t,
     };
 
@@ -235,14 +261,14 @@ pub fn literal(value: &EditValue, type_name: &str, dialect: &dyn Dialect) -> Str
             let t = text.trim();
             // Emitted verbatim, not through f64: reparsing a decimal as a
             // float would round it before it ever reached the database.
-            if is_numeric_literal(t) {
+            if is_plain_number(t) {
                 t.to_string()
             } else {
                 dialect.literal(&Value::Text(text.clone()))
             }
         }
         TypeClass::Boolean => match parse_bool(text) {
-            Some(b) => if b { "TRUE" } else { "FALSE" }.into(),
+            Some(b) => dialect.bool_literal(b).into(),
             None => dialect.literal(&Value::Text(text.clone())),
         },
         TypeClass::Text => dialect.literal(&Value::Text(text.clone())),
@@ -262,53 +288,87 @@ enum TypeClass {
 /// Matching is loose and case-insensitive because engines spell these
 /// differently (`int4`, `INTEGER`, `BIGINT UNSIGNED`, `NUMERIC(10,2)`), and an
 /// unrecognized type falling through to quoted text is the safe outcome.
+///
+/// Matched on whole words of the type name, never substrings. Substring
+/// matching read `interval` and `point` as integers because both contain
+/// "int", so typing `5` into an interval column emitted a bare `5` and the
+/// update failed with a type error instead of letting the engine cast `'5'`.
+/// Arrays are text for the same reason: `integer[]` holds `{1,2}`, not `1`.
 fn classify(type_name: &str) -> TypeClass {
-    let t = type_name.to_ascii_lowercase();
+    const BOOLEAN: [&str; 2] = ["bool", "boolean"];
+    const NUMBER: [&str; 14] = [
+        "numeric",
+        "decimal",
+        "dec",
+        "real",
+        "double",
+        "float",
+        "float4",
+        "float8",
+        "float32",
+        "float64",
+        "money",
+        "smallmoney",
+        "bigdecimal",
+        "number",
+    ];
+    const INTEGER: [&str; 30] = [
+        "int",
+        "integer",
+        "int2",
+        "int4",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "int128",
+        "int256",
+        "tinyint",
+        "smallint",
+        "mediumint",
+        "bigint",
+        "hugeint",
+        "serial",
+        "smallserial",
+        "bigserial",
+        "serial4",
+        "serial8",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+        "uint128",
+        "uint256",
+        "utinyint",
+        "usmallint",
+        "uinteger",
+        "ubigint",
+    ];
 
-    if t.contains("bool") {
+    let t = type_name.to_ascii_lowercase();
+    let is_array = t.trim_end().ends_with("[]") || t.starts_with("array") || t.starts_with('_');
+    if is_array {
+        return TypeClass::Text;
+    }
+
+    let words: Vec<&str> = t
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let any = |set: &[&str]| words.iter().any(|w| set.contains(w));
+
+    if any(&BOOLEAN[..]) {
         return TypeClass::Boolean;
     }
     // Checked before the integer arm: "numeric" and "decimal" must not be
     // truncated to an integer, and neither must a float.
-    if t.contains("numeric")
-        || t.contains("decimal")
-        || t.contains("real")
-        || t.contains("double")
-        || t.contains("float")
-        || t.starts_with("money")
-    {
+    if any(&NUMBER[..]) {
         return TypeClass::Number;
     }
-    if t.contains("int") || t.starts_with("serial") || t.contains("bigserial") {
+    if any(&INTEGER[..]) {
         return TypeClass::Integer;
     }
     TypeClass::Text
-}
-
-/// Whether text is a plain SQL numeric literal.
-///
-/// Deliberately strict: no hex, no underscores, no exponent-only forms, and no
-/// leading `+`. Anything unusual falls through to a quoted literal and lets the
-/// database decide, which is safer than emitting it raw.
-fn is_numeric_literal(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    let body = s.strip_prefix('-').unwrap_or(s);
-    if body.is_empty() {
-        return false;
-    }
-
-    let mut seen_dot = false;
-    let mut seen_digit = false;
-    for c in body.chars() {
-        match c {
-            '0'..='9' => seen_digit = true,
-            '.' if !seen_dot => seen_dot = true,
-            _ => return false,
-        }
-    }
-    seen_digit
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -619,6 +679,75 @@ mod tests {
         assert!(stmts[0].sql.contains(r#""title" = ''"#), "{}", stmts[0].sql);
     }
 
+    fn stored(column: &str, value: Value) -> CellEdit {
+        CellEdit {
+            column: column.into(),
+            value: EditValue::Stored(value),
+        }
+    }
+
+    #[test]
+    fn a_stored_binary_key_renders_as_the_engines_exact_literal() {
+        // Sent as display text, a binary key was `'[16 B]'` and never matched;
+        // as the value it was read as, it is the bytes themselves.
+        let d = detail(
+            vec!["uid"],
+            vec![col("uid", "binary(16)", true), col("name", "text", false)],
+        );
+        let changes = vec![PendingChange::Update {
+            key: vec![stored("uid", Value::Bytes(vec![0xde, 0xad]))],
+            cells: vec![cell("name", "Ada")],
+        }];
+        let stmts = build_statements(&table(), &d, &changes, &TestDialect).unwrap();
+        assert_eq!(
+            stmts[0].sql,
+            r#"UPDATE "books" SET "name" = 'Ada' WHERE "uid" = X'dead'"#
+        );
+    }
+
+    #[test]
+    fn stored_keys_keep_their_type() {
+        // An integer stays a bare integer, a huge one stays exact text, and a
+        // NULL still matches with IS NULL.
+        let changes = vec![
+            PendingChange::Delete {
+                key: vec![stored("id", Value::Int(7))],
+            },
+            PendingChange::Delete {
+                key: vec![stored("id", Value::Decimal("9007199254740993".into()))],
+            },
+            PendingChange::Delete {
+                key: vec![stored("id", Value::Null)],
+            },
+        ];
+        let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();
+        assert_eq!(stmts[0].sql, r#"DELETE FROM "books" WHERE "id" = 7"#);
+        assert_eq!(
+            stmts[1].sql,
+            r#"DELETE FROM "books" WHERE "id" = 9007199254740993"#
+        );
+        assert_eq!(stmts[2].sql, r#"DELETE FROM "books" WHERE "id" IS NULL"#);
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_compared_exactly_is_refused() {
+        for value in [
+            Value::Float(0.1),
+            Value::Json(serde_json::json!({"a": 1})),
+            Value::Array(vec![]),
+            Value::Unsupported("INTERVAL".into()),
+        ] {
+            let changes = vec![PendingChange::Delete {
+                key: vec![stored("id", value.clone())],
+            }];
+            let err = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap_err();
+            assert!(
+                err.to_string().contains("compared exactly"),
+                "{value:?}: {err}"
+            );
+        }
+    }
+
     #[test]
     fn a_null_key_matches_with_is_null_not_equals() {
         // `= NULL` is never true; IS NULL at least matches zero rows honestly
@@ -695,19 +824,19 @@ mod tests {
     #[test]
     fn numeric_literals_reject_anything_unusual() {
         // Emitting these raw would be an injection seam.
-        assert!(!is_numeric_literal("1 OR 1=1"));
-        assert!(!is_numeric_literal("0x1f"));
-        assert!(!is_numeric_literal("1e10"));
-        assert!(!is_numeric_literal("1_000"));
-        assert!(!is_numeric_literal("--1"));
-        assert!(!is_numeric_literal("1.2.3"));
-        assert!(!is_numeric_literal(""));
-        assert!(!is_numeric_literal("-"));
-        assert!(!is_numeric_literal("."));
+        assert!(!is_plain_number("1 OR 1=1"));
+        assert!(!is_plain_number("0x1f"));
+        assert!(!is_plain_number("1e10"));
+        assert!(!is_plain_number("1_000"));
+        assert!(!is_plain_number("--1"));
+        assert!(!is_plain_number("1.2.3"));
+        assert!(!is_plain_number(""));
+        assert!(!is_plain_number("-"));
+        assert!(!is_plain_number("."));
 
-        assert!(is_numeric_literal("1"));
-        assert!(is_numeric_literal("-1.5"));
-        assert!(is_numeric_literal(".5"));
+        assert!(is_plain_number("1"));
+        assert!(is_plain_number("-1.5"));
+        assert!(is_plain_number(".5"));
     }
 
     #[test]
@@ -733,6 +862,40 @@ mod tests {
         assert_eq!(classify("timestamptz"), TypeClass::Text);
         // Unknown types fall through to quoted text, which is the safe default.
         assert_eq!(classify("geometry"), TypeClass::Text);
+    }
+
+    #[test]
+    fn types_that_merely_contain_int_are_not_integers() {
+        // `interval` and `point` both contain "int"; a bare `5` into either is
+        // a type error where the quoted '5' is something the engine can cast.
+        assert_eq!(classify("interval"), TypeClass::Text);
+        assert_eq!(classify("INTERVAL DAY TO SECOND"), TypeClass::Text);
+        assert_eq!(classify("point"), TypeClass::Text);
+        assert_eq!(
+            literal(&EditValue::Text("5".into()), "interval", &TestDialect),
+            "'5'"
+        );
+    }
+
+    #[test]
+    fn arrays_are_text_whatever_their_element_type() {
+        for t in ["integer[]", "int4[]", "_int4", "Array(UInt8)", "numeric[] "] {
+            assert_eq!(classify(t), TypeClass::Text, "{t}");
+        }
+    }
+
+    #[test]
+    fn engine_spellings_of_numbers_still_classify() {
+        assert_eq!(classify("Nullable(Int32)"), TypeClass::Integer);
+        assert_eq!(
+            classify("LowCardinality(Nullable(UInt64))"),
+            TypeClass::Integer
+        );
+        assert_eq!(classify("tinyint(1)"), TypeClass::Integer);
+        assert_eq!(classify("Decimal(38, 10)"), TypeClass::Number);
+        assert_eq!(classify("Float64"), TypeClass::Number);
+        assert_eq!(classify("smallmoney"), TypeClass::Number);
+        assert_eq!(classify("HUGEINT"), TypeClass::Integer);
     }
 
     #[test]

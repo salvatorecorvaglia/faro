@@ -20,8 +20,26 @@ pub struct ConnectionStatus {
     pub has_password: bool,
 }
 
+/// Run a synchronous keychain call on the blocking pool.
+///
+/// Every `secrets` function is a synchronous OS call — a DBus round trip on
+/// Linux, and on macOS one that can sit behind a Keychain access prompt. Made
+/// from a synchronous command it ran on the main thread and froze the window;
+/// made from an async one it stalled a runtime worker instead.
+async fn keychain<T, F>(f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| FaroError::Keychain(format!("the keychain call did not finish: {e}")))
+}
+
+// Async so it runs off the main thread: Tauri executes a synchronous command
+// on the thread that also drives the window.
 #[tauri::command]
-pub fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionConfig>> {
+pub async fn list_connections(state: State<'_, AppState>) -> Result<Vec<ConnectionConfig>> {
     state.store.list_connections()
 }
 
@@ -37,13 +55,12 @@ pub async fn list_connection_status(state: State<'_, AppState>) -> Result<Vec<Co
     // runtime worker for as long as the whole loop took, with nothing else on
     // that thread able to make progress meanwhile.
     let keys: Vec<String> = configs.iter().map(|c| c.secret_key()).collect();
-    let stored: Vec<bool> = tokio::task::spawn_blocking(move || {
+    let stored: Vec<bool> = keychain(move || {
         keys.iter()
             .map(|k| secrets::get_password(k).is_some())
             .collect()
     })
-    .await
-    .map_err(|e| FaroError::Other(format!("could not read stored passwords: {e}")))?;
+    .await?;
 
     let mut out = Vec::with_capacity(configs.len());
     for (index, config) in configs.into_iter().enumerate() {
@@ -63,7 +80,7 @@ pub async fn list_connection_status(state: State<'_, AppState>) -> Result<Vec<Co
 /// which must not wipe an already-stored password. An explicit empty string
 /// clears it.
 #[tauri::command]
-pub fn save_connection(
+pub async fn save_connection(
     state: State<'_, AppState>,
     mut config: ConnectionConfig,
     password: Option<String>,
@@ -86,9 +103,10 @@ pub fn save_connection(
     // the raw keychain error up made it look like nothing had been saved, and
     // staying silent meant the next connect failed with a bare authentication
     // error that pointed nowhere near the real cause.
+    let key = config.secret_key();
     let stored = match password {
-        Some(pw) if pw.is_empty() => secrets::delete_password(&config.secret_key()),
-        Some(pw) => secrets::set_password(&config.secret_key(), &pw),
+        Some(pw) if pw.is_empty() => keychain(move || secrets::delete_password(&key)).await?,
+        Some(pw) => keychain(move || secrets::set_password(&key, &pw)).await?,
         None => Ok(()),
     };
 
@@ -114,7 +132,8 @@ pub async fn delete_connection(state: State<'_, AppState>, id: String) -> Result
     // comparison, and `secret_key` is derived from the id so it can never be
     // handed to a different connection.
     if let Ok(Some(config)) = state.store.get_connection(&id) {
-        let _ = secrets::delete_password(&config.secret_key());
+        let key = config.secret_key();
+        let _ = keychain(move || secrets::delete_password(&key)).await;
     }
 
     state.store.delete_connection(&id)
@@ -134,7 +153,8 @@ pub async fn connect(state: State<'_, AppState>, id: String) -> Result<()> {
         ));
     }
 
-    let password = secrets::get_password(&config.secret_key());
+    let key = config.secret_key();
+    let password = keychain(move || secrets::get_password(&key)).await?;
     let driver = driver::connect(&config, password.as_deref()).await?;
 
     // Prove the credentials work now rather than surfacing a failure on the
@@ -164,7 +184,10 @@ pub async fn test_connection(config: ConnectionConfig, password: Option<String>)
     // did not retype it; fall back to the stored one so Test reflects reality.
     let password = match password {
         Some(pw) => Some(pw),
-        None if !config.id.is_empty() => secrets::get_password(&config.secret_key()),
+        None if !config.id.is_empty() => {
+            let key = config.secret_key();
+            keychain(move || secrets::get_password(&key)).await?
+        }
         None => None,
     };
 
@@ -186,9 +209,11 @@ pub async fn connected_ids(state: State<'_, AppState>) -> Result<Vec<String>> {
 }
 
 /// Reported to the UI so it can warn that passwords will not persist.
+///
+/// Async because the probe is a keychain round trip too; see [`keychain`].
 #[tauri::command]
-pub fn keychain_available() -> bool {
-    secrets::keychain_available()
+pub async fn keychain_available() -> Result<bool> {
+    keychain(secrets::keychain_available).await
 }
 
 /// Engine metadata for the connect dialog: which engines exist, their default

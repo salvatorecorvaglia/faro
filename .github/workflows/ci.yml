@@ -46,8 +46,6 @@ jobs:
 
       - name: Assert a single CodeMirror view
         run: |
-          # Counts what is actually linked into the tree, not what happens to
-          # be left in the pnpm store, so a stale store entry is not a failure.
           found=$(pnpm ls @codemirror/view --depth=Infinity \
             | grep -oE '@codemirror/view@[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
           count=$(printf '%s\n' "$found" | grep -c . || true)

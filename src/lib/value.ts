@@ -25,6 +25,9 @@ export function formatValue(v: Value): string {
       return v.value;
     case 'bytes':
       return `[${formatBytes(v.value.length)}]`;
+    // Sent as its size alone — the contents never reach the UI.
+    case 'largeBytes':
+      return `[${formatBytes(v.value)}]`;
     case 'json':
       return JSON.stringify(v.value);
     case 'array':
@@ -74,6 +77,8 @@ export function toJson(v: Value): unknown {
       return v.value.map(toJson);
     case 'bytes':
       return { $bytes: v.value.length };
+    case 'largeBytes':
+      return { $bytes: v.value };
   }
 }
 

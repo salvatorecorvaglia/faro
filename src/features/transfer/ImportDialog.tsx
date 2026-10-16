@@ -180,7 +180,7 @@ export function ImportDialog({
         </label>
 
         {busy && !preview && (
-          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size={12} /> Reading file…
           </div>
         )}
@@ -191,12 +191,9 @@ export function ImportDialog({
               <span className="label">
                 Column mapping — {mappedCount} of {preview.columns.length} mapped
               </span>
-              <div
-                className="max-h-52 overflow-auto rounded-md border"
-                style={{ borderColor: 'var(--border)' }}
-              >
+              <div className="max-h-52 overflow-auto rounded-md border border-line">
                 <table className="w-full text-xs">
-                  <thead className="sticky top-0" style={{ background: 'var(--bg-inset)' }}>
+                  <thead className="sticky top-0 bg-inset">
                     <tr>
                       <th className="px-2 py-1 text-left font-semibold">File column</th>
                       <th className="px-2 py-1 text-left font-semibold">Looks like</th>
@@ -206,15 +203,10 @@ export function ImportDialog({
                   </thead>
                   <tbody>
                     {preview.columns.map((source, i) => (
-                      <tr key={i} className="border-t" style={{ borderColor: 'var(--border)' }}>
+                      <tr key={i} className="border-t border-line">
                         <td className="max-w-32 truncate px-2 py-1 font-mono">{source}</td>
-                        <td className="px-2 py-1" style={{ color: 'var(--text-faint)' }}>
-                          {preview.inferredTypes[i]}
-                        </td>
-                        <td
-                          className="max-w-32 truncate px-2 py-1 font-mono"
-                          style={{ color: 'var(--text-muted)' }}
-                        >
+                        <td className="px-2 py-1 text-faint">{preview.inferredTypes[i]}</td>
+                        <td className="max-w-32 truncate px-2 py-1 font-mono text-muted">
                           {preview.sampleRows[0]?.[i] ?? ''}
                         </td>
                         <td className="px-2 py-1">
@@ -238,7 +230,7 @@ export function ImportDialog({
               </div>
             </div>
 
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-xs text-muted">
               {/* The preview reads only the head of the file, so on a large one
                   the total is genuinely unknown rather than missing. Saying
                   "every row" is both true and more useful than "? rows". */}
@@ -252,11 +244,7 @@ export function ImportDialog({
         )}
 
         {error && <ErrorBanner message={error} onDismiss={resetStatus} />}
-        {done && (
-          <p className="text-sm" style={{ color: 'var(--success)' }}>
-            {done}
-          </p>
-        )}
+        {done && <p className="text-sm text-success">{done}</p>}
 
         <div className="mt-1 flex justify-end gap-2">
           <button

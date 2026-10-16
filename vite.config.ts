@@ -19,6 +19,10 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    sourcemap: true,
+    // No source maps in the build that ships. They were bundled into every
+    // installer — added size, and nothing in the app or the release pipeline
+    // reads them. `vite` dev serves maps regardless, so debugging is
+    // unaffected; set this to `true` for a one-off build that needs them.
+    sourcemap: false,
   },
 });

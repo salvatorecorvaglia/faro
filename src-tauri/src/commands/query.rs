@@ -11,7 +11,12 @@ pub struct StatementResult {
     pub sql: String,
     /// `None` when this statement failed; `error` then explains why.
     pub outcome: Option<QueryOutcome>,
-    pub error: Option<String>,
+    /// The structured error — kind, message and the engine's own code — rather
+    /// than its text alone. Flattened to a string, a failing statement lost
+    /// what every other command's error keeps: whether it was a read-only
+    /// refusal, a cancellation or a database error, and the SQLSTATE that
+    /// identifies it.
+    pub error: Option<crate::error::FaroError>,
 }
 
 #[derive(serde::Serialize)]
@@ -37,7 +42,7 @@ pub async fn run_query(
     sql_text: String,
     query_id: String,
     limit: Option<u64>,
-) -> Result<RunResult> {
+) -> Result<std::sync::Arc<RunResult>> {
     let driver = state.registry.get(&connection_id).await?;
     // Clamped, not trusted: the limit comes from the frontend and feeds both
     // the row cap and the `limit + 1` truncation probe.
@@ -47,7 +52,9 @@ pub async fn run_query(
     // text the engine will still execute, which is how a write once hid from
     // the read-only guard behind a backslash in a quoted identifier.
     let rules = driver.dialect().lex_rules();
-    let statements = sql::split_statements_with(&sql_text, rules);
+    // Comment-only fragments are dropped: a script ending in a comment would
+    // otherwise send an empty statement, which MySQL rejects outright.
+    let statements = sql::executable_statements(&sql_text, rules);
 
     // A read-only connection runs reads and nothing else.
     //
@@ -91,7 +98,7 @@ pub async fn run_query(
                 results.push(StatementResult {
                     sql: stmt,
                     outcome: None,
-                    error: Some(e.to_string()),
+                    error: Some(e),
                 });
                 break;
             }
@@ -110,10 +117,16 @@ pub async fn run_query(
         total_elapsed_ms,
     );
 
-    Ok(RunResult {
+    // Kept so an export can read the rows from here rather than have the UI
+    // send them back; see `results`.
+    let run = std::sync::Arc::new(RunResult {
         statements: results,
         total_elapsed_ms,
-    })
+    });
+    state
+        .results
+        .insert(query_id, crate::results::Cached::Run(run.clone()));
+    Ok(run)
 }
 
 /// Write one history row for the whole submission.
@@ -146,7 +159,9 @@ fn record_history(
             .filter_map(|r| r.outcome.as_ref())
             .map(|o| o.row_count())
             .sum::<u64>() as i64,
-        error: results.iter().find_map(|r| r.error.clone()),
+        error: results
+            .iter()
+            .find_map(|r| r.error.as_ref().map(|e| e.to_string())),
     };
 
     // Best effort throughout: a history write must never break the query the
@@ -164,6 +179,53 @@ pub async fn cancel_query(
     query_id: String,
 ) -> Result<bool> {
     Ok(state.registry.cancel_query(&connection_id, &query_id))
+}
+
+/// What running a script would do, in numbers: how many statements it holds and
+/// how many of them write.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSummary {
+    pub statements: usize,
+    pub writes: usize,
+}
+
+/// Count a script's statements and writes before it runs, so the UI can ask
+/// before ⌘↵ runs a whole script that changes data.
+///
+/// ⌘↵ runs the entire editor contents. Pressed out of habit with the cursor on
+/// one `SELECT`, it also ran the `DELETE` three lines below, with nothing in
+/// between to stop it.
+///
+/// Classified with the connection's own quoting rules when it is open — the
+/// same reading the read-only guard uses — and conservatively otherwise.
+/// MongoDB queries are not SQL and Faro's Mongo support cannot write, so they
+/// never count as writes.
+#[tauri::command]
+pub async fn script_summary(
+    state: State<'_, AppState>,
+    connection_id: Option<String>,
+    sql_text: String,
+) -> Result<ScriptSummary> {
+    let driver = match connection_id {
+        Some(id) => state.registry.get(&id).await.ok(),
+        None => None,
+    };
+    let rules = driver
+        .as_ref()
+        .map(|d| d.dialect().lex_rules())
+        .unwrap_or(sql::LexRules::PERMISSIVE);
+    let statements = sql::executable_statements(&sql_text, rules);
+
+    let writes = match &driver {
+        Some(d) if !d.dialect().is_sql() => 0,
+        Some(d) => sql::count_writes(&statements, Some(d.dialect().lex_rules())),
+        None => sql::count_writes(&statements, None),
+    };
+    Ok(ScriptSummary {
+        statements: statements.len(),
+        writes,
+    })
 }
 
 /// Extract the statement under the cursor, so the UI can show what will run.

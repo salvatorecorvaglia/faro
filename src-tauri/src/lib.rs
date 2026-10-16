@@ -4,6 +4,7 @@ pub mod driver;
 pub mod error;
 pub mod model;
 pub mod registry;
+pub mod results;
 pub mod secrets;
 pub mod sql;
 pub mod store;
@@ -11,6 +12,7 @@ pub mod transfer;
 
 use commands::AppState;
 use registry::Registry;
+use results::ResultCache;
 use store::Store;
 use tauri::Manager;
 
@@ -58,6 +60,7 @@ pub fn run() {
         .manage(AppState {
             store,
             registry: Registry::new(),
+            results: ResultCache::new(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
@@ -77,7 +80,7 @@ pub fn run() {
             commands::browse_table,
             commands::preview_changes,
             commands::apply_changes,
-            commands::export_result,
+            commands::export_cached,
             commands::export_table,
             commands::preview_import,
             commands::import_file,
@@ -88,6 +91,7 @@ pub fn run() {
             commands::run_query,
             commands::cancel_query,
             commands::statement_at_cursor,
+            commands::script_summary,
             commands::list_saved_queries,
             commands::save_query,
             commands::delete_saved_query,
@@ -108,7 +112,18 @@ pub fn run() {
             // never called from anywhere.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state: tauri::State<'_, AppState> = app.state();
-                tauri::async_runtime::block_on(state.registry.close_all());
+                // Bounded: closing waits on each server, and one that has gone
+                // unreachable would otherwise hold quitting hostage until its
+                // TCP timeout. Past the deadline the process exits anyway and
+                // the server reaps the connection on its own, which is where
+                // things stood before pools were closed at all.
+                tauri::async_runtime::block_on(async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        state.registry.close_all(),
+                    )
+                    .await;
+                });
             }
         });
 }

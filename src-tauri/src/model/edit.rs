@@ -16,6 +16,15 @@ pub enum EditValue {
     /// its own DEFAULT. Distinct from NULL: a DEFAULT of `now()` and an
     /// explicit NULL are very different outcomes.
     Default,
+    /// A value exactly as it was read from the database, sent back to find
+    /// the row it came from.
+    ///
+    /// The grid used to send a primary key as the text it *displays*, which is
+    /// not always the value: a binary key displays as a size badge (`[16 B]`),
+    /// so `WHERE id = '[16 B]'` could never match and such tables were made
+    /// read-only. The value itself renders as the engine's own exact literal —
+    /// `X'…'`, `'\x…'::bytea`, `0x…`.
+    Stored(super::Value),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

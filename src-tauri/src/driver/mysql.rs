@@ -101,25 +101,28 @@ impl MySqlDriver {
             opts = opts.password(pw);
         }
 
+        // Belt and braces alongside Faro's own guard: this makes the server
+        // reject writes that a leading-keyword check cannot spot. It applies
+        // to the session, so it also covers the implicit transaction around
+        // each autocommit statement.
+        //
+        // Run on every connection the session pool opens, not once here: a
+        // one-off `SET` was lost as soon as the pool replaced a dropped
+        // connection, leaving the lexical guard as the only defence. Only the
+        // user-SQL pool needs it; `meta` runs Faro's own catalog reads, which
+        // are reads by construction.
+        let session_init = config
+            .read_only
+            .then_some("SET SESSION TRANSACTION READ ONLY");
+
         // See `driver::pool::dual_pool` for why user SQL gets one connection
         // and catalog reads get their own.
-        let (pool, meta) =
-            super::pool::dual_pool::<sqlx::MySql>(opts, Some(std::time::Duration::from_secs(15)))
-                .await?;
-
-        if config.read_only {
-            // Belt and braces alongside Faro's own guard: this makes the server
-            // reject writes that a leading-keyword check cannot spot. It applies
-            // to the session, so it also covers the implicit transaction around
-            // each autocommit statement.
-            //
-            // Only the user-SQL pool needs it; `meta` runs Faro's own catalog
-            // reads, which are reads by construction.
-            sqlx::query("SET SESSION TRANSACTION READ ONLY")
-                .execute(&pool)
-                .await
-                .map_err(|e| FaroError::Connection(e.to_string()))?;
-        }
+        let (pool, meta) = super::pool::dual_pool::<sqlx::MySql>(
+            opts,
+            Some(std::time::Duration::from_secs(15)),
+            session_init,
+        )
+        .await?;
 
         // Resolve the database from the server rather than trusting the config:
         // it may have been omitted, and every catalog query needs it.
@@ -388,20 +391,15 @@ impl Driver for MySqlDriver {
         .fetch_all(&self.meta)
         .await?;
 
-        let mut out: Vec<TableColumns> = Vec::new();
-        for r in &rows {
-            let table: String = r.get("name");
-            let column: String = r.get("column_name");
-            match out.last_mut().filter(|t| t.name == table) {
-                Some(entry) => entry.columns.push(column),
-                None => out.push(TableColumns {
-                    schema: None,
-                    name: table,
-                    columns: vec![column],
-                }),
-            }
-        }
-        Ok(out)
+        Ok(super::catalog::group_columns(
+            rows.iter().map(|r| {
+                (
+                    r.get::<String, _>("name"),
+                    r.get::<String, _>("column_name"),
+                )
+            }),
+            None,
+        ))
     }
 
     /// Run a statement and cap the rows as they arrive.
@@ -551,7 +549,7 @@ mod tests {
         let out = MySqlDialect.paginate("SELECT * FROM t LIMIT 5", 10, 0);
         assert_eq!(
             out,
-            "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10"
+            "SELECT * FROM (SELECT * FROM t LIMIT 5\n) AS faro_q LIMIT 10"
         );
     }
 }

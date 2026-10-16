@@ -1,7 +1,8 @@
+import { MariaSQL, MSSQL, MySQL, PostgreSQL, SQLite } from '@codemirror/lang-sql';
 import { fireEvent, render } from '@testing-library/react';
 import { createRef } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { Editor, type EditorHandle } from '@/features/editor/Editor';
+import { dialectFor, Editor, type EditorHandle } from '@/features/editor/Editor';
 
 function renderEditor(props: Partial<React.ComponentProps<typeof Editor>> = {}) {
   const onChange = vi.fn();
@@ -33,17 +34,17 @@ describe('Editor', () => {
     host.focus();
     // CodeMirror's "Mod" binds to whichever modifier the platform uses (Ctrl
     // here, since jsdom reports a non-Mac platform) — Cmd is covered by the
-    // real app running on macOS, exercised instead by "Shift-Enter" below,
-    // which is platform-independent and bound to the same action.
+    // real app running on macOS.
     fireEvent.keyDown(host, { key: 'Enter', code: 'Enter', ctrlKey: true });
     expect(onRun).toHaveBeenCalledTimes(1);
   });
 
-  it('runs on Shift-Enter too, as the same action', () => {
+  it('does not run on Shift-Enter, which elsewhere types a newline', () => {
+    // A Shift+Enter habit from chat apps used to run the whole script.
     const { host, onRun } = renderEditor();
     host.focus();
     fireEvent.keyDown(host, { key: 'Enter', code: 'Enter', shiftKey: true });
-    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(onRun).not.toHaveBeenCalled();
   });
 
   it('exposes selection and replaceAll through the imperative handle', () => {
@@ -55,6 +56,24 @@ describe('Editor', () => {
     // replaceAll dispatches a real document change, which the update listener
     // reports back through onChange — the same path a keystroke takes.
     expect(onChange).toHaveBeenCalledWith('replaced');
+  });
+
+  it('reads the cursor through the handle at the moment it is asked', () => {
+    // "Run statement at cursor" resolves against this rather than against a
+    // debounced copy, so it has to reflect the cursor as it is now.
+    const { handle } = renderEditor({ value: 'SELECT 1' });
+    expect(handle.current?.cursorOffset()).toBe(0);
+  });
+
+  it('highlights each engine with its own quoting rules', () => {
+    // MySQL and MariaDB were highlighted as Postgres, where a backtick is not
+    // a quote, and SQL Server's [brackets] likewise.
+    expect(dialectFor('mysql')).toBe(MySQL);
+    expect(dialectFor('mariadb')).toBe(MariaSQL);
+    expect(dialectFor('sqlserver')).toBe(MSSQL);
+    expect(dialectFor('sqlite')).toBe(SQLite);
+    expect(dialectFor('postgres')).toBe(PostgreSQL);
+    expect(dialectFor('clickhouse')).toBe(PostgreSQL);
   });
 
   it('syncs external value changes into the document without looping', () => {

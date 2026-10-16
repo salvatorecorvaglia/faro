@@ -102,3 +102,18 @@ describe('formatDuration', () => {
     expect(formatDuration(65_000)).toBe('1m 5s');
   });
 });
+
+describe('large binary values', () => {
+  // Past a size limit the backend sends only the size: the contents never
+  // reach the UI, which only ever shows a badge for them anyway.
+  const large: Value = { kind: 'largeBytes', value: 3 * 1024 * 1024 };
+
+  it('shows the same size badge as a binary value sent whole', () => {
+    expect(formatValue(large)).toBe('[3.0 MB]');
+    expect(formatValue({ kind: 'bytes', value: [1, 2, 3] })).toBe('[3 B]');
+  });
+
+  it('appears in the JSON view as a size descriptor, like any binary value', () => {
+    expect(toJson(large)).toEqual({ $bytes: 3 * 1024 * 1024 });
+  });
+});

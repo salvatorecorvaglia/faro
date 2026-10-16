@@ -97,6 +97,16 @@ export const IconTrash = (p: IconProps) => (
   </Svg>
 );
 
+/** A plug pulled out of its socket — disconnect, as distinct from delete. */
+export const IconUnplug = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m19 5 3-3M2 22l3-3" />
+    <path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" />
+    <path d="m7.5 13.5 2.5-2.5M10.5 16.5l2.5-2.5" />
+    <path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z" />
+  </Svg>
+);
+
 export const IconEdit = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />

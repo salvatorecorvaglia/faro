@@ -17,6 +17,7 @@
 
 use async_trait::async_trait;
 use bson::{Bson, Document};
+use futures::stream::{self, StreamExt};
 use futures::TryStreamExt;
 use mongodb::options::ClientOptions;
 use mongodb::Client;
@@ -35,6 +36,12 @@ use crate::model::{
 
 /// How many documents to sample when inferring a collection's fields.
 const SAMPLE_SIZE: i64 = 100;
+
+/// Per-collection catalog round trips allowed in flight at once.
+///
+/// Enough to hide latency on a remote server, few enough not to flood it or
+/// exhaust the driver's connection pool on a database with many collections.
+const CATALOG_CONCURRENCY: usize = 8;
 
 pub struct MongoDialect;
 
@@ -473,17 +480,31 @@ impl Driver for MongoDriver {
         let names = db.list_collection_names().await.map_err(map_err)?;
         let database = schema.unwrap_or(&self.database).to_string();
 
-        let mut out = Vec::with_capacity(names.len());
-        for name in names {
-            // estimated_document_count reads collection metadata rather than
-            // scanning, which is what makes it cheap enough for a tree.
-            let estimated = db
-                .collection::<Document>(&name)
-                .estimated_document_count()
-                .await
-                .ok()
-                .map(|n| n as i64);
+        // estimated_document_count reads collection metadata rather than
+        // scanning, which is what makes it cheap enough for a tree. One round
+        // trip per collection, though, and these used to run one after another,
+        // so a database with hundreds of collections took hundreds of serial
+        // round trips to list. `buffered` runs a bounded number at once and
+        // keeps their order.
+        // Owned names: a closure over borrowed `&String` items is not general
+        // enough to cross the `async_trait` boundary.
+        let estimates: Vec<Option<i64>> = stream::iter(names.clone())
+            .map(|name| {
+                let collection = db.collection::<Document>(&name);
+                async move {
+                    collection
+                        .estimated_document_count()
+                        .await
+                        .ok()
+                        .map(|n| n as i64)
+                }
+            })
+            .buffered(CATALOG_CONCURRENCY)
+            .collect()
+            .await;
 
+        let mut out = Vec::with_capacity(names.len());
+        for (name, estimated) in names.into_iter().zip(estimates) {
             out.push(TableInfo {
                 schema: Some(database.clone()),
                 name,
@@ -616,32 +637,37 @@ impl Driver for MongoDriver {
 
     async fn schema_snapshot(&self, schema: Option<&str>) -> Result<Vec<TableColumns>> {
         let tables = self.list_tables(schema).await?;
-        let mut out = Vec::with_capacity(tables.len());
 
-        for t in tables {
-            let table = TableRef {
-                schema: t.schema.clone(),
-                name: t.name.clone(),
-            };
-            // A smaller sample than describe_table: this feeds autocomplete,
-            // where breadth across collections matters more than completeness
-            // within one.
-            let documents = self.sample(&table, 20).await.unwrap_or_default();
+        // One sample per collection, run a bounded number at once rather than
+        // serially — see `list_tables`.
+        let out = stream::iter(tables)
+            .map(|t| async move {
+                let table = TableRef {
+                    schema: t.schema.clone(),
+                    name: t.name.clone(),
+                };
+                // A smaller sample than describe_table: this feeds
+                // autocomplete, where breadth across collections matters more
+                // than completeness within one.
+                let documents = self.sample(&table, 20).await.unwrap_or_default();
 
-            let mut columns: Vec<String> = Vec::new();
-            for doc in &documents {
-                for key in doc.keys() {
-                    if !columns.iter().any(|c| c == key) {
-                        columns.push(key.clone());
+                let mut columns: Vec<String> = Vec::new();
+                for doc in &documents {
+                    for key in doc.keys() {
+                        if !columns.iter().any(|c| c == key) {
+                            columns.push(key.clone());
+                        }
                     }
                 }
-            }
-            out.push(TableColumns {
-                schema: t.schema,
-                name: t.name,
-                columns,
-            });
-        }
+                TableColumns {
+                    schema: t.schema,
+                    name: t.name,
+                    columns,
+                }
+            })
+            .buffered(CATALOG_CONCURRENCY)
+            .collect()
+            .await;
         Ok(out)
     }
 

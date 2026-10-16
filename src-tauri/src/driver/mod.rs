@@ -1,5 +1,6 @@
 //! The database abstraction. Everything above this module is engine-agnostic.
 
+mod catalog;
 mod clickhouse;
 pub mod dialect;
 #[cfg(feature = "duckdb-engine")]
@@ -54,6 +55,24 @@ pub trait Driver: Send + Sync {
         Ok(None)
     }
 
+    /// Statements a restore must run before a table's rows go in — allowing
+    /// explicit identity values, say. Empty by default.
+    async fn pre_data_sql(&self, _table: &TableRef) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Statements a restore must run after a table's rows are in — resetting a
+    /// sequence past the restored keys, say. Empty by default.
+    async fn post_data_sql(&self, _table: &TableRef) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Columns the engine computes itself, which an `INSERT` may not supply —
+    /// a backup leaves them out of its data. Empty by default.
+    async fn generated_columns(&self, _table: &TableRef) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     /// Every table in `schema` with its column names, for editor autocomplete.
     ///
     /// The default walks `describe_table`, which is correct but costs several
@@ -106,7 +125,14 @@ pub trait Driver: Send + Sync {
         let detail = self.describe_table(table).await?;
         let known: Vec<&str> = detail.columns.iter().map(|c| c.name.as_str()).collect();
         let limit = clamp_limit(options.limit);
-        let sql = crate::sql::build_browse_sql(table, options, &known, self.dialect(), limit);
+        let sql = crate::sql::build_browse_sql(
+            table,
+            options,
+            &known,
+            &detail.primary_key,
+            self.dialect(),
+            limit,
+        );
         self.query(&sql, limit, cancel).await
     }
 
@@ -204,15 +230,14 @@ pub fn probe_limit(limit: u64) -> u64 {
     limit.saturating_add(1)
 }
 
-/// The statement's leading keyword, upper-cased, ignoring leading whitespace and
-/// opening parentheses.
+/// The statement's leading keyword, upper-cased.
+///
+/// Read with the SQL lexer rather than by splitting on whitespace. Splitting
+/// made the keyword of `-- note\nSELECT …` the `--` of its comment, so a
+/// commented query was classified as returning nothing: it went to `execute`,
+/// its rows were thrown away, and a read-only connection refused it outright.
 fn leading_keyword(sql: &str) -> String {
-    sql.trim_start()
-        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_uppercase()
+    crate::sql::leading_word(sql).unwrap_or_default()
 }
 
 /// Guess whether a statement produces a result set.
@@ -313,6 +338,20 @@ mod tests {
         assert!(returns_rows("(SELECT 1) UNION (SELECT 2)"));
         assert!(returns_rows("EXPLAIN SELECT 1"));
         assert!(returns_rows("PRAGMA table_info(t)"));
+    }
+
+    #[test]
+    fn a_leading_comment_does_not_hide_the_keyword() {
+        assert!(returns_rows("-- all users\nSELECT * FROM users"));
+        assert!(returns_rows("/* hint */ SELECT 1"));
+        assert!(returns_rows("-- a\n/* b */\n(SELECT 1) UNION (SELECT 2)"));
+        assert!(!returns_rows("-- tidy up\nDELETE FROM t"));
+        assert!(returns_rows(
+            "-- insert\nINSERT INTO t VALUES (1) RETURNING id"
+        ));
+
+        assert!(is_wrappable("-- all users\nSELECT * FROM users"));
+        assert!(!is_wrappable("-- plan\nEXPLAIN SELECT 1"));
     }
 
     #[test]

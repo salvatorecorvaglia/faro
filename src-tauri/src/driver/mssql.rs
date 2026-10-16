@@ -5,12 +5,14 @@ use std::time::Instant;
 use tiberius::ColumnData;
 use tokio_util::sync::CancellationToken;
 
+use super::catalog::{cell_int, cell_text, group_columns};
 use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo,
+    QueryOutcome, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
+    TableRef, Value,
 };
 
 pub struct SqlServerDialect;
@@ -77,6 +79,15 @@ impl Dialect for SqlServerDialect {
     fn begin_statement(&self) -> &'static str {
         "BEGIN TRANSACTION"
     }
+
+    /// T-SQL writes booleans as `bit` values.
+    fn bool_literal(&self, value: bool) -> &'static str {
+        if value {
+            "1"
+        } else {
+            "0"
+        }
+    }
 }
 
 /// SQL Server, via tiberius.
@@ -107,10 +118,17 @@ impl SqlServerDriver {
             tds.database(&config.database);
         }
         match config.ssl_mode {
+            // What the setting says: no encryption. It used to fall in with
+            // the arm below, which left tiberius at its default of *required*
+            // encryption — so "Disable" failed against a server without TLS
+            // and encrypted everywhere else, the opposite of what it offered.
+            // A server that insists on encryption refuses this, which is the
+            // honest outcome for a setting that asked for none.
+            SslMode::Disable => tds.encryption(tiberius::EncryptionLevel::NotSupported),
             // SQL Server images ship a self-signed certificate, so requiring a
             // verified chain would refuse almost every local instance. These
             // modes still encrypt; verification is what is relaxed.
-            SslMode::Disable | SslMode::Prefer | SslMode::Require => tds.trust_cert(),
+            SslMode::Prefer | SslMode::Require => tds.trust_cert(),
             // Verify modes leave tiberius at its default, which validates the
             // chain against the platform trust store. Previously every arm
             // called `trust_cert()`, so "Require" silently accepted any
@@ -191,10 +209,31 @@ impl SqlServerDriver {
         let mut data: Vec<Vec<Value>> = Vec::new();
         let mut seen = 0u64;
 
+        let mut described = false;
         while let Some(item) = stream.try_next().await.map_err(map_err)? {
-            // The stream also carries metadata and done tokens; only rows matter.
-            let tiberius::QueryItem::Row(row) = item else {
-                continue;
+            let row = match item {
+                // Column names come from the metadata token, which arrives
+                // before any row — so a query matching nothing still shows its
+                // headers instead of a blank grid that reads as broken.
+                tiberius::QueryItem::Metadata(meta) => {
+                    // A second metadata token opens a second result set, whose
+                    // rows would be laid out under the first set's columns.
+                    // The grid holds one set, so it stops at the first.
+                    if described {
+                        break;
+                    }
+                    described = true;
+                    columns = meta
+                        .columns()
+                        .iter()
+                        .map(|c| ColumnInfo {
+                            name: c.name().to_string(),
+                            type_name: format!("{:?}", c.column_type()).to_lowercase(),
+                        })
+                        .collect();
+                    continue;
+                }
+                tiberius::QueryItem::Row(row) => row,
             };
 
             if columns.is_empty() {
@@ -223,11 +262,64 @@ impl SqlServerDriver {
         })
     }
 
+    /// The table as generated SQL names it, `[schema].[name]`.
+    fn qualified(&self, table: &TableRef) -> String {
+        self.dialect.qualify(
+            Some(table.schema.as_deref().unwrap_or(&self.schema)),
+            &table.name,
+        )
+    }
+
+    /// The table's identity columns, with their seed and increment.
+    async fn identity_columns(&self, table: &TableRef) -> Result<Vec<(String, String, String)>> {
+        let schema = table.schema.clone().unwrap_or_else(|| self.schema.clone());
+        let s_lit = self.dialect.literal(&Value::Text(schema));
+        let t_lit = self.dialect.literal(&Value::Text(table.name.clone()));
+        let rows = self
+            .meta_rows(&format!(
+                "SELECT ic.name, CAST(ic.seed_value AS NVARCHAR(40)), \
+                        CAST(ic.increment_value AS NVARCHAR(40))
+                 FROM sys.identity_columns ic
+                 JOIN sys.tables t ON t.object_id = ic.object_id
+                 JOIN sys.schemas s ON s.schema_id = t.schema_id
+                 WHERE s.name = {s_lit} AND t.name = {t_lit}"
+            ))
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    cell_text(r.first()),
+                    cell_text(r.get(1)),
+                    cell_text(r.get(2)),
+                )
+            })
+            .collect())
+    }
+
     /// Run catalog SQL and hand back the rows as text, which is all the
     /// information_schema queries below need.
     async fn meta_rows(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
         Ok(Self::fetch(&self.meta, sql, u64::MAX).await?.rows)
     }
+}
+
+/// Statements that act on the session — its transaction, options or database
+/// — and so must run as a batch of their own, not inside `sp_executesql`.
+fn is_session_statement(sql: &str) -> bool {
+    matches!(
+        crate::sql::leading_word(sql).as_deref(),
+        Some("BEGIN" | "COMMIT" | "ROLLBACK" | "SAVE" | "SET" | "USE")
+    )
+}
+
+/// Whether `sql` calls a stored procedure, whose result set `execute` would
+/// throw away.
+fn is_procedure_call(sql: &str) -> bool {
+    matches!(
+        crate::sql::leading_word(sql).as_deref(),
+        Some("EXEC" | "EXECUTE")
+    )
 }
 
 /// Whether `sql` ends with an `ORDER BY` that belongs to its outermost query.
@@ -279,25 +371,6 @@ fn map_err(e: tiberius::error::Error) -> FaroError {
     }
 }
 
-/// Read a cell as text, for catalog results where the type is known to be
-/// character data.
-fn as_text(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::Text(s)) => s.clone(),
-        Some(Value::Int(i)) => i.to_string(),
-        Some(Value::Decimal(d)) => d.clone(),
-        _ => String::new(),
-    }
-}
-
-fn as_int(value: Option<&Value>) -> i64 {
-    match value {
-        Some(Value::Int(i)) => *i,
-        Some(Value::Decimal(d)) => d.parse().unwrap_or(0),
-        _ => 0,
-    }
-}
-
 #[async_trait]
 impl Driver for SqlServerDriver {
     async fn ping(&self) -> Result<()> {
@@ -316,7 +389,7 @@ impl Driver for SqlServerDriver {
         Ok(rows
             .iter()
             .map(|r| {
-                let name = as_text(r.first());
+                let name = cell_text(r.first());
                 SchemaInfo {
                     // db_* schemas are SQL Server's built-in database roles.
                     is_system: name.starts_with("db_") || name == "guest",
@@ -355,16 +428,16 @@ impl Driver for SqlServerDriver {
         Ok(rows
             .iter()
             .map(|r| {
-                let kind = as_text(r.get(1));
+                let kind = cell_text(r.get(1));
                 TableInfo {
                     schema: Some(schema.clone()),
-                    name: as_text(r.first()),
+                    name: cell_text(r.first()),
                     kind: if kind == "VIEW" {
                         TableKind::View
                     } else {
                         TableKind::Table
                     },
-                    estimated_rows: Some(as_int(r.get(2))),
+                    estimated_rows: Some(cell_int(r.get(2))),
                 }
             })
             .collect())
@@ -413,7 +486,7 @@ impl Driver for SqlServerDriver {
                  ORDER BY k.ORDINAL_POSITION"
             ))
             .await?;
-        let primary_key: Vec<String> = pk_rows.iter().map(|r| as_text(r.first())).collect();
+        let primary_key: Vec<String> = pk_rows.iter().map(|r| cell_text(r.first())).collect();
 
         let fk_rows = self
             .meta_rows(&format!(
@@ -441,11 +514,11 @@ impl Driver for SqlServerDriver {
             fk_rows
                 .iter()
                 .map(|r| super::fk::FkColumnRow {
-                    group: as_text(r.first()),
-                    column: as_text(r.get(1)),
-                    referenced_schema: Some(as_text(r.get(2))),
-                    referenced_table: as_text(r.get(3)),
-                    referenced_column: Some(as_text(r.get(4))),
+                    group: cell_text(r.first()),
+                    column: cell_text(r.get(1)),
+                    referenced_schema: Some(cell_text(r.get(2))),
+                    referenced_table: cell_text(r.get(3)),
+                    referenced_column: Some(cell_text(r.get(4))),
                 })
                 .collect(),
             |name| name.clone(),
@@ -473,16 +546,16 @@ impl Driver for SqlServerDriver {
 
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in &idx_rows {
-            let name = as_text(r.first());
-            let column = as_text(r.get(4));
+            let name = cell_text(r.first());
+            let column = cell_text(r.get(4));
             match indexes.iter_mut().find(|i| i.name == name) {
                 Some(index) => index.columns.push(column),
                 None => indexes.push(IndexInfo {
                     name,
                     columns: vec![column],
-                    is_unique: as_int(r.get(1)) == 1,
-                    is_primary: as_int(r.get(2)) == 1,
-                    is_constraint: as_int(r.get(3)) == 1,
+                    is_unique: cell_int(r.get(1)) == 1,
+                    is_primary: cell_int(r.get(2)) == 1,
+                    is_constraint: cell_int(r.get(3)) == 1,
                 }),
             }
         }
@@ -495,7 +568,7 @@ impl Driver for SqlServerDriver {
             ))
             .await?
             .first()
-            .map(|r| as_int(r.first()) > 0)
+            .map(|r| cell_int(r.first()) > 0)
             .unwrap_or(false);
 
         Ok(TableDetail {
@@ -508,17 +581,17 @@ impl Driver for SqlServerDriver {
             columns: col_rows
                 .iter()
                 .map(|r| {
-                    let name = as_text(r.first());
+                    let name = cell_text(r.first());
                     ColumnDetail {
                         is_primary_key: primary_key.contains(&name),
                         name,
-                        type_name: as_text(r.get(1)),
-                        nullable: as_text(r.get(2)).eq_ignore_ascii_case("YES"),
+                        type_name: cell_text(r.get(1)),
+                        nullable: cell_text(r.get(2)).eq_ignore_ascii_case("YES"),
                         default: match r.get(3) {
                             Some(Value::Null) | None => None,
-                            other => Some(as_text(other)),
+                            other => Some(cell_text(other)),
                         },
-                        ordinal: as_int(r.get(4)) as i32,
+                        ordinal: cell_int(r.get(4)) as i32,
                     }
                 })
                 .collect(),
@@ -542,20 +615,11 @@ impl Driver for SqlServerDriver {
             ))
             .await?;
 
-        let mut out: Vec<TableColumns> = Vec::new();
-        for r in &rows {
-            let table = as_text(r.first());
-            let column = as_text(r.get(1));
-            match out.last_mut().filter(|t| t.name == table) {
-                Some(entry) => entry.columns.push(column),
-                None => out.push(TableColumns {
-                    schema: Some(schema.clone()),
-                    name: table,
-                    columns: vec![column],
-                }),
-            }
-        }
-        Ok(out)
+        Ok(group_columns(
+            rows.iter()
+                .map(|r| (cell_text(r.first()), cell_text(r.get(1)))),
+            Some(schema),
+        ))
     }
 
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
@@ -579,6 +643,23 @@ impl Driver for SqlServerDriver {
                 .get()
                 .await
                 .map_err(|e| FaroError::Connection(e.to_string()))?;
+            // Session-level statements go out as a plain batch. `execute`
+            // wraps every statement in `sp_executesql`, and a statement that
+            // changes the transaction count inside it fails with error 266 —
+            // so a user's `BEGIN TRANSACTION … COMMIT` script failed, and so
+            // did every restore that opened its own transaction. A `SET` or a
+            // `USE` in there is scoped to that one call and silently undone.
+            // A batch reports no row count, which for these is zero anyway.
+            if is_session_statement(&owned) {
+                client
+                    .simple_query(owned.as_str())
+                    .await
+                    .map_err(map_err)?
+                    .into_results()
+                    .await
+                    .map_err(map_err)?;
+                return Ok(0);
+            }
             let result = client.execute(&owned, &[]).await.map_err(map_err)?;
             Ok::<u64, FaroError>(result.rows_affected().iter().sum())
         };
@@ -592,6 +673,82 @@ impl Driver for SqlServerDriver {
         Ok(ExecResult {
             rows_affected,
             elapsed_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// A procedure call is run as a query, so its result set is shown.
+    ///
+    /// The default classifier sends anything not led by `SELECT` & co. to
+    /// `execute`, which reports a row count and discards rows — so `EXEC
+    /// sp_who`, or any procedure returning a result set, showed only
+    /// "N rows affected". A procedure that returns nothing still reports so.
+    async fn run(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<QueryOutcome> {
+        if is_procedure_call(sql) {
+            let rs = self.query(sql, limit, cancel).await?;
+            return Ok(if rs.columns.is_empty() {
+                QueryOutcome::Affected(ExecResult {
+                    rows_affected: 0,
+                    elapsed_ms: rs.elapsed_ms,
+                })
+            } else {
+                QueryOutcome::Rows(rs)
+            });
+        }
+        if super::returns_rows(sql) {
+            self.query(sql, limit, cancel).await.map(QueryOutcome::Rows)
+        } else {
+            self.execute(sql, cancel).await.map(QueryOutcome::Affected)
+        }
+    }
+
+    /// A `CREATE TABLE` that keeps each column's `IDENTITY(seed, increment)`.
+    ///
+    /// SQL Server keeps no DDL text, so the generic rebuild was used, and it
+    /// dropped the identity property: the restored key column was a plain
+    /// `int`, new rows got no value, and the dump's `IDENTITY_INSERT` could not
+    /// even be switched on for a table without one.
+    async fn table_ddl(&self, table: &TableRef) -> Result<Option<String>> {
+        let mut detail = self.describe_table(table).await?;
+        if detail.kind != TableKind::Table {
+            return Ok(None);
+        }
+        for (column, seed, increment) in self.identity_columns(table).await? {
+            if let Some(c) = detail.columns.iter_mut().find(|c| c.name == column) {
+                c.type_name = format!("{} IDENTITY({seed}, {increment})", c.type_name);
+                // An identity column has no DEFAULT of its own to carry over.
+                c.default = None;
+            }
+        }
+        Ok(Some(crate::transfer::backup::create_table_sql(
+            &detail,
+            &self.dialect,
+        )))
+    }
+
+    /// Let the dump insert its own identity values.
+    ///
+    /// SQL Server refuses an explicit value for an identity column unless
+    /// `IDENTITY_INSERT` is on for that table — so a dump of any table keyed
+    /// on one failed to restore. It moves the identity on past the highest
+    /// value inserted, so new rows continue from there.
+    async fn pre_data_sql(&self, table: &TableRef) -> Result<Vec<String>> {
+        Ok(if self.identity_columns(table).await?.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!("SET IDENTITY_INSERT {} ON;", self.qualified(table))]
+        })
+    }
+
+    /// Switched off again straight after the table's rows: SQL Server allows
+    /// it on for only one table per session at a time.
+    async fn post_data_sql(&self, table: &TableRef) -> Result<Vec<String>> {
+        Ok(if self.identity_columns(table).await?.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "SET IDENTITY_INSERT {} OFF;",
+                self.qualified(table)
+            )]
         })
     }
 
@@ -637,6 +794,67 @@ impl Driver for SqlServerDriver {
             return Err(rollback(&mut client, e).await);
         }
 
+        Ok(total)
+    }
+
+    /// Apply an import's statements as they arrive, in one transaction.
+    ///
+    /// The default buffered every statement first — the whole file, as SQL
+    /// text, in memory — which is what the streaming import exists to avoid.
+    /// The pool's one connection is held for the duration, as
+    /// `apply_transaction` holds it, so nothing else lands inside the open
+    /// transaction.
+    async fn apply_streaming(
+        &self,
+        mut chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+    ) -> Result<u64> {
+        use crate::model::ApplyChunk;
+
+        let mut client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        control(&mut client, "BEGIN TRANSACTION").await?;
+
+        let mut total = 0u64;
+        let mut index = 0usize;
+        let mut done = false;
+        while let Some(chunk) = chunks.recv().await {
+            let batch = match chunk {
+                ApplyChunk::Batch(batch) => batch,
+                ApplyChunk::Done => {
+                    done = true;
+                    break;
+                }
+            };
+            for stmt in &batch {
+                let affected: u64 = match client.execute(&stmt.sql, &[]).await {
+                    Ok(r) => r.rows_affected().iter().sum(),
+                    Err(e) => return Err(rollback(&mut client, map_err(e)).await),
+                };
+                if let Some(expected) = stmt.expect {
+                    if affected != expected {
+                        let guard = super::tx::guard_error(index, None, expected, affected);
+                        return Err(rollback(&mut client, guard).await);
+                    }
+                }
+                total += affected;
+                index += 1;
+            }
+        }
+
+        // Only an explicit `Done` earns a commit; a sender dropped without one
+        // means the reader failed partway through the file.
+        if !done {
+            let cause = FaroError::Other(
+                "the source could not be read to the end, so nothing was applied".into(),
+            );
+            return Err(rollback(&mut client, cause).await);
+        }
+        if let Err(e) = control(&mut client, "COMMIT").await {
+            return Err(rollback(&mut client, e).await);
+        }
         Ok(total)
     }
 
@@ -840,6 +1058,13 @@ mod tests {
         ));
         assert!(has_top_level_order_by("SELECT * FROM t ORDER BY a"));
         assert!(!has_top_level_order_by("SELECT * FROM t"));
+    }
+
+    #[test]
+    fn booleans_are_written_as_bits() {
+        // `TRUE` is an identifier in T-SQL, so a dump using it did not restore.
+        assert_eq!(SqlServerDialect.literal(&Value::Bool(true)), "1");
+        assert_eq!(SqlServerDialect.literal(&Value::Bool(false)), "0");
     }
 
     #[test]

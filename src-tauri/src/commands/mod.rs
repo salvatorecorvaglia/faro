@@ -20,10 +20,13 @@ pub use schema::*;
 pub use transfer::*;
 
 use crate::registry::Registry;
+use crate::results::ResultCache;
 use crate::store::Store;
 
 /// Shared application state, injected by Tauri into every command.
 pub struct AppState {
     pub store: Store,
     pub registry: Registry,
+    /// Recent results, for exporting by id; see `results`.
+    pub results: ResultCache,
 }

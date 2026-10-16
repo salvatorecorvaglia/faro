@@ -171,10 +171,7 @@ export function ResultGrid({
 
   if (result.columns.length === 0) {
     return (
-      <div
-        className="flex h-full items-center justify-center text-sm"
-        style={{ color: 'var(--text-faint)' }}
-      >
+      <div className="flex h-full items-center justify-center text-sm text-faint">
         No columns returned
       </div>
     );
@@ -273,7 +270,7 @@ export function ResultGrid({
     >
       <div style={{ width: totalWidth, minWidth: '100%' }}>
         {/* Header. Sticky so column names stay visible while scrolling. */}
-        <div className="sticky top-0 z-10" style={{ background: 'var(--bg-inset)' }}>
+        <div className="sticky top-0 z-10 bg-inset">
           <div className="flex" style={{ height: HEADER_HEIGHT }}>
             <div
               className="shrink-0 border-r border-b"
@@ -316,22 +313,15 @@ export function ResultGrid({
                     setDragCol(null);
                   }}
                 >
-                  {pkSet.has(col.name) && (
-                    <IconKey size={10} className="shrink-0" style={{ color: 'var(--warning)' }} />
-                  )}
+                  {pkSet.has(col.name) && <IconKey size={10} className="shrink-0 text-warning" />}
                   <span className="truncate text-xs font-semibold">{col.name}</span>
-                  <span
-                    className="truncate text-2xs font-normal"
-                    style={{ color: 'var(--text-faint)' }}
-                  >
-                    {col.typeName}
-                  </span>
+                  <span className="truncate text-2xs font-normal text-faint">{col.typeName}</span>
                   <span className="flex-1" />
                   {sorted &&
                     (sort!.desc ? (
-                      <IconSortDesc size={11} style={{ color: 'var(--accent)' }} />
+                      <IconSortDesc size={11} className="text-accent" />
                     ) : (
-                      <IconSortAsc size={11} style={{ color: 'var(--accent)' }} />
+                      <IconSortAsc size={11} className="text-accent" />
                     ))}
 
                   {/* Resize grip. Wider than the visible line so it is
@@ -352,7 +342,7 @@ export function ResultGrid({
                 className="flex shrink-0 items-center justify-center border-r border-b"
                 style={{ width: ROW_NUM_WIDTH, borderColor: 'var(--border)' }}
               >
-                <IconFilter size={11} style={{ color: 'var(--text-faint)' }} />
+                <IconFilter size={11} className="text-faint" />
               </div>
               {visible.map((ci) => {
                 const col = result.columns[ci]!;
@@ -383,8 +373,7 @@ export function ResultGrid({
                       <option value="isNotNull">∃</option>
                     </select>
                     <input
-                      className="min-w-0 flex-1 bg-transparent text-xs outline-none"
-                      style={{ color: 'var(--text)' }}
+                      className="min-w-0 flex-1 bg-transparent text-xs outline-none text-fg"
                       value={f?.value ?? ''}
                       disabled={f?.op === 'isNull' || f?.op === 'isNotNull'}
                       placeholder="filter"
@@ -495,9 +484,7 @@ export function ResultGrid({
               className="flex shrink-0 items-center justify-between border-r px-1.5"
               style={{ width: ROW_NUM_WIDTH, borderColor: 'var(--border)' }}
             >
-              <span className="text-xs" style={{ color: 'var(--success)' }}>
-                new
-              </span>
+              <span className="text-xs text-success">new</span>
               <button
                 type="button"
                 className="opacity-60 hover:opacity-100"
@@ -539,10 +526,7 @@ export function ResultGrid({
       </div>
 
       {result.rows.length === 0 && (
-        <div
-          className="flex items-center justify-center py-8 text-sm"
-          style={{ color: 'var(--text-faint)' }}
-        >
+        <div className="flex items-center justify-center py-8 text-sm text-faint">
           {/* An empty table and a filtered-out table are different facts. Saying
               "no rows match" when no filter is set asserts that something
               excluded them, which sends the user looking for a filter that was

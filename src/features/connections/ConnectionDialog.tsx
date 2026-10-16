@@ -50,6 +50,13 @@ function sslHint(mode: SslMode, engine: Engine): string | undefined {
       ? 'Uses HTTP (usually port 8123); credentials cross the network in the clear'
       : 'Requires HTTPS (usually port 8443) and checks both the certificate chain and hostname';
   }
+  // MongoDB has no "encrypt if offered": a connection either starts in TLS or
+  // never uses it. So Prefer — the default — meant no encryption at all while
+  // this hint promised some, and the username and password travelled in the
+  // clear to whatever host was typed in.
+  if (engine === 'mongodb' && (mode === 'prefer' || mode === 'disable')) {
+    return 'MongoDB cannot negotiate encryption, so this connects without TLS — credentials cross the network in the clear. Choose Require or stronger for anything but a local server.';
+  }
   switch (mode) {
     case 'prefer':
       return 'Encrypts only if the server offers it, and never checks the certificate';
@@ -334,7 +341,7 @@ export function ConnectionDialog({
         </Field>
 
         <div>
-          <label className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
               checked={config.readOnly}
@@ -346,17 +353,11 @@ export function ConnectionDialog({
               identify, and asks the engine to block them too where it can — but
               those are two different strengths of promise and the difference
               matters for a production connection. */}
-          <p className="mt-1 text-xs" style={{ color: 'var(--text-faint)' }}>
-            {readOnlyHint(config.engine)}
-          </p>
+          <p className="mt-1 text-xs text-faint">{readOnlyHint(config.engine)}</p>
         </div>
 
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
-        {tested && !error && (
-          <p className="text-sm" style={{ color: 'var(--success)' }}>
-            Connected successfully.
-          </p>
-        )}
+        {tested && !error && <p className="text-sm text-success">Connected successfully.</p>}
 
         <div className="mt-1 flex items-center justify-between gap-2">
           <button

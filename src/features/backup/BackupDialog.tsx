@@ -147,9 +147,7 @@ export function BackupDialog({
               disabled={!includeSchema}
             />
             Add DROP TABLE before each CREATE
-            <span style={{ color: 'var(--text-faint)' }}>
-              — makes the dump overwrite an existing database
-            </span>
+            <span className="text-faint">— makes the dump overwrite an existing database</span>
           </label>
         </div>
 
@@ -186,12 +184,9 @@ export function BackupDialog({
             />
           )}
 
-          <div
-            className="max-h-48 overflow-auto rounded-md border p-1"
-            style={{ borderColor: 'var(--border)' }}
-          >
+          <div className="max-h-48 overflow-auto rounded-md border p-1 border-line">
             {shown.length === 0 ? (
-              <p className="px-2 py-3 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
+              <p className="px-2 py-3 text-center text-xs text-faint">
                 {dataTables.length === 0 ? 'No tables to back up.' : 'Nothing matches.'}
               </p>
             ) : (
@@ -207,7 +202,7 @@ export function BackupDialog({
                   />
                   <span className="min-w-0 flex-1 truncate">{t.name}</span>
                   {t.estimatedRows != null && (
-                    <span className="text-2xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                    <span className="text-2xs tabular-nums text-faint">
                       ~{formatRowCount(t.estimatedRows)}
                     </span>
                   )}
@@ -218,7 +213,7 @@ export function BackupDialog({
         </div>
 
         {busy && (
-          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size={12} />
             {progress ? (
               <span>
@@ -232,11 +227,7 @@ export function BackupDialog({
         )}
 
         {error && <ErrorBanner message={error} onDismiss={reset} />}
-        {done && (
-          <p className="break-all text-xs" style={{ color: 'var(--success)' }}>
-            {done}
-          </p>
-        )}
+        {done && <p className="break-all text-xs text-success">{done}</p>}
 
         <div className="mt-1 flex justify-end gap-2">
           <button className="btn btn-ghost" onClick={onClose} type="button">
@@ -363,7 +354,7 @@ export function RestoreDialog({
               {info.hasSchema ? ' · creates tables' : ' · data only'}
             </p>
             {info.hasSchema && (
-              <p className="mt-1" style={{ color: 'var(--warning)' }}>
+              <p className="mt-1 text-warning">
                 This dump creates tables. If they already exist, those statements will fail unless
                 the dump drops them first.
               </p>
@@ -381,11 +372,11 @@ export function RestoreDialog({
             onChange={(e) => setStopOnError(e.target.checked)}
           />
           Stop at the first error
-          <span style={{ color: 'var(--text-faint)' }}>— recommended</span>
+          <span className="text-faint">— recommended</span>
         </label>
 
         {busy && (
-          <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner size={12} />
             <span>
               {progress ? `${progress.done} of ${progress.total} statements` : 'Starting…'}
@@ -394,11 +385,7 @@ export function RestoreDialog({
         )}
 
         {error && <ErrorBanner message={error} onDismiss={resetStatus} />}
-        {done && (
-          <p className="text-sm" style={{ color: 'var(--success)' }}>
-            {done}
-          </p>
-        )}
+        {done && <p className="text-sm text-success">{done}</p>}
 
         <div className="mt-1 flex justify-end gap-2">
           <button className="btn btn-ghost" onClick={onClose} type="button">

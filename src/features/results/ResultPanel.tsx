@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { IconBraces, IconClose, IconFilter, IconGrid } from '@/components/icons';
 import { EmptyState, ErrorBanner } from '@/components/ui';
-import type { ResultSet, StatementResult, Value } from '@/ipc/types';
+import type { FaroError, ResultSet, StatementResult, Value } from '@/ipc/types';
 import { applyGridOps, type GridFilter, type SortState } from '@/lib/grid';
 import { formatDuration, formatRowCount, formatValue, resultToJson, toJson } from '@/lib/value';
 import { type GridEditing, ResultGrid } from './ResultGrid';
@@ -170,7 +170,7 @@ export function ResultPanel(props: ResultPanelProps) {
                 title={s.sql}
               >
                 {i + 1}
-                {s.error && <span style={{ color: 'var(--danger)' }}>!</span>}
+                {s.error && <span className="text-danger">!</span>}
               </button>
             ))}
           </div>
@@ -225,7 +225,7 @@ export function ResultPanel(props: ResultPanelProps) {
       <div className="min-h-0 flex-1">
         {shown.error ? (
           <div className="h-full overflow-auto p-3">
-            <ErrorBanner message={shown.error} />
+            <ErrorBanner message={describeStatementError(shown.error)} />
           </div>
         ) : !rows ? (
           <EmptyState
@@ -256,37 +256,40 @@ export function ResultPanel(props: ResultPanelProps) {
   );
 }
 
+/**
+ * A failed statement's message, with the engine's own error code when it has
+ * one — the SQLSTATE `42P01` or SQL Server's `208` is what a search for the
+ * error, or a DBA, will actually want.
+ */
+export function describeStatementError(error: FaroError): string {
+  return error.code ? `${error.message}\n\nError code ${error.code}` : error.message;
+}
+
 function StatusLine({ result, hidden }: { result: StatementResult; hidden: number }) {
   if (result.error) {
-    return (
-      <span className="text-xs font-medium" style={{ color: 'var(--danger)' }}>
-        Failed
-      </span>
-    );
+    return <span className="text-xs font-medium text-danger">Failed</span>;
   }
   const o = result.outcome;
   if (!o) return null;
 
   if (o.type === 'rows') {
     return (
-      <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+      <span className="flex items-center gap-1.5 text-xs text-muted">
         <span className="tabular-nums">{formatRowCount(o.rows.length)} rows</span>
-        <span style={{ color: 'var(--text-faint)' }}>·</span>
+        <span className="text-faint">·</span>
         <span className="tabular-nums">{formatDuration(o.elapsedMs)}</span>
         {hidden > 0 && (
           <>
-            <span style={{ color: 'var(--text-faint)' }}>·</span>
-            <span style={{ color: 'var(--accent)' }}>
-              {formatRowCount(hidden)} hidden by filters
-            </span>
+            <span className="text-faint">·</span>
+            <span className="text-accent">{formatRowCount(hidden)} hidden by filters</span>
           </>
         )}
         {o.truncated && (
           <>
-            <span style={{ color: 'var(--text-faint)' }}>·</span>
+            <span className="text-faint">·</span>
             {/* Being explicit matters: a silently capped result would let
                 someone draw a conclusion from partial data. */}
-            <span style={{ color: 'var(--warning)' }}>truncated — more rows exist</span>
+            <span className="text-warning">truncated — more rows exist</span>
           </>
         )}
       </span>
@@ -294,9 +297,9 @@ function StatusLine({ result, hidden }: { result: StatementResult; hidden: numbe
   }
 
   return (
-    <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+    <span className="flex items-center gap-1.5 text-xs text-muted">
       <span className="tabular-nums">{formatRowCount(o.rowsAffected)} rows affected</span>
-      <span style={{ color: 'var(--text-faint)' }}>·</span>
+      <span className="text-faint">·</span>
       <span className="tabular-nums">{formatDuration(o.elapsedMs)}</span>
     </span>
   );
@@ -315,7 +318,7 @@ function JsonView({ result }: { result: ResultSet }) {
     <div className="h-full overflow-auto">
       <pre className="selectable p-3 font-mono text-sm leading-relaxed">{text}</pre>
       {result.rows.length > LIMIT && (
-        <p className="px-3 pb-3 text-xs" style={{ color: 'var(--text-faint)' }}>
+        <p className="px-3 pb-3 text-xs text-faint">
           Showing the first {LIMIT} of {formatRowCount(result.rows.length)} rows.
         </p>
       )}
@@ -347,9 +350,7 @@ function CellInspector({
     >
       <div className="flex h-7 shrink-0 items-center gap-2 px-2.5">
         <span className="text-xs font-semibold">{column}</span>
-        <span className="text-2xs" style={{ color: 'var(--text-faint)' }}>
-          {value.kind}
-        </span>
+        <span className="text-2xs text-faint">{value.kind}</span>
         <div className="flex-1" />
         <button
           type="button"

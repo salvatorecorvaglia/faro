@@ -19,6 +19,7 @@ import {
   setInsertCell,
   toggleDelete,
   toPendingChanges,
+  unaddressableKeyReason,
 } from '@/lib/edits';
 import type { GridFilter, SortState } from '@/lib/grid';
 import { confirmDialog } from '@/state/confirm';
@@ -42,6 +43,7 @@ function readOnlyReason(
   kind: TableDetail['kind'],
   engine: Engine | null,
   connectionReadOnly: boolean,
+  keyBlocker: string | null,
 ): string {
   // Checked first: it is the user's own choice, so it explains the state better
   // than anything about the table would, and it is the one they can undo.
@@ -52,6 +54,7 @@ function readOnlyReason(
   if (engine === 'clickhouse') {
     return 'ClickHouse tables are read-only here: a MergeTree primary key sorts rows rather than uniquely identifying them, so an edit could not be limited to one row.';
   }
+  if (keyBlocker) return keyBlocker;
   return 'This table has no primary key, so rows cannot be edited safely — an update could not be limited to one row.';
 }
 
@@ -77,9 +80,11 @@ export function TableTab({ tab }: { tab: Tab }) {
    */
   const connectionReadOnly = conn?.readOnly ?? false;
   const [detail, setDetail] = useState<TableDetail | null>(null);
-  const [offset, setOffset] = useState(0);
-  const [sort, setSort] = useState<SortState | null>(null);
-  const [filters, setFilters] = useState<GridFilter[]>([]);
+  // Seeded from the tab, which remembers what its page was loaded with across
+  // switches; see `Tab.browseOffset`.
+  const [offset, setOffset] = useState(tab.browseOffset);
+  const [sort, setSort] = useState<SortState | null>(tab.browseSort);
+  const [filters, setFilters] = useState<GridFilter[]>(tab.browseFilters);
 
   const [edits, setEdits] = useState<EditState>(emptyEdits);
   const [applying, setApplying] = useState(false);
@@ -91,10 +96,18 @@ export function TableTab({ tab }: { tab: Tab }) {
   tabRef.current = tab;
 
   /** The filter set the currently displayed page was loaded with. */
-  const appliedFilters = useRef<GridFilter[]>([]);
+  const appliedFilters = useRef<GridFilter[]>(tab.browseFilters);
 
+  // A key the grid cannot rebuild exactly (binary, float, …) would never find
+  // its row again, so such a table is read-only until it can.
+  const keyBlocker = useMemo(
+    () => unaddressableKeyReason(tab.browseResult, detail?.primaryKey ?? []),
+    [tab.browseResult, detail],
+  );
   const editable =
-    !connectionReadOnly && (detail?.primaryKey.length ? detail.kind === 'table' : false);
+    !connectionReadOnly &&
+    !keyBlocker &&
+    (detail?.primaryKey.length ? detail.kind === 'table' : false);
   const dirty = hasChanges(edits);
 
   // Mirror the dirty flag into the store. Only the store is around when the
@@ -110,6 +123,14 @@ export function TableTab({ tab }: { tab: Tab }) {
       if (!t.connectionId || !t.table) return;
 
       const queryId = `b-${++browseCounter}`;
+      // A load still in flight is about to be superseded. Its reply would be
+      // ignored anyway (see below), but the query itself kept running on the
+      // connection's single session and every later page queued behind it —
+      // so a quick run of sorts or filters on a large table waited for each
+      // abandoned one in turn. Cancelling frees the session for this one.
+      if (t.queryId) {
+        void ipc.cancelQuery(t.connectionId, t.queryId).catch(() => {});
+      }
       update(t.id, { running: true, queryId, error: null });
       try {
         const result = await ipc.browseTable(
@@ -130,7 +151,17 @@ export function TableTab({ tab }: { tab: Tab }) {
         // silently show the wrong page under a newer sort/filter/offset, so
         // only the most recently started request's result is ever committed.
         if (tabRef.current.queryId !== queryId) return;
-        update(t.id, { running: false, queryId: null, browseResult: result });
+        // What the page was loaded with goes into the store beside it, so a
+        // return to this tab shows it as it was left.
+        update(t.id, {
+          running: false,
+          queryId: null,
+          browseResult: result,
+          resultQueryId: queryId,
+          browseOffset: nextOffset,
+          browseSort: nextSort,
+          browseFilters: nextFilters,
+        });
         setOffset(nextOffset);
         // Remember what the displayed page was actually loaded with, so a
         // filter edit the user later declines to apply can be rolled back to it.
@@ -165,13 +196,14 @@ export function TableTab({ tab }: { tab: Tab }) {
   useEffect(() => {
     if (!tab.connectionId || !tab.table) return;
 
-    // A new table invalidates the old one's sort and filters. They used to
-    // survive here while the `load` below deliberately started clean, so the
-    // filter boxes went on showing the previous table's filters over data that
-    // was never filtered by them — and the next sort click sent them onward.
-    setSort(null);
-    setFilters([]);
-    appliedFilters.current = [];
+    // Start from what this tab's page was last loaded with — its own, never
+    // another table's: a tab is bound to one table, and the boxes must always
+    // describe the data under them.
+    const saved = tabRef.current;
+    setSort(saved.browseSort);
+    setFilters(saved.browseFilters);
+    appliedFilters.current = saved.browseFilters;
+    setOffset(saved.browseOffset);
     setDetail(null);
 
     const seq = ++describeSeq.current;
@@ -184,8 +216,12 @@ export function TableTab({ tab }: { tab: Tab }) {
         if (describeSeq.current === seq) setDetail(null);
       });
 
-    // `load` records its own failures on the tab.
-    void load(0, null, []);
+    // A page already in the store is shown as it was left rather than
+    // re-queried on every switch back; Refresh re-reads it. `load` records
+    // its own failures on the tab.
+    if (!saved.browseResult) {
+      void load(saved.browseOffset, saved.browseSort, saved.browseFilters);
+    }
   }, [tab.connectionId, tab.table?.schema, tab.table?.name]);
 
   /**
@@ -293,16 +329,13 @@ export function TableTab({ tab }: { tab: Tab }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="flex h-9 shrink-0 items-center gap-2 border-b px-2"
-        style={{ borderColor: 'var(--border)' }}
-      >
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2 border-line">
         <span className="text-sm font-semibold">
           {tab.table?.schema ? `${tab.table.schema}.` : ''}
           {tab.table?.name}
         </span>
         {detail && (
-          <span className="text-xs" style={{ color: 'var(--text-faint)' }}>
+          <span className="text-xs text-faint">
             {detail.columns.length} columns
             {detail.primaryKey.length > 0 && ` · PK: ${detail.primaryKey.join(', ')}`}
           </span>
@@ -361,7 +394,7 @@ export function TableTab({ tab }: { tab: Tab }) {
           >
             Previous
           </button>
-          <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)' }}>
+          <span className="text-xs tabular-nums text-muted">
             {/* Without a zero case this read "1–0" on an empty table — a range
                 running backwards, describing rows that do not exist. */}
             {rowsOnPage === 0 ? 'No rows' : `Rows ${offset + 1}–${offset + rowsOnPage}`}
@@ -411,7 +444,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
       {!dirty && detail && !editable && !tab.readOnlyNoticeDismissed && (
         <ReadOnlyNotice
-          reason={readOnlyReason(detail.kind, engine, connectionReadOnly)}
+          reason={readOnlyReason(detail.kind, engine, connectionReadOnly, keyBlocker)}
           onDismiss={() => update(tab.id, { readOnlyNoticeDismissed: true })}
         />
       )}
@@ -420,6 +453,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         open={exportOpen}
         onClose={() => setExportOpen(false)}
         result={tab.browseResult}
+        source={tab.resultQueryId ? { queryId: tab.resultQueryId, statement: 0 } : null}
         connectionId={tab.connectionId}
         table={tab.table}
         defaultName={tab.table?.name ?? 'export'}

@@ -12,16 +12,21 @@ const HISTORY_CAP: i64 = 10_000;
 const HISTORY_PAGE: i64 = 300;
 
 // -- Saved queries ---------------------------------------------------------
+//
+// Every command here is async, although none of them awaits anything. Tauri
+// runs a *synchronous* command on the main thread — the one that also drives
+// the window — so each settings-database read or write, and each wait on the
+// store's mutex behind a query's history write, froze the UI for its duration.
 
 #[tauri::command]
-pub fn list_saved_queries(state: State<'_, AppState>) -> Result<Vec<SavedQuery>> {
+pub async fn list_saved_queries(state: State<'_, AppState>) -> Result<Vec<SavedQuery>> {
     state.store.list_saved_queries()
 }
 
 /// Create or update a saved query. Returns the stored row, so the caller picks
 /// up the generated id and timestamps.
 #[tauri::command]
-pub fn save_query(state: State<'_, AppState>, mut query: SavedQuery) -> Result<SavedQuery> {
+pub async fn save_query(state: State<'_, AppState>, mut query: SavedQuery) -> Result<SavedQuery> {
     if query.id.is_empty() {
         query.id = uuid::Uuid::new_v4().to_string();
     }
@@ -44,14 +49,14 @@ pub fn save_query(state: State<'_, AppState>, mut query: SavedQuery) -> Result<S
 }
 
 #[tauri::command]
-pub fn delete_saved_query(state: State<'_, AppState>, id: String) -> Result<()> {
+pub async fn delete_saved_query(state: State<'_, AppState>, id: String) -> Result<()> {
     state.store.delete_saved_query(&id)
 }
 
 // -- History ---------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_history(
+pub async fn list_history(
     state: State<'_, AppState>,
     search: Option<String>,
     limit: Option<i64>,
@@ -64,12 +69,12 @@ pub fn list_history(
 }
 
 #[tauri::command]
-pub fn clear_history(state: State<'_, AppState>) -> Result<()> {
+pub async fn clear_history(state: State<'_, AppState>) -> Result<()> {
     state.store.clear_history()
 }
 
 #[tauri::command]
-pub fn delete_history_entry(state: State<'_, AppState>, id: i64) -> Result<()> {
+pub async fn delete_history_entry(state: State<'_, AppState>, id: i64) -> Result<()> {
     state.store.delete_history_entry(id)
 }
 

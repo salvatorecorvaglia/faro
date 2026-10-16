@@ -69,11 +69,32 @@ describe('ResultPanel', () => {
     render(
       <ResultPanel
         {...baseProps()}
-        statements={[statement({ outcome: null, error: 'syntax error near SELEC' })]}
+        statements={[
+          statement({
+            outcome: null,
+            error: { kind: 'database', message: 'syntax error near SELEC', code: '42601' },
+          }),
+        ]}
         clientSideSort
       />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('syntax error near SELEC');
+    // The engine's own code survives: it is what a search for the error needs.
+    expect(screen.getByRole('alert')).toHaveTextContent('Error code 42601');
+  });
+
+  it('shows a per-statement error without a code line when the engine gave none', () => {
+    render(
+      <ResultPanel
+        {...baseProps()}
+        statements={[
+          statement({ outcome: null, error: { kind: 'cancelled', message: 'Stopped.' } }),
+        ]}
+        clientSideSort
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Stopped.');
+    expect(screen.getByRole('alert')).not.toHaveTextContent('Error code');
   });
 
   it('shows an affected-rows summary for a non-SELECT statement, not a grid', () => {

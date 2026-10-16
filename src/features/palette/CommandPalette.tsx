@@ -260,14 +260,10 @@ export function CommandPalette({
             boxShadow: 'var(--shadow-modal)',
           }}
         >
-          <div
-            className="flex shrink-0 items-center gap-2 border-b px-3"
-            style={{ borderColor: 'var(--border)' }}
-          >
+          <div className="flex shrink-0 items-center gap-2 border-b px-3 border-line">
             <IconSearch size={14} className="opacity-45" />
             <input
-              className="flex-1 bg-transparent py-3 text-base outline-none"
-              style={{ color: 'var(--text)' }}
+              className="flex-1 bg-transparent py-3 text-base outline-none text-fg"
               placeholder="Search queries, tables, connections…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -294,9 +290,7 @@ export function CommandPalette({
             className="min-h-0 flex-1 overflow-y-auto py-1"
           >
             {results.length === 0 ? (
-              <p className="px-3 py-6 text-center text-sm" style={{ color: 'var(--text-faint)' }}>
-                Nothing matches “{query}”.
-              </p>
+              <p className="px-3 py-6 text-center text-sm text-faint">Nothing matches “{query}”.</p>
             ) : (
               results.map((item, i) => {
                 const showGroup = item.group !== lastGroup;
@@ -305,10 +299,7 @@ export function CommandPalette({
                 return (
                   <div key={item.id}>
                     {showGroup && (
-                      <div
-                        className="px-3 pt-2 pb-1 text-2xs font-semibold uppercase tracking-wide"
-                        style={{ color: 'var(--text-faint)' }}
-                      >
+                      <div className="px-3 pt-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-faint">
                         {item.group}
                       </div>
                     )}
@@ -361,7 +352,7 @@ export function CommandPalette({
             {/* The list is capped because it is not virtualized. Applying that
                 silently let someone conclude their table simply was not there. */}
             {totalMatches > results.length && (
-              <p className="px-3 pt-2 pb-1 text-xs" style={{ color: 'var(--text-faint)' }}>
+              <p className="px-3 pt-2 pb-1 text-xs text-faint">
                 Showing {results.length} of {totalMatches} matches — keep typing to narrow.
               </p>
             )}

@@ -11,6 +11,7 @@ import {
   setInsertCell,
   toggleDelete,
   toPendingChanges,
+  unaddressableKeyReason,
 } from '@/lib/edits';
 
 const int = (n: number): Value => ({ kind: 'int', value: n });
@@ -125,7 +126,8 @@ describe('toPendingChanges', () => {
     expect(changes).toHaveLength(1);
     expect(changes[0]).toEqual({
       type: 'update',
-      key: [{ column: 'id', value: { kind: 'text', value: '1' } }],
+      // The key travels as the value it was read as, not its display text.
+      key: [{ column: 'id', value: { kind: 'stored', value: int(1) } }],
       cells: [{ column: 'name', value: { kind: 'text', value: 'Ada L' } }],
     });
   });
@@ -135,8 +137,8 @@ describe('toPendingChanges', () => {
     const e = setCell(emptyEdits(), 0, 'id', { kind: 'text', value: '99' }, int(1));
     const changes = toPendingChanges(result, ['id'], e);
 
-    const update = changes[0] as { key: { value: { value: string } }[] };
-    expect(update.key[0]!.value.value).toBe('1');
+    const update = changes[0] as { key: { value: unknown }[] };
+    expect(update.key[0]!.value).toEqual({ kind: 'stored', value: int(1) });
   });
 
   it('emits only the delete for a row that is both edited and deleted', () => {
@@ -192,7 +194,88 @@ describe('toPendingChanges', () => {
     expect(changes[0]!.type).toBe('insert');
   });
 
+  it('sends a binary key as its bytes, not as the size badge the grid shows', () => {
+    const binary: ResultSet = {
+      columns: [
+        { name: 'uid', typeName: 'binary(16)' },
+        { name: 'v', typeName: 'text' },
+      ],
+      rows: [[{ kind: 'bytes', value: [0xde, 0xad] }, text('x')]],
+      truncated: false,
+      elapsedMs: 1,
+    };
+    const e = toggleDelete(emptyEdits(), 0);
+    expect(toPendingChanges(binary, ['uid'], e)).toEqual([
+      {
+        type: 'delete',
+        key: [
+          {
+            column: 'uid',
+            value: { kind: 'stored', value: { kind: 'bytes', value: [0xde, 0xad] } },
+          },
+        ],
+      },
+    ]);
+  });
+
   it('returns nothing when nothing is staged', () => {
     expect(toPendingChanges(result, ['id'], emptyEdits())).toEqual([]);
+  });
+});
+
+describe('unaddressableKeyReason', () => {
+  const keyed = (key: Value): ResultSet => ({
+    columns: [
+      { name: 'id', typeName: 'x' },
+      { name: 'name', typeName: 'text' },
+    ],
+    rows: [[key, text('Ada')]],
+    truncated: false,
+    elapsedMs: 1,
+  });
+
+  it('allows keys whose displayed text is the stored value', () => {
+    expect(unaddressableKeyReason(result, ['id'])).toBeNull();
+    expect(unaddressableKeyReason(keyed(text('abc')), ['id'])).toBeNull();
+    // A BIGINT past 2^53 arrives as exact decimal text, so it is addressable.
+    expect(
+      unaddressableKeyReason(keyed({ kind: 'decimal', value: '9007199254740993' }), ['id']),
+    ).toBeNull();
+    expect(unaddressableKeyReason(keyed({ kind: 'uuid', value: 'a-b' }), ['id'])).toBeNull();
+  });
+
+  it('allows a binary key now that keys travel as their stored value', () => {
+    // Sent as display text, a binary key was `[16 B]` and never matched, so
+    // such tables were read-only. As the bytes themselves, it matches.
+    expect(unaddressableKeyReason(keyed({ kind: 'bytes', value: [1, 2] }), ['id'])).toBeNull();
+  });
+
+  it('refuses a binary key too large to have been sent whole', () => {
+    // Only its size reached the UI, so there are no bytes to send back.
+    expect(unaddressableKeyReason(keyed({ kind: 'largeBytes', value: 1_000_000 }), ['id'])).toMatch(
+      /too large/,
+    );
+  });
+
+  it('names the key column it cannot match on', () => {
+    const reason = unaddressableKeyReason(keyed({ kind: 'float', value: 0.1 }), ['id']);
+    expect(reason).toMatch(/“id”/);
+    expect(reason).toMatch(/floating-point/);
+  });
+
+  it('refuses floats, JSON, arrays and unreadable types too', () => {
+    for (const key of [
+      { kind: 'float', value: 0.1 },
+      { kind: 'json', value: { a: 1 } },
+      { kind: 'array', value: [] },
+      { kind: 'unsupported', value: 'INTERVAL' },
+    ] as Value[]) {
+      expect(unaddressableKeyReason(keyed(key), ['id']), key.kind).not.toBeNull();
+    }
+  });
+
+  it('has nothing to say without a key or a page', () => {
+    expect(unaddressableKeyReason(keyed({ kind: 'bytes', value: [] }), [])).toBeNull();
+    expect(unaddressableKeyReason(null, ['id'])).toBeNull();
   });
 });

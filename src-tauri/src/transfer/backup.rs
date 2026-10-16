@@ -118,7 +118,10 @@ pub async fn write_backup(
         return Err(FaroError::Other("no tables selected to back up".into()));
     }
 
-    let file = std::fs::File::create(path)?;
+    // Written aside and moved into place at the end, so a backup that fails or
+    // is cancelled leaves no file that looks like a finished one.
+    let output = super::PartialFile::new(path);
+    let file = std::fs::File::create(output.path())?;
     let mut out = std::io::BufWriter::new(file);
 
     writeln!(out, "-- Faro backup")?;
@@ -149,14 +152,12 @@ pub async fn write_backup(
     // in place before the first insert, so table order cannot break a
     // foreign key.
     if options.include_schema {
-        for (index, detail) in details.iter().enumerate() {
-            if options.drop_existing {
-                writeln!(
-                    out,
-                    "DROP TABLE IF EXISTS {};",
-                    dialect.qualify(detail.table.schema.as_deref(), &detail.table.name)
-                )?;
+        if options.drop_existing {
+            for stmt in drop_statements(&details, dialect) {
+                writeln!(out, "{stmt}")?;
             }
+        }
+        for (index, detail) in details.iter().enumerate() {
             // Prefer the engine's own DDL where it keeps one — it preserves
             // constraints a column-by-column rebuild cannot express.
             let ddl = match driver.table_ddl(&detail.table).await? {
@@ -176,6 +177,13 @@ pub async fn write_backup(
             if cancel.is_cancelled() {
                 return Err(FaroError::Cancelled);
             }
+            // Each table's rows sit between its own pre- and post-data
+            // statements: SQL Server allows `IDENTITY_INSERT` on for only one
+            // table at a time, so it has to be switched off again before the
+            // next table's rows begin.
+            for stmt in driver.pre_data_sql(&detail.table).await? {
+                writeln!(out, "{stmt}")?;
+            }
             let written =
                 write_table_data(driver, &mut out, detail, dialect, cancel.clone(), |rows| {
                     on_progress(BackupProgress {
@@ -186,7 +194,18 @@ pub async fn write_backup(
                     });
                 })
                 .await?;
+            for stmt in driver.post_data_sql(&detail.table).await? {
+                writeln!(out, "{stmt}")?;
+            }
             total_rows += written;
+        }
+    } else if options.include_schema {
+        // No rows, but what follows them still applies to an empty table —
+        // a Postgres identity column returned to ALWAYS, for one.
+        for detail in &details {
+            for stmt in driver.post_data_sql(&detail.table).await? {
+                writeln!(out, "{stmt}")?;
+            }
         }
     }
 
@@ -201,11 +220,12 @@ pub async fn write_backup(
     // name", while SQLite keeps them as separate objects that still need it.
     if options.include_schema {
         let skip_indexes = dialect.native_ddl_includes_indexes();
+        let skip_foreign_keys = dialect.native_ddl_includes_foreign_keys();
         for (index, detail) in details.iter().enumerate() {
             let native = used_native_ddl[index];
             for stmt in secondary_objects_sql(detail, dialect) {
                 let redundant = native
-                    && (stmt.starts_with("ALTER TABLE")
+                    && ((skip_foreign_keys && stmt.starts_with("ALTER TABLE"))
                         || (skip_indexes && stmt.contains("INDEX")));
                 if redundant {
                     continue;
@@ -216,6 +236,9 @@ pub async fn write_backup(
     }
 
     out.flush()?;
+    // Closed before the rename, which Windows refuses on an open file.
+    drop(out);
+    output.commit()?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     Ok(BackupResult {
@@ -236,55 +259,87 @@ async fn write_table_data(
     mut on_batch: impl FnMut(u64),
 ) -> Result<u64> {
     let qualified = dialect.qualify(detail.table.schema.as_deref(), &detail.table.name);
-    let columns: Vec<String> = detail
+    // Columns the engine computes are left out: an INSERT may not supply them,
+    // and the restored table computes them again.
+    let generated = driver.generated_columns(&detail.table).await?;
+    let stored: Vec<&crate::model::ColumnDetail> = detail
         .columns
+        .iter()
+        .filter(|c| !generated.contains(&c.name))
+        .collect();
+    let columns: Vec<String> = stored
         .iter()
         .map(|c| dialect.quote_ident(&c.name))
         .collect();
-
-    // A stable order is what makes paging a partition rather than a resample;
-    // see `stable_order_by`. Without it a keyless table dumps duplicated and
-    // missing rows.
-    let order = sql::stable_order_by(&detail.primary_key, &detail.columns, dialect);
-
-    let base = format!("SELECT {} FROM {qualified}{order}", columns.join(", "));
     let prefix = format!("INSERT INTO {qualified} ({}) VALUES", columns.join(", "));
+    // Read through the dialect, which may render a column in a form that
+    // restores more faithfully than its decoded value; see `dump_column`.
+    let select_list: Vec<String> = stored.iter().map(|c| dialect.dump_column(c)).collect();
 
     writeln!(out, "\n-- Data for {}", detail.table.name)?;
 
-    let mut offset = 0u64;
+    // Paged in a stable order — a partition of the table rather than a
+    // resample — and by key where the table has one; see `walk_pages`.
     let mut total = 0u64;
+    crate::transfer::export::walk_pages(
+        driver,
+        detail,
+        &select_list.join(", "),
+        FETCH_BATCH,
+        cancel,
+        |page| {
+            if page.rows.is_empty() {
+                return Ok(());
+            }
 
-    loop {
-        let paged = dialect.paginate(&base, FETCH_BATCH + 1, offset);
-        let page = driver.query(&paged, FETCH_BATCH, cancel.clone()).await?;
+            // A value Faro could not decode would be dumped as its type name
+            // and restored as that string — a backup that silently is not
+            // the table.
+            for row in &page.rows {
+                crate::transfer::export::reject_unsupported(&page.columns, row).map_err(|e| {
+                    FaroError::Other(format!("Backup of \"{}\" stopped. {e}", detail.table.name))
+                })?;
+            }
 
-        if page.rows.is_empty() {
-            break;
-        }
+            for chunk in page.rows.chunks(ROWS_PER_INSERT) {
+                let tuples: Vec<String> = chunk
+                    .iter()
+                    .map(|row| {
+                        let values: Vec<String> = row.iter().map(|v| dialect.literal(v)).collect();
+                        format!("({})", values.join(", "))
+                    })
+                    .collect();
+                writeln!(out, "{prefix}\n{};", tuples.join(",\n"))?;
+            }
 
-        for chunk in page.rows.chunks(ROWS_PER_INSERT) {
-            let tuples: Vec<String> = chunk
-                .iter()
-                .map(|row| {
-                    let values: Vec<String> = row.iter().map(|v| dialect.literal(v)).collect();
-                    format!("({})", values.join(", "))
-                })
-                .collect();
-            writeln!(out, "{prefix}\n{};", tuples.join(",\n"))?;
-        }
-
-        let count = page.rows.len() as u64;
-        total += count;
-        offset += count;
-        on_batch(total);
-
-        if !page.truncated {
-            break;
-        }
-    }
+            total += page.rows.len() as u64;
+            on_batch(total);
+            Ok(())
+        },
+    )
+    .await?;
 
     Ok(total)
+}
+
+/// `DROP TABLE IF EXISTS` for every table, children before parents.
+///
+/// `details` arrives parent-first, the order creation needs. Dropping in that
+/// same order — as each `DROP` used to sit just before its own `CREATE` — tried
+/// to drop a parent while its children still referenced it, which every engine
+/// enforcing foreign keys refuses, so restoring over an existing schema failed
+/// on its first statement.
+pub fn drop_statements(details: &[TableDetail], dialect: &dyn Dialect) -> Vec<String> {
+    details
+        .iter()
+        .rev()
+        .map(|d| {
+            format!(
+                "DROP TABLE IF EXISTS {};",
+                dialect.qualify(d.table.schema.as_deref(), &d.table.name)
+            )
+        })
+        .collect()
 }
 
 /// Generate `CREATE TABLE` from a table's columns and primary key.
@@ -531,13 +586,7 @@ pub async fn restore(
     // Dropping them here means the count reported to the user is the number of
     // statements that will actually run, and that a file of nothing but
     // comments is correctly recognized as having no SQL in it.
-    let statements: Vec<String> = sql::split_statements_with(script, driver.dialect().lex_rules())
-        .into_iter()
-        .filter(|s| {
-            !s.lines()
-                .all(|l| l.trim().is_empty() || l.trim_start().starts_with("--"))
-        })
-        .collect();
+    let statements = sql::executable_statements(script, driver.dialect().lex_rules());
 
     if statements.is_empty() {
         return Err(FaroError::Other(
@@ -797,6 +846,25 @@ mod tests {
             named("authors", &[]),
         ]);
         assert_eq!(out, vec!["authors", "books", "book_stores"]);
+    }
+
+    #[test]
+    fn tables_are_dropped_children_first() {
+        // Creation is parent-first; dropping in that order is refused while a
+        // child still references the parent.
+        let ordered = order_by_dependency(vec![
+            named("book_stores", &["books"]),
+            named("books", &["authors"]),
+            named("authors", &[]),
+        ]);
+        assert_eq!(
+            drop_statements(&ordered, &TestDialect),
+            vec![
+                r#"DROP TABLE IF EXISTS "book_stores";"#,
+                r#"DROP TABLE IF EXISTS "books";"#,
+                r#"DROP TABLE IF EXISTS "authors";"#,
+            ]
+        );
     }
 
     #[test]

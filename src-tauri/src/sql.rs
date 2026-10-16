@@ -263,9 +263,67 @@ fn consume_until_tag(
     }
 }
 
+/// Whether a fragment holds nothing but comments and whitespace.
+///
+/// Splitting keeps comments with the statement they precede, so a script that
+/// ends in a comment — `SELECT 1;\n-- done` — yields a trailing fragment with
+/// no SQL in it. Sent to an engine that is an error on some (MySQL: "Query was
+/// empty") and a pointless round trip on the rest, so callers that execute
+/// statements drop these first.
+pub fn is_comment_only(sql: &str) -> bool {
+    leading_trivia_len(sql) == sql.len()
+}
+
+/// Byte length of the comments and whitespace in front of a fragment's first
+/// piece of SQL — the whole length when there is none.
+fn leading_trivia_len(sql: &str) -> usize {
+    let mut chars = sql.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, n)| n);
+        if c == '-' && next == Some('-') {
+            for (_, n) in chars.by_ref() {
+                if n == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            chars.next();
+            let mut prev = '\0';
+            for (_, n) in chars.by_ref() {
+                if prev == '*' && n == '/' {
+                    break;
+                }
+                prev = n;
+            }
+            continue;
+        }
+        if !c.is_whitespace() {
+            return i;
+        }
+    }
+    sql.len()
+}
+
+/// The statements of a script that actually carry SQL, with any comment-only
+/// fragment removed. See [`is_comment_only`].
+pub fn executable_statements(script: &str, rules: LexRules) -> Vec<String> {
+    split_statements_with(script, rules)
+        .into_iter()
+        .filter(|s| !is_comment_only(s))
+        .collect()
+}
+
 /// Find the statement surrounding `offset`, for "run the statement under the
-/// cursor". Returns the trimmed statement, or None if the cursor sits in
-/// whitespace between statements.
+/// cursor". Returns the trimmed statement, or None if there is none to run.
+///
+/// A cursor between two statements belongs to the *earlier* one while it is
+/// still on that statement's line — resting just after its `;`, or in a
+/// trailing comment — which is where a cursor ends up after typing a
+/// statement. Once a line break separates them, it belongs to the next one.
+/// Resolving the first case to the next statement is how "run this statement"
+/// on `SELECT 1;⎸` ran the `DELETE` on the line below.
 ///
 /// `offset` is a **UTF-16 code unit** index, because that is what the caller
 /// has: CodeMirror — like every JavaScript string API — counts positions in
@@ -275,18 +333,36 @@ fn consume_until_tag(
 /// a script mixing `SELECT` and `DELETE` means running the wrong one.
 pub fn statement_at(script: &str, offset_utf16: usize) -> Option<String> {
     let offset = utf16_to_byte_offset(script, offset_utf16);
+    // Whether the cursor is still on the line where `end` sits.
+    let same_line = |end: usize| !script[end..offset].contains('\n');
+
     let mut cursor = 0usize;
-    for stmt in split_statements(script) {
+    let mut previous: Option<(String, usize)> = None;
+    for stmt in executable_statements(script, LexRules::PERMISSIVE) {
         // Locate this statement in the original text to map cursor positions.
         let start = script[cursor..].find(&stmt)? + cursor;
         let end = start + stmt.len();
+        // Where its SQL begins. Splitting attaches a comment to the statement
+        // that follows it, so `SELECT 1; -- note` puts the note at the head of
+        // the *next* statement's text even though it sits on this one's line.
+        let code_start = start + leading_trivia_len(&stmt);
         // `<= end` so a cursor resting just past the last character still counts.
         if offset <= end {
+            if let Some((prev, prev_end)) = previous {
+                if offset < code_start && same_line(prev_end) {
+                    return Some(prev);
+                }
+            }
             return Some(stmt);
         }
         cursor = end;
+        previous = Some((stmt, end));
     }
-    None
+
+    // Past the last statement: still its statement while on its line.
+    previous
+        .filter(|(_, end)| same_line(*end))
+        .map(|(stmt, _)| stmt)
 }
 
 /// Convert a UTF-16 code unit index into a UTF-8 byte index.
@@ -324,6 +400,21 @@ pub fn bare_words(sql: &str) -> Vec<String> {
 /// the engine's real rules, or check every plausible set — see
 /// [`is_read_only_statement`].
 pub fn bare_words_with(sql: &str, rules: LexRules) -> Vec<String> {
+    bare_words_up_to(sql, rules, usize::MAX)
+}
+
+/// The statement's first bare word, upper-cased — its leading keyword.
+///
+/// Skips comments, quoted text and punctuation the same way [`bare_words`]
+/// does, so `-- note\nSELECT …` and `/* hint */ (SELECT …)` both lead with
+/// `SELECT`. Stops at the first word rather than tokenizing the whole
+/// statement, since callers ask this of every statement they run.
+pub fn leading_word(sql: &str) -> Option<String> {
+    bare_words_up_to(sql, LexRules::PERMISSIVE, 1).pop()
+}
+
+/// [`bare_words_with`], stopping once `max` words have been collected.
+fn bare_words_up_to(sql: &str, rules: LexRules, max: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
     let mut chars = sql.chars().peekable();
@@ -338,6 +429,9 @@ pub fn bare_words_with(sql: &str, rules: LexRules) -> Vec<String> {
     }
 
     while let Some(c) = chars.next() {
+        if out.len() >= max {
+            break;
+        }
         if c == '-' && chars.peek() == Some(&'-') {
             flush!();
             for n in chars.by_ref() {
@@ -431,6 +525,21 @@ pub fn is_read_only_statement(sql: &str) -> bool {
         && is_read_only_statement_with(sql, LexRules::PERMISSIVE)
 }
 
+/// How many of `statements` can write, judged with `rules` when the engine is
+/// known and with every plausible reading when it is not.
+///
+/// Uses the same classifier as the read-only guard, so "this script changes
+/// data" means exactly what a read-only connection would refuse.
+pub fn count_writes(statements: &[String], rules: Option<LexRules>) -> usize {
+    statements
+        .iter()
+        .filter(|s| match rules {
+            Some(rules) => !is_read_only_statement_with(s, rules),
+            None => !is_read_only_statement(s),
+        })
+        .count()
+}
+
 /// Whether a statement is safe to run read-only, judged with one engine's
 /// quoting rules.
 pub fn is_read_only_statement_with(sql: &str, rules: LexRules) -> bool {
@@ -449,11 +558,47 @@ pub fn is_read_only_statement_with(sql: &str, rules: LexRules) -> bool {
     }
 
     if first == "PRAGMA" {
-        return pragma_reads(sql, &words);
+        return pragma_reads(sql);
     }
 
-    !words.iter().any(|w| WRITE_TOKENS.contains(&w.as_str()))
+    !words
+        .iter()
+        .any(|w| WRITE_TOKENS.contains(&w.as_str()) || SIDE_EFFECT_FUNCTIONS.contains(&w.as_str()))
 }
+
+/// Functions that change state while being called from what looks like a read.
+///
+/// `SELECT set_config('default_transaction_read_only', 'off', false)` has no
+/// write keyword in it, so the token test waved it through — and it switches
+/// off the server-side read-only guard Postgres was given at connect, after
+/// which a `SELECT` of any function that writes succeeds. The rest are the
+/// same shape: `nextval`/`setval` advance sequences, `dblink`/`dblink_exec`
+/// run arbitrary SQL on another server, the `lo_*` family creates, writes and
+/// deletes large objects (and `lo_import`/`lo_export` touch the server's
+/// filesystem), and the `pg_*` administration functions kill sessions or
+/// reconfigure the server.
+///
+/// Matched as bare words anywhere in the statement, so a column that happens
+/// to share one of these names is refused too — the same trade `WRITE_TOKENS`
+/// makes for `INTO`: a rare rejected read on an opt-in safety setting.
+const SIDE_EFFECT_FUNCTIONS: [&str; 16] = [
+    "SET_CONFIG",
+    "NEXTVAL",
+    "SETVAL",
+    "DBLINK",
+    "DBLINK_EXEC",
+    "LO_IMPORT",
+    "LO_EXPORT",
+    "LO_UNLINK",
+    "LO_CREATE",
+    "LO_FROM_BYTEA",
+    "LO_PUT",
+    "PG_TERMINATE_BACKEND",
+    "PG_CANCEL_BACKEND",
+    "PG_RELOAD_CONF",
+    "PG_ROTATE_LOGFILE",
+    "PG_SWITCH_WAL",
+];
 
 /// SQLite pragmas that only ever report; their call form is a query.
 ///
@@ -485,18 +630,44 @@ const READ_ONLY_PRAGMAS: [&str; 16] = [
 /// `PRAGMA x` reads. `PRAGMA x = y` writes — and so does `PRAGMA x(y)`, which a
 /// test for `=` alone waved straight through, making `PRAGMA journal_mode(WAL)`
 /// and `PRAGMA writable_schema(1)` both look like reads.
-fn pragma_reads(sql: &str, words: &[String]) -> bool {
-    // `PRAGMA schema.name(...)` puts the name second, so look at both.
-    if words
-        .iter()
-        .skip(1)
-        .take(2)
-        .any(|w| READ_ONLY_PRAGMAS.contains(&w.as_str()))
-    {
+fn pragma_reads(sql: &str) -> bool {
+    let Some(name) = pragma_name(sql) else {
+        // Not a shape this can read; treating it as a write is the safe side.
+        return false;
+    };
+    if READ_ONLY_PRAGMAS.contains(&name.as_str()) {
         return true;
     }
     // Any other pragma is a read only when it supplies no value in either form.
     !sql.contains('=') && !sql.contains('(')
+}
+
+/// The name a `PRAGMA` statement sets or reads, upper-cased.
+///
+/// Read from its exact position — the word after `PRAGMA`, or after the
+/// `schema.` that may precede it. Accepting an allowlisted word *anywhere* in
+/// the first few tokens let the value vouch for the name:
+/// `PRAGMA user_version(table_info)` names `table_info` as its argument, sets
+/// `user_version`, and passed as a read.
+fn pragma_name(sql: &str) -> Option<String> {
+    let body = &sql[leading_trivia_len(sql)..];
+    if !body.get(..6)?.eq_ignore_ascii_case("PRAGMA") {
+        return None;
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let take_ident = |s: &str| -> String {
+        let end = s.find(|c: char| !is_ident(c)).unwrap_or(s.len());
+        s[..end].to_ascii_uppercase()
+    };
+
+    let rest = body[6..].trim_start();
+    let first = take_ident(rest);
+    let after = rest[first.len()..].trim_start();
+    let name = match after.strip_prefix('.') {
+        Some(qualified) => take_ident(qualified.trim_start()),
+        None => first,
+    };
+    (!name.is_empty()).then_some(name)
 }
 
 // -- Browse-page composition ----------------------------------------------
@@ -511,10 +682,19 @@ use crate::model::{BrowseOptions, ColumnFilter, FilterOp, TableRef};
 /// `known` is the table's real column list. Any sort or filter naming a column
 /// outside it is dropped rather than errored: a stale filter left over from a
 /// schema change should not block browsing.
+///
+/// `primary_key` makes paging deterministic. Without an `ORDER BY` a database
+/// may return rows in a different order for each query, so Next could repeat
+/// rows from the previous page and skip others entirely; sorting on a
+/// non-unique column has the same problem among equal values. The key orders
+/// an unsorted page and breaks ties in a sorted one. A keyless table is left
+/// unordered — ordering by every column would sort the whole table for every
+/// page, which is too high a price for browsing.
 pub fn build_browse_sql(
     table: &TableRef,
     options: &BrowseOptions,
     known: &[&str],
+    primary_key: &[String],
     dialect: &dyn crate::driver::Dialect,
     limit: u64,
 ) -> String {
@@ -529,12 +709,23 @@ pub fn build_browse_sql(
         sql.push_str(&where_clause);
     }
 
-    if let Some(col) = options.sort_column.as_deref().filter(|c| known.contains(c)) {
-        sql.push_str(&format!(
-            " ORDER BY {} {}",
+    let sort = options.sort_column.as_deref().filter(|c| known.contains(c));
+    let mut order: Vec<String> = Vec::new();
+    if let Some(col) = sort {
+        order.push(format!(
+            "{} {}",
             dialect.quote_ident(col),
             if options.sort_desc { "DESC" } else { "ASC" }
         ));
+    }
+    order.extend(
+        primary_key
+            .iter()
+            .filter(|k| known.contains(&k.as_str()) && Some(k.as_str()) != sort)
+            .map(|k| dialect.quote_ident(k)),
+    );
+    if !order.is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
     }
 
     // Only wrap for paging when there is an offset. At offset 0 the driver's
@@ -579,6 +770,52 @@ pub fn stable_order_by(
         return String::new();
     }
     format!(" ORDER BY {}", keys.join(", "))
+}
+
+/// The condition selecting the rows that follow `last` in primary-key order —
+/// keyset paging.
+///
+/// `OFFSET n` makes the engine produce and throw away `n` rows to reach each
+/// page, so walking a table that way re-reads everything before every page:
+/// quadratic in the table's size, which is what made backing up or exporting a
+/// large table crawl as it went. Continuing from the last key seen costs one
+/// index seek per page instead.
+///
+/// Spelled out as `a > x OR (a = x AND b > y)` rather than the row-value form
+/// `(a, b) > (x, y)`, which SQL Server does not support.
+///
+/// `None` when a key value cannot be trusted to compare exactly against its
+/// own literal — a float, a timestamp whose text form is not the engine's,
+/// bytes — and the caller should fall back to an offset. Wrongly continuing
+/// from a key that matches imprecisely would skip or repeat rows.
+pub fn keyset_after(
+    primary_key: &[String],
+    last: &[&crate::model::Value],
+    dialect: &dyn crate::driver::Dialect,
+) -> Option<String> {
+    use crate::model::Value;
+    let exact = |v: &&Value| {
+        matches!(
+            v,
+            Value::Int(_) | Value::Decimal(_) | Value::Text(_) | Value::Uuid(_)
+        )
+    };
+    if primary_key.is_empty() || primary_key.len() != last.len() || !last.iter().all(exact) {
+        return None;
+    }
+
+    let columns: Vec<String> = primary_key.iter().map(|k| dialect.quote_ident(k)).collect();
+    let literals: Vec<String> = last.iter().map(|v| dialect.literal(v)).collect();
+    let branches: Vec<String> = (0..columns.len())
+        .map(|i| {
+            let mut parts: Vec<String> = (0..i)
+                .map(|j| format!("{} = {}", columns[j], literals[j]))
+                .collect();
+            parts.push(format!("{} > {}", columns[i], literals[i]));
+            format!("({})", parts.join(" AND "))
+        })
+        .collect();
+    Some(branches.join(" OR "))
 }
 
 /// Whether a column type can appear in `ORDER BY` on every engine Faro speaks.
@@ -780,6 +1017,96 @@ SELECT f()
     }
 
     #[test]
+    fn a_cursor_just_after_a_semicolon_belongs_to_that_statement() {
+        // The position a cursor is in right after typing a statement. It used
+        // to resolve to the *next* statement — here, the DELETE.
+        let script = "SELECT 1;\nDELETE FROM t";
+        assert_eq!(statement_at(script, 9).as_deref(), Some("SELECT 1"));
+        // Trailing spaces and a same-line comment keep it there too.
+        let script = "SELECT 1;   -- note\nDELETE FROM t";
+        assert_eq!(statement_at(script, 19).as_deref(), Some("SELECT 1"));
+    }
+
+    #[test]
+    fn a_cursor_on_the_next_line_belongs_to_the_next_statement() {
+        let script = "SELECT 1;\n\n  DELETE FROM t";
+        // Start of the blank line, and the indentation before DELETE.
+        assert_eq!(statement_at(script, 10).as_deref(), Some("DELETE FROM t"));
+        assert_eq!(statement_at(script, 12).as_deref(), Some("DELETE FROM t"));
+    }
+
+    #[test]
+    fn a_cursor_after_the_final_semicolon_still_has_a_statement() {
+        assert_eq!(statement_at("SELECT 1;", 9).as_deref(), Some("SELECT 1"));
+        assert_eq!(statement_at("SELECT 1;  ", 11).as_deref(), Some("SELECT 1"));
+        // A line further down there is nothing left to run.
+        assert_eq!(statement_at("SELECT 1;\n", 10), None);
+    }
+
+    #[test]
+    fn a_trailing_comment_is_never_the_statement_under_the_cursor() {
+        let script = "SELECT 1;\n-- done";
+        assert_eq!(statement_at(script, 12), None);
+        assert_eq!(
+            statement_at("SELECT 1; -- done", 16).as_deref(),
+            Some("SELECT 1")
+        );
+    }
+
+    #[test]
+    fn comment_only_fragments_are_recognised() {
+        assert!(is_comment_only(""));
+        assert!(is_comment_only("  \n "));
+        assert!(is_comment_only("-- done"));
+        assert!(is_comment_only("/* a */ -- b\n  /* c */"));
+        assert!(!is_comment_only("-- note\nSELECT 1"));
+        assert!(!is_comment_only("/* a */ SELECT 1"));
+        assert!(!is_comment_only("'-- not a comment'"));
+    }
+
+    #[test]
+    fn executable_statements_drop_the_comment_only_tail() {
+        assert_eq!(
+            executable_statements("SELECT 1;\n-- done\n", LexRules::STANDARD),
+            vec!["SELECT 1"]
+        );
+        assert_eq!(
+            executable_statements("-- header\nSELECT 1; /* x */ ;", LexRules::STANDARD),
+            vec!["-- header\nSELECT 1"]
+        );
+    }
+
+    #[test]
+    fn the_leading_word_skips_comments_and_parentheses() {
+        assert_eq!(leading_word("SELECT 1").as_deref(), Some("SELECT"));
+        assert_eq!(
+            leading_word("  -- note\nselect 1").as_deref(),
+            Some("SELECT")
+        );
+        assert_eq!(
+            leading_word("/* hint */ (SELECT 1)").as_deref(),
+            Some("SELECT")
+        );
+        assert_eq!(leading_word("-- only a comment"), None);
+        assert_eq!(leading_word(""), None);
+    }
+
+    #[test]
+    fn a_leading_comment_does_not_make_a_read_look_like_a_write() {
+        // Commented queries are ordinary; refusing them on a read-only
+        // connection made the setting unusable for anyone who documents SQL.
+        for sql in [
+            "-- all users\nSELECT * FROM users",
+            "/* report */ SELECT 1",
+            "-- a\n-- b\nWITH c AS (SELECT 1) SELECT * FROM c",
+        ] {
+            assert!(is_read_only_statement(sql), "should be allowed: {sql}");
+        }
+        // And a comment in front of a write still leaves it a write.
+        assert!(!is_read_only_statement("-- tidy up\nDELETE FROM t"));
+    }
+
+    #[test]
     fn statement_at_counts_utf16_like_the_editor_does() {
         // The offset arrives from CodeMirror, which counts UTF-16 code units.
         // 'é' is 2 UTF-8 bytes but 1 UTF-16 unit; '𝒮' is 4 bytes and 2 units.
@@ -852,6 +1179,46 @@ SELECT f()
             stable_order_by(&["a".into(), "b".into()], &cols, &TestDialect),
             r#" ORDER BY "a", "b""#
         );
+    }
+
+    #[test]
+    fn keyset_paging_continues_after_the_last_key() {
+        use crate::model::Value;
+        let pk = vec!["id".to_string()];
+        assert_eq!(
+            keyset_after(&pk, &[&Value::Int(42)], &TestDialect).as_deref(),
+            Some(r#"("id" > 42)"#)
+        );
+    }
+
+    #[test]
+    fn a_composite_key_expands_without_row_value_syntax() {
+        // `(a, b) > (x, y)` is not valid T-SQL, so the expanded form is used
+        // everywhere.
+        use crate::model::Value;
+        let pk = vec!["book_id".to_string(), "store".to_string()];
+        let last = [&Value::Int(7), &Value::Text("O'Hare".into())];
+        assert_eq!(
+            keyset_after(&pk, &last, &TestDialect).as_deref(),
+            Some(r#"("book_id" > 7) OR ("book_id" = 7 AND "store" > 'O''Hare')"#)
+        );
+    }
+
+    #[test]
+    fn keys_that_do_not_compare_exactly_fall_back_to_an_offset() {
+        use crate::model::Value;
+        let pk = vec!["k".to_string()];
+        for v in [
+            Value::Float(0.1),
+            Value::Timestamp("2026-01-01 00:00:00".into()),
+            Value::Bytes(vec![1]),
+            Value::Null,
+        ] {
+            assert_eq!(keyset_after(&pk, &[&v], &TestDialect), None, "{v:?}");
+        }
+        // No key, or a key the row does not fully carry.
+        assert_eq!(keyset_after(&[], &[], &TestDialect), None);
+        assert_eq!(keyset_after(&pk, &[], &TestDialect), None);
     }
 
     #[test]
@@ -1003,6 +1370,60 @@ SELECT f()
         for sql in ["PRAGMA table_info(t)", "PRAGMA journal_mode"] {
             assert!(is_read_only_statement(sql), "should be allowed: {sql}");
         }
+    }
+
+    #[test]
+    fn writes_in_a_script_are_counted_with_the_read_only_classifier() {
+        let script = executable_statements(
+            "-- tidy\nSELECT 1; DELETE FROM t; UPDATE t SET a = 1; SELECT 2",
+            LexRules::STANDARD,
+        );
+        assert_eq!(script.len(), 4);
+        assert_eq!(count_writes(&script, Some(LexRules::STANDARD)), 2);
+        assert_eq!(count_writes(&script, None), 2);
+        assert_eq!(count_writes(&["SELECT 1".into()], None), 0);
+    }
+
+    #[test]
+    fn a_pragma_value_cannot_vouch_for_its_name() {
+        // The allowlisted word is the *argument* here; the pragma being set is
+        // user_version, which writes.
+        for sql in [
+            "PRAGMA user_version(table_info)",
+            "PRAGMA main.application_id(index_list)",
+            "PRAGMA table_info",
+        ] {
+            let expected = sql == "PRAGMA table_info";
+            assert_eq!(is_read_only_statement(sql), expected, "{sql}");
+        }
+        // Schema-qualified and commented reads keep working.
+        for sql in [
+            "PRAGMA main.table_info(t)",
+            "PRAGMA main . index_list(t)",
+            "-- inspect\nPRAGMA table_info(t)",
+        ] {
+            assert!(is_read_only_statement(sql), "should be allowed: {sql}");
+        }
+    }
+
+    #[test]
+    fn functions_that_change_state_are_refused_inside_a_select() {
+        // `set_config` switches off the server-side read-only guard, after
+        // which any writing function called from a SELECT succeeds.
+        for sql in [
+            "SELECT set_config('default_transaction_read_only', 'off', false)",
+            "SELECT nextval('orders_id_seq')",
+            "SELECT setval('orders_id_seq', 1)",
+            "SELECT * FROM dblink('remote', 'DELETE FROM t') AS x(a int)",
+            "SELECT dblink_exec('remote', 'DROP TABLE t')",
+            "SELECT lo_unlink(16400)",
+            "SELECT pg_terminate_backend(123)",
+            "SELECT PG_RELOAD_CONF()",
+        ] {
+            assert!(!is_read_only_statement(sql), "should be refused: {sql}");
+        }
+        // Mentioning one inside a string is still a read.
+        assert!(is_read_only_statement("SELECT 'set_config' AS name"));
     }
 
     #[test]
@@ -1422,7 +1843,7 @@ SELECT f()
 
     #[test]
     fn plain_browse_is_a_bare_select() {
-        let sql = build_browse_sql(&table(), &opts(), &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&table(), &opts(), &["id"], &[], &TestDialect, 1000);
         assert_eq!(sql, r#"SELECT * FROM "books""#);
     }
 
@@ -1431,7 +1852,7 @@ SELECT f()
         let mut o = opts();
         o.sort_column = Some("id".into());
         o.sort_desc = true;
-        let sql = build_browse_sql(&table(), &o, &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&table(), &o, &["id"], &[], &TestDialect, 1000);
         assert_eq!(sql, r#"SELECT * FROM "books" ORDER BY "id" DESC"#);
     }
 
@@ -1440,7 +1861,38 @@ SELECT f()
         // The allowlist is what makes interpolating the name safe at all.
         let mut o = opts();
         o.sort_column = Some("id; DROP TABLE books".into());
-        let sql = build_browse_sql(&table(), &o, &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&table(), &o, &["id"], &[], &TestDialect, 1000);
+        assert_eq!(sql, r#"SELECT * FROM "books""#);
+    }
+
+    #[test]
+    fn an_unsorted_page_is_ordered_by_the_primary_key() {
+        // Without an order, Next could repeat rows from the page before it and
+        // skip others entirely.
+        let pk = vec!["id".to_string()];
+        let sql = build_browse_sql(&table(), &opts(), &["id", "name"], &pk, &TestDialect, 1000);
+        assert_eq!(sql, r#"SELECT * FROM "books" ORDER BY "id""#);
+    }
+
+    #[test]
+    fn a_sort_on_another_column_is_tie_broken_by_the_key() {
+        let mut o = opts();
+        o.sort_column = Some("name".into());
+        let pk = vec!["id".to_string()];
+        let sql = build_browse_sql(&table(), &o, &["id", "name"], &pk, &TestDialect, 1000);
+        assert_eq!(sql, r#"SELECT * FROM "books" ORDER BY "name" ASC, "id""#);
+
+        // Sorting on the key itself does not repeat it.
+        o.sort_column = Some("id".into());
+        o.sort_desc = true;
+        let sql = build_browse_sql(&table(), &o, &["id", "name"], &pk, &TestDialect, 1000);
+        assert_eq!(sql, r#"SELECT * FROM "books" ORDER BY "id" DESC"#);
+    }
+
+    #[test]
+    fn a_keyless_table_is_not_sorted_just_to_browse_it() {
+        // Ordering by every column would sort the whole table for each page.
+        let sql = build_browse_sql(&table(), &opts(), &["a", "b"], &[], &TestDialect, 1000);
         assert_eq!(sql, r#"SELECT * FROM "books""#);
     }
 
@@ -1449,7 +1901,7 @@ SELECT f()
         let mut o = opts();
         o.filters = vec![filter("id", FilterOp::GreaterThan, "5")];
         o.sort_column = Some("id".into());
-        let sql = build_browse_sql(&table(), &o, &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&table(), &o, &["id"], &[], &TestDialect, 1000);
         assert_eq!(
             sql,
             r#"SELECT * FROM "books" WHERE "id" > '5' ORDER BY "id" ASC"#
@@ -1461,7 +1913,7 @@ SELECT f()
         let mut o = opts();
         o.sort_column = Some("id".into());
         o.offset = 20;
-        let sql = build_browse_sql(&table(), &o, &["id"], &TestDialect, 10);
+        let sql = build_browse_sql(&table(), &o, &["id"], &[], &TestDialect, 10);
         // The ORDER BY must stay inside the subquery, or the page is arbitrary.
         assert!(sql.contains(r#"ORDER BY "id" ASC"#), "{sql}");
         assert!(sql.contains("LIMIT 11 OFFSET 20"), "{sql}");
@@ -1471,7 +1923,7 @@ SELECT f()
     fn offset_zero_does_not_wrap() {
         // The driver's own limit+1 probe already caps it; wrapping would nest
         // a pointless subquery.
-        let sql = build_browse_sql(&table(), &opts(), &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&table(), &opts(), &["id"], &[], &TestDialect, 1000);
         assert!(!sql.contains("faro_q"), "{sql}");
     }
 
@@ -1481,7 +1933,7 @@ SELECT f()
             schema: Some("public".into()),
             name: "books".into(),
         };
-        let sql = build_browse_sql(&t, &opts(), &["id"], &TestDialect, 1000);
+        let sql = build_browse_sql(&t, &opts(), &["id"], &[], &TestDialect, 1000);
         assert_eq!(sql, r#"SELECT * FROM "public"."books""#);
     }
 }

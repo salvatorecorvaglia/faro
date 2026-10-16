@@ -10,6 +10,7 @@ import {
   IconPlus,
   IconRefresh,
   IconTrash,
+  IconUnplug,
   IconUpload,
   IconWarning,
 } from '@/components/icons';
@@ -139,11 +140,8 @@ export function Sidebar() {
   }
 
   return (
-    <div className="flex h-full flex-col" style={{ background: 'var(--bg-subtle)' }}>
-      <header
-        className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2.5"
-        style={{ borderColor: 'var(--border)' }}
-      >
+    <div className="flex h-full flex-col bg-subtle">
+      <header className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2.5 border-line">
         <IconLighthouse size={15} className="opacity-90" />
         <span className="flex-1 text-sm font-semibold tracking-wide">Faro</span>
         {/* Named for what it actually reloads: each connected row now has its
@@ -168,10 +166,7 @@ export function Sidebar() {
       </header>
 
       {!keychainOk && (
-        <div
-          className="flex items-start gap-1.5 px-2.5 py-1.5 text-xs"
-          style={{ color: 'var(--warning)' }}
-        >
+        <div className="flex items-start gap-1.5 px-2.5 py-1.5 text-xs text-warning">
           <IconWarning size={12} className="mt-0.5 shrink-0" />
           <span>No system keychain found. Passwords will only be kept until you quit.</span>
         </div>
@@ -185,17 +180,12 @@ export function Sidebar() {
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {loading ? (
-          <div
-            className="flex items-center gap-2 px-3 py-2 text-sm"
-            style={{ color: 'var(--text-muted)' }}
-          >
+          <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted">
             <Spinner /> Loading…
           </div>
         ) : items.length === 0 ? (
           <div className="px-3 py-6 text-center">
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-              No connections yet
-            </p>
+            <p className="text-sm text-muted">No connections yet</p>
             <button type="button" className="btn btn-primary mt-2.5" onClick={openNew}>
               <IconPlus size={13} /> Add connection
             </button>
@@ -246,6 +236,38 @@ export function Sidebar() {
       />
     </div>
   );
+}
+
+/**
+ * Ask before a disconnect would cost the user something.
+ *
+ * Disconnecting cancels whatever is running on the connection and leaves its
+ * table tabs unable to apply their staged edits. Neither used to be mentioned:
+ * the click simply happened. With nothing at stake it still just happens.
+ */
+async function confirmDisconnect(conn: ConnectionStatus): Promise<boolean> {
+  const tabs = useTabs.getState().tabs.filter((t) => t.connectionId === conn.id);
+  const running = tabs.filter((t) => t.running).length;
+  const dirty = tabs.filter((t) => t.dirty).length;
+  if (running === 0 && dirty === 0) return true;
+
+  const costs: string[] = [];
+  if (running > 0) {
+    costs.push(
+      running === 1 ? 'stops the query running on it' : `stops ${running} running queries`,
+    );
+  }
+  if (dirty > 0) {
+    costs.push(
+      dirty === 1
+        ? 'leaves a tab with unsaved changes unable to apply them'
+        : `leaves ${dirty} tabs with unsaved changes unable to apply them`,
+    );
+  }
+  return confirmDialog(`Disconnecting "${conn.name}" ${costs.join(' and ')}.`, {
+    confirmLabel: 'Disconnect',
+    danger: true,
+  });
 }
 
 function ConnectionNode({
@@ -305,7 +327,10 @@ function ConnectionNode({
 
         {connecting && <Spinner size={12} />}
 
-        <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+        {/* `group-focus-within` as well as hover: shown on hover alone, these
+            were `display: none` to the keyboard and so could not be tabbed to
+            at all. */}
+        <div className="hidden shrink-0 items-center gap-0.5 group-focus-within:flex group-hover:flex">
           {conn.connected && (
             <button
               type="button"
@@ -377,14 +402,19 @@ function ConnectionNode({
           >
             <IconEdit size={12} />
           </button>
+          {/* Two icons for two actions. One trash can used to mean both —
+              "disconnect" when connected and "delete" when not — so the same
+              glyph that harmlessly closed a pool also, one click later,
+              offered to destroy the saved connection. */}
           <button
             type="button"
             className="btn btn-ghost px-1"
             title={conn.connected ? 'Disconnect' : 'Delete'}
+            aria-label={conn.connected ? `Disconnect ${conn.name}` : `Delete ${conn.name}`}
             onClick={async (e) => {
               e.stopPropagation();
               if (conn.connected) {
-                onDisconnect();
+                if (await confirmDisconnect(conn)) onDisconnect();
                 return;
               }
               const proceed = await confirmDialog(`Delete the connection "${conn.name}"?`, {
@@ -394,7 +424,7 @@ function ConnectionNode({
               if (proceed) onRemove();
             }}
           >
-            <IconTrash size={12} />
+            {conn.connected ? <IconUnplug size={12} /> : <IconTrash size={12} />}
           </button>
         </div>
       </div>

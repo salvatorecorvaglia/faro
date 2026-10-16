@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 /// source engine, while `ColumnInfo::type_name` still carries the native type
 /// for display.
 ///
-/// Two deliberate choices:
+/// Three deliberate choices:
 /// - `Decimal` stays a string end to end. Routing money through `f64` loses
 ///   precision, and there is no going back once it does.
 /// - `Bytes` carries the raw buffer but the UI renders a size badge, never the
 ///   contents inline; a single BLOB column would otherwise wreck the grid.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// - An `Int` too large for a JavaScript number crosses IPC as a `decimal`;
+///   see the `Serialize` impl below.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum Value {
     Null,
@@ -34,6 +36,78 @@ pub enum Value {
     /// A type no driver knows how to decode. Carries the engine's type name so
     /// the user sees *something* truthful instead of a silent NULL.
     Unsupported(String),
+}
+
+/// Largest integer magnitude a JavaScript `number` holds exactly (2^53 − 1).
+const MAX_SAFE_JS_INT: i64 = (1 << 53) - 1;
+
+/// Largest binary value sent to the UI whole.
+///
+/// The UI never shows a binary value's contents — the grid draws a size badge
+/// — but each one crossed IPC as a JSON array of numbers, about four times its
+/// size: a page of thumbnails or documents could be hundreds of megabytes of
+/// JSON for nothing on screen. Past this, only the size is sent. Keys, hashes
+/// and UUIDs fit under it, so a binary primary key still reaches the UI whole
+/// and can be sent back to find its row.
+pub const MAX_INLINE_BYTES: usize = 256;
+
+/// The wire form of [`Value`]: the same tagged shape the derive produced,
+/// borrowed rather than cloned.
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+enum Wire<'a> {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Decimal(std::borrow::Cow<'a, str>),
+    Text(&'a str),
+    Bytes(&'a [u8]),
+    /// A binary value too large to send whole: its size in bytes.
+    LargeBytes(usize),
+    Date(&'a str),
+    Time(&'a str),
+    Timestamp(&'a str),
+    Uuid(&'a str),
+    Json(&'a serde_json::Value),
+    Array(&'a [Value]),
+    Unsupported(&'a str),
+}
+
+/// Serialized by hand for one reason: integer precision across IPC.
+///
+/// Every value reaches the UI as JSON, and JavaScript numbers are doubles, so
+/// an `i64` past 2^53 was silently rounded on arrival — a BIGINT id displayed
+/// wrong, was exported wrong (a query-result export sends the rows back from
+/// the UI), and was used wrong as the primary key of a grid edit, where the
+/// rounded key could match a *different* row. Those values go out as
+/// `decimal` instead, which is a string end to end on both sides and is
+/// rendered into SQL verbatim, so nothing downstream has to change. Ints that
+/// fit keep their numeric form.
+impl Serialize for Value {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let wire = match self {
+            Value::Null => Wire::Null,
+            Value::Bool(b) => Wire::Bool(*b),
+            Value::Int(i) if i.unsigned_abs() > MAX_SAFE_JS_INT as u64 => {
+                Wire::Decimal(std::borrow::Cow::Owned(i.to_string()))
+            }
+            Value::Int(i) => Wire::Int(*i),
+            Value::Float(f) => Wire::Float(*f),
+            Value::Decimal(d) => Wire::Decimal(std::borrow::Cow::Borrowed(d)),
+            Value::Text(t) => Wire::Text(t),
+            Value::Bytes(b) if b.len() > MAX_INLINE_BYTES => Wire::LargeBytes(b.len()),
+            Value::Bytes(b) => Wire::Bytes(b),
+            Value::Date(d) => Wire::Date(d),
+            Value::Time(t) => Wire::Time(t),
+            Value::Timestamp(t) => Wire::Timestamp(t),
+            Value::Uuid(u) => Wire::Uuid(u),
+            Value::Json(j) => Wire::Json(j),
+            Value::Array(a) => Wire::Array(a),
+            Value::Unsupported(u) => Wire::Unsupported(u),
+        };
+        wire.serialize(s)
+    }
 }
 
 impl Value {
@@ -87,6 +161,33 @@ impl Value {
     }
 }
 
+/// Whether text is a bare numeric literal: an optional leading `-`, digits, and
+/// at most one decimal point.
+///
+/// Deliberately strict: no hex, no underscores, no exponent forms, no leading
+/// `+`. This is what decides whether text may be emitted into SQL *unquoted* —
+/// a `Value::Decimal`, or a value typed into a numeric column — so anything
+/// unusual must fail it and be quoted instead.
+///
+/// One copy for every caller: DML generation and ClickHouse decoding each kept
+/// an identical version under a different name.
+pub fn is_plain_number(s: &str) -> bool {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    if body.is_empty() {
+        return false;
+    }
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    for c in body.chars() {
+        match c {
+            '0'..='9' => seen_digit = true,
+            '.' if !seen_dot => seen_dot = true,
+            _ => return false,
+        }
+    }
+    seen_digit
+}
+
 /// Single-quote a string literal, doubling embedded quotes per the SQL standard.
 ///
 /// Correct only for engines where the backslash is an ordinary character —
@@ -129,6 +230,92 @@ mod tests {
             "X'{}'",
             b.iter().map(|x| format!("{x:02x}")).collect::<String>()
         )
+    }
+
+    fn wire(v: &Value) -> serde_json::Value {
+        serde_json::to_value(v).unwrap()
+    }
+
+    #[test]
+    fn ints_that_fit_a_javascript_number_stay_numeric() {
+        for i in [0, 42, -7, MAX_SAFE_JS_INT, -MAX_SAFE_JS_INT] {
+            assert_eq!(
+                wire(&Value::Int(i)),
+                serde_json::json!({ "kind": "int", "value": i }),
+                "{i}"
+            );
+        }
+    }
+
+    #[test]
+    fn ints_past_2_pow_53_cross_ipc_as_exact_decimal_text() {
+        // As a JSON number, 9007199254740993 arrives in JavaScript as
+        // 9007199254740992 — a different id.
+        for i in [
+            MAX_SAFE_JS_INT + 2,
+            i64::MAX,
+            i64::MIN,
+            -(MAX_SAFE_JS_INT + 2),
+        ] {
+            assert_eq!(
+                wire(&Value::Int(i)),
+                serde_json::json!({ "kind": "decimal", "value": i.to_string() }),
+                "{i}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wire_shape_is_unchanged_for_every_other_variant() {
+        assert_eq!(wire(&Value::Null), serde_json::json!({ "kind": "null" }));
+        assert_eq!(
+            wire(&Value::Text("a".into())),
+            serde_json::json!({ "kind": "text", "value": "a" })
+        );
+        assert_eq!(
+            wire(&Value::Bytes(vec![1, 2])),
+            serde_json::json!({ "kind": "bytes", "value": [1, 2] })
+        );
+        assert_eq!(
+            wire(&Value::Array(vec![Value::Int(i64::MAX)])),
+            serde_json::json!({
+                "kind": "array",
+                "value": [{ "kind": "decimal", "value": i64::MAX.to_string() }]
+            })
+        );
+    }
+
+    #[test]
+    fn a_large_binary_value_crosses_ipc_as_its_size_only() {
+        // The UI shows a size badge for every binary value, so sending a large
+        // one whole was megabytes of JSON for nothing on screen.
+        assert_eq!(
+            wire(&Value::Bytes(vec![7; MAX_INLINE_BYTES + 1])),
+            serde_json::json!({ "kind": "largeBytes", "value": MAX_INLINE_BYTES + 1 })
+        );
+        // Keys, hashes and UUIDs still arrive whole, so they can be sent back.
+        let uuid = vec![1u8; 16];
+        assert_eq!(
+            wire(&Value::Bytes(uuid.clone())),
+            serde_json::json!({ "kind": "bytes", "value": uuid })
+        );
+        assert_eq!(
+            wire(&Value::Bytes(vec![0; MAX_INLINE_BYTES]))["kind"],
+            "bytes"
+        );
+    }
+
+    #[test]
+    fn a_huge_int_round_trips_through_the_ui_without_losing_digits() {
+        // `export_result` receives rows back from the frontend. The value must
+        // come back as the same digits, rendered verbatim into SQL.
+        let json = serde_json::to_string(&Value::Int(i64::MAX)).unwrap();
+        let back: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Value::Decimal(i64::MAX.to_string()));
+        assert_eq!(
+            back.to_sql_literal(&hex, &quote_sql_string),
+            i64::MAX.to_string()
+        );
     }
 
     #[test]

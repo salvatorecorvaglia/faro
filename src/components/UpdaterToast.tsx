@@ -33,7 +33,7 @@ export function UpdaterToast() {
           {status === 'downloading' ? (
             <Spinner size={16} />
           ) : (
-            <IconDownload size={16} style={{ color: 'var(--accent)' }} />
+            <IconDownload size={16} className="text-accent" />
           )}
           <span className="text-base font-semibold">
             {status === 'available' && `Update v${version} available`}
@@ -52,7 +52,7 @@ export function UpdaterToast() {
         </button>
       </div>
 
-      <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+      <p className="text-sm text-muted">
         {status === 'available' && 'A new version of Faro is ready to download.'}
         {status === 'downloading' && `Downloading update... ${progress}%`}
         {status === 'ready' && 'Faro will update when you restart the application.'}
@@ -60,10 +60,7 @@ export function UpdaterToast() {
       </p>
 
       {status === 'downloading' && (
-        <div
-          className="h-1.5 w-full overflow-hidden rounded-full"
-          style={{ background: 'var(--bg-inset)' }}
-        >
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-inset">
           <div
             className="h-full transition-all duration-200"
             style={{

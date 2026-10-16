@@ -104,7 +104,7 @@ pub fn read_rows(
     has_header: bool,
 ) -> Result<(Vec<String>, Vec<Vec<String>>)> {
     match format {
-        ImportFormat::Csv => read_delimited(path, b',', has_header),
+        ImportFormat::Csv => read_delimited(path, sniff_delimiter(path)?, has_header),
         ImportFormat::Tsv => read_delimited(path, b'\t', has_header),
         ImportFormat::Json => read_json(path),
         ImportFormat::Xlsx => read_xlsx(path, has_header),
@@ -174,7 +174,7 @@ pub fn read_rows_batched(
     sink: &mut dyn FnMut(&[Vec<String>]) -> Result<bool>,
 ) -> Result<(Vec<String>, usize)> {
     let delimiter = match format {
-        ImportFormat::Csv => Some(b','),
+        ImportFormat::Csv => Some(sniff_delimiter(path)?),
         ImportFormat::Tsv => Some(b'\t'),
         ImportFormat::Json | ImportFormat::Xlsx => None,
     };
@@ -261,6 +261,52 @@ fn delimited_reader(
     };
 
     Ok((columns, reader))
+}
+
+/// Work out which character separates a `.csv` file's fields.
+///
+/// "CSV" is not one format. Excel writes `;` wherever the decimal separator is
+/// a comma — Italy, Germany, France and most of Europe — and reading such a file
+/// with `,` produced one column per row, holding the whole line. The first line
+/// decides: whichever of `,` `;` tab `|` occurs most often outside quotes, with
+/// `,` kept on a tie or when none appears.
+fn sniff_delimiter(path: &Path) -> Result<u8> {
+    use std::io::Read;
+
+    // A header line is short; this bounds the read for a file with none.
+    const SNIFF_BYTES: u64 = 64 * 1024;
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(SNIFF_BYTES)
+        .read_to_end(&mut head)?;
+    Ok(delimiter_of(&head))
+}
+
+/// The delimiter a line of text uses; see [`sniff_delimiter`].
+fn delimiter_of(head: &[u8]) -> u8 {
+    const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
+    let mut counts = [0usize; 4];
+    let mut in_quotes = false;
+    for &b in head {
+        match b {
+            b'"' => in_quotes = !in_quotes,
+            b'\n' | b'\r' if !in_quotes => break,
+            _ if !in_quotes => {
+                if let Some(i) = CANDIDATES.iter().position(|&c| c == b) {
+                    counts[i] += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    // `max_by_key` keeps the last maximum, so iterate in reverse to let the
+    // earliest candidate — the comma — win a tie.
+    (0..CANDIDATES.len())
+        .rev()
+        .max_by_key(|&i| counts[i])
+        .filter(|&i| counts[i] > 0)
+        .map(|i| CANDIDATES[i])
+        .unwrap_or(b',')
 }
 
 fn read_delimited(
@@ -429,6 +475,40 @@ mod tests {
             "reported total disagrees with what was sent"
         );
         (columns, sizes, all)
+    }
+
+    #[test]
+    fn a_semicolon_separated_csv_is_read_as_columns() {
+        // What Excel writes in Italy, Germany and most of Europe. Read with a
+        // comma, each line came back as a single column holding all of it —
+        // and a decimal comma inside a value would have split it.
+        let path = write_temp("semicolon.csv", "id;price;name\n1;9,99;Ada\n2;0,5;Grace\n");
+        let (columns, rows) = read_rows(&path, ImportFormat::Csv, true).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(columns, ["id", "price", "name"]);
+        assert_eq!(rows[0], ["1", "9,99", "Ada"]);
+
+        // The batched reader, which imports actually use, agrees.
+        let path = write_temp("semicolon_batched.csv", "id;name\n1;Ada\n");
+        let (columns, _, rows) = batches(&path, ImportFormat::Csv, true, 10);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(columns, ["id", "name"]);
+        assert_eq!(rows[0], ["1", "Ada"]);
+    }
+
+    #[test]
+    fn the_delimiter_is_judged_from_the_first_line_outside_quotes() {
+        assert_eq!(delimiter_of(b"a,b,c\n1;2;3;4;5"), b',');
+        assert_eq!(delimiter_of(b"a;b;c\n"), b';');
+        assert_eq!(delimiter_of(b"a\tb\tc"), b'\t');
+        assert_eq!(delimiter_of(b"a|b|c\r\n"), b'|');
+        // Separators inside a quoted header name do not count.
+        assert_eq!(delimiter_of(b"\"x;y;z\",b,c\n"), b',');
+        // A tie, or nothing at all, keeps the comma.
+        assert_eq!(delimiter_of(b"a,b;c\n"), b',');
+        assert_eq!(delimiter_of(b"single\n"), b',');
+        assert_eq!(delimiter_of(b""), b',');
     }
 
     #[test]

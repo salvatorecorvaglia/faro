@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmHost } from '@/components/ConfirmDialog';
 import { QueryTab } from '@/features/tabs/QueryTab';
 import type { ConnectionStatus, RunResult } from '@/ipc/types';
 import { useConnections } from '@/state/connections';
@@ -30,12 +31,16 @@ vi.mock('@/features/editor/Editor', () => ({
     handle?: React.RefObject<{
       selection: () => string | null;
       replaceAll: (text: string) => void;
+      cursorOffset: () => number;
     } | null>;
   }) => {
     if (handle) {
       handle.current = {
         selection: () => editorMock.selection,
         replaceAll: vi.fn(),
+        // Read live, like the real editor's handle: a test can move the
+        // cursor without a render and the next read sees it.
+        cursorOffset: () => editorMock.cursor,
       };
     }
     // The real editor reports the cursor from a CodeMirror update listener;
@@ -141,17 +146,19 @@ describe('QueryTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Run/ }));
 
-    // The store flips to running immediately, synchronously with the click.
-    expect(currentTab().running).toBe(true);
-
-    expect(await screen.findByRole('button', { name: /Cancel/ })).toBeInTheDocument();
-    expectCallCount('run_query', 1);
+    // Not synchronous with the click any more: the script is summarized first,
+    // so a run that writes can be confirmed before anything is sent.
+    await waitFor(() => expectCallCount('run_query', 1));
+    await waitFor(() => expect(currentTab().running).toBe(false));
     expect(callsTo('run_query')[0]).toMatchObject({
       connectionId: 'c1',
       sqlText: 'select * from users',
     });
     expect(currentTab().running).toBe(false);
     expect(currentTab().results).toHaveLength(1);
+    // Exports name these results by the id they came back under; the backend
+    // writes its own copy rather than the UI sending the rows back.
+    expect(currentTab().resultQueryId).toBe(callsTo('run_query')[0]!.queryId);
   });
 
   it('opens the save dialog on Cmd+S', async () => {
@@ -229,9 +236,35 @@ describe('QueryTab', () => {
     const hint = await screen.findByRole('button', { name: /select \* from orders/ });
 
     fireEvent.click(hint);
-    await screen.findByRole('button', { name: /Run/ });
+    // The statement is re-resolved before the run starts, so the Run button is
+    // still on screen for a moment — wait for the run itself.
+    await waitFor(() => expectCallCount('run_query', 1));
 
     expect(callsTo('run_query')[0]).toMatchObject({ sqlText: 'select * from orders' });
+  });
+
+  it('runs the statement under the cursor as it is now, not as the hint last saw it', async () => {
+    // The hint is debounced, so right after the cursor moves it still names the
+    // previous statement. Running that one executed a statement the cursor had
+    // already left.
+    const sql = 'select * from users;\ndelete from orders';
+    mockQueryTab({
+      statement_at_cursor: ({ offset }) =>
+        (offset as number) > 20 ? 'delete from orders' : 'select * from users',
+      run_query: () => runResult(),
+    });
+    renderQueryTab(sql);
+
+    const hint = await screen.findByRole('button', { name: /select \* from users/ });
+
+    // The cursor moves, but no render — and so no new hint — has happened yet.
+    editorMock.cursor = 25;
+    fireEvent.click(hint);
+    await waitFor(() => expectCallCount('run_query', 1));
+
+    const lookups = callsTo('statement_at_cursor');
+    expect(lookups[lookups.length - 1]).toMatchObject({ sqlText: sql, offset: 25 });
+    expect(callsTo('run_query')[0]).toMatchObject({ sqlText: 'delete from orders' });
   });
 
   it('does not offer a statement hint for an empty editor', async () => {
@@ -275,6 +308,79 @@ describe('QueryTab', () => {
     expect(currentTab().running).toBe(false);
     expect(currentTab().error).toBe('relation "users" does not exist');
     expect(currentTab().results).toHaveLength(0);
+  });
+
+  describe('running a whole script', () => {
+    function renderWithConfirm(sql: string) {
+      useConnections.setState({ items: [connection()] });
+      const id = useTabs.getState().openQueryTab('c1', sql, 'Query 1');
+      render(
+        <>
+          <Harness id={id} />
+          <ConfirmHost />
+        </>,
+      );
+    }
+
+    it('asks before running several statements that change data, and runs nothing if declined', async () => {
+      // ⌘↵ runs the whole editor. Pressed out of habit on one SELECT, it also
+      // ran the DELETE below it.
+      mockQueryTab({
+        script_summary: () => ({ statements: 2, writes: 1 }),
+        run_query: () => runResult(),
+      });
+      renderWithConfirm('select * from users;\ndelete from orders');
+
+      fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+
+      expect(await screen.findByText(/1 of them changes data or schema/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => expect(screen.queryByText(/of them change/)).not.toBeInTheDocument());
+      expectCallCount('run_query', 0);
+    });
+
+    it('runs the script once the user confirms', async () => {
+      mockQueryTab({
+        script_summary: () => ({ statements: 3, writes: 2 }),
+        run_query: () => runResult(),
+      });
+      renderWithConfirm('select 1; delete from a; delete from b');
+
+      fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Run all' }));
+
+      await waitFor(() => expectCallCount('run_query', 1));
+      expect(callsTo('run_query')[0]).toMatchObject({
+        sqlText: 'select 1; delete from a; delete from b',
+      });
+    });
+
+    it('does not ask for a single statement, even a write', async () => {
+      // Running one DELETE on purpose is the ordinary case, not a surprise.
+      mockQueryTab({
+        script_summary: () => ({ statements: 1, writes: 1 }),
+        run_query: () => runResult(),
+      });
+      renderWithConfirm('delete from orders where id = 1');
+
+      fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+
+      await waitFor(() => expectCallCount('run_query', 1));
+      expect(screen.queryByRole('button', { name: 'Run all' })).not.toBeInTheDocument();
+    });
+
+    it('does not ask for a script that only reads', async () => {
+      mockQueryTab({
+        script_summary: () => ({ statements: 3, writes: 0 }),
+        run_query: () => runResult(),
+      });
+      renderWithConfirm('select 1; select 2; select 3');
+
+      fireEvent.click(screen.getByRole('button', { name: /Run/ }));
+
+      await waitFor(() => expectCallCount('run_query', 1));
+    });
   });
 
   it('cancels the in-flight query through the backend', async () => {

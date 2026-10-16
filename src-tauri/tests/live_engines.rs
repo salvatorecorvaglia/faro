@@ -24,6 +24,11 @@ use faro_lib::model::{
 use faro_lib::transfer::backup::{self, BackupOptions, RestoreOptions};
 use tokio_util::sync::CancellationToken;
 
+/// SQL Server tests share one database, and the ones that run DDL inside a
+/// transaction deadlock against the battery's catalog reads (error 1205)
+/// when the harness runs them in parallel. Each holds this for its duration.
+static SQLSERVER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn config(engine: Engine, port: u16, database: &str) -> ConnectionConfig {
     ConnectionConfig {
         id: "live".into(),
@@ -42,6 +47,14 @@ fn config(engine: Engine, port: u16, database: &str) -> ConnectionConfig {
             // fall back to it with a password (HTTP Basic would send it in the
             // clear). Opt in explicitly, as a user would.
             Engine::ClickHouse => SslMode::Disable,
+            // macOS's TLS stack refuses the test container's self-generated
+            // SQL Server certificate even with verification off, so locally
+            // the handshake fails and every SQL Server test skips. Set
+            // `FARO_TEST_MSSQL_NO_TLS=1` to test the engine over plain TDS
+            // there; CI's Linux runners keep using TLS.
+            Engine::SqlServer if std::env::var_os("FARO_TEST_MSSQL_NO_TLS").is_some() => {
+                SslMode::Disable
+            }
             _ => SslMode::Prefer,
         },
         color: None,
@@ -398,6 +411,7 @@ async fn mariadb_live() {
 
 #[tokio::test]
 async fn sqlserver_live() {
+    let _serial = SQLSERVER.lock().await;
     let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
     exercise(&*d, Some("dbo"), "SQL Server").await;
     d.close().await;
@@ -1051,6 +1065,7 @@ async fn mysql_backup_round_trip() {
 
 #[tokio::test]
 async fn sqlserver_backup_round_trip() {
+    let _serial = SQLSERVER.lock().await;
     let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
     backup_round_trip(&*d, Some("dbo"), "SQL Server").await;
     d.close().await;
@@ -1405,6 +1420,7 @@ async fn postgres_keeps_backslashes_as_data() {
 
 #[tokio::test]
 async fn sqlserver_keeps_the_offset_on_datetimeoffset() {
+    let _serial = SQLSERVER.lock().await;
     // `datetimeoffset` decodes only into `DateTime<FixedOffset>`; routed
     // through `NaiveDateTime` it failed and became a silent NULL, which is
     // indistinguishable from the column actually being NULL.
@@ -1521,5 +1537,468 @@ async fn a_keyless_table_pages_in_a_stable_order() {
     }
     assert_eq!(collected.len(), 150, "expected three full pages");
 
+    d.close().await;
+}
+
+// -- Postgres types beyond sqlx's built-ins ----------------------------------
+
+/// Every column of `faro_b8.typed`, as Postgres itself renders it.
+async fn typed_rows_as_text(d: &dyn Driver) -> Vec<Vec<Value>> {
+    d.query(
+        "SELECT id::text, m::text, span::text, addr::text, net::text, cash::text, \
+                tz::text, ids::text, flags::text, nums::text, docs::text, r::text, mac::text \
+         FROM faro_b8.typed ORDER BY id",
+        10,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap()
+    .rows
+}
+
+#[tokio::test]
+async fn postgres_decodes_enums_intervals_network_types_and_arrays() {
+    // All of these came back as `Unsupported` — the grid showed only the type
+    // name — because sqlx's binary decoding knows a fixed set of types. They
+    // now arrive as Postgres's own text (or a real array), and a dump of them
+    // restores to the same values.
+    let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
+    for sql in [
+        "DROP SCHEMA IF EXISTS faro_b8 CASCADE",
+        "CREATE SCHEMA faro_b8",
+        "CREATE TYPE faro_b8.mood AS ENUM ('calm', 'busy')",
+        "CREATE TABLE faro_b8.typed (id integer PRIMARY KEY, m faro_b8.mood, span interval, \
+           addr inet, net cidr, cash money, tz timetz, ids uuid[], flags boolean[], \
+           nums numeric[], docs jsonb[], r int4range, mac macaddr)",
+        "INSERT INTO faro_b8.typed VALUES (1, 'busy', '1 year 2 mons 3 days 04:05:06.5', \
+           '10.0.0.1', '192.168.1.0/24', 12.34, '10:00:00+02', \
+           ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid], ARRAY[true, false, NULL], \
+           ARRAY[1.50, 2], ARRAY['{\"a\": 1}'::jsonb], '[1,5)', '08:00:2b:01:02:03')",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    let rs = d
+        .query(
+            "SELECT m, span, addr, ids, flags, nums, docs, r FROM faro_b8.typed",
+            1,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let row = &rs.rows[0];
+    assert!(
+        !row.iter().any(|v| matches!(v, Value::Unsupported(_))),
+        "still unsupported: {row:?}"
+    );
+    assert_eq!(row[0], Value::Text("busy".into()));
+    assert_eq!(
+        row[1],
+        Value::Text("1 year 2 mons 3 days 04:05:06.5".into())
+    );
+    assert_eq!(row[2], Value::Text("10.0.0.1".into()));
+    assert_eq!(
+        row[3],
+        Value::Array(vec![Value::Uuid(
+            "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11".into()
+        )])
+    );
+    assert_eq!(
+        row[4],
+        Value::Array(vec![Value::Bool(true), Value::Bool(false), Value::Null])
+    );
+    assert_eq!(
+        row[5],
+        Value::Array(vec![
+            Value::Decimal("1.5".into()),
+            Value::Decimal("2".into())
+        ])
+    );
+    assert_eq!(
+        row[6],
+        Value::Array(vec![Value::Json(serde_json::json!({"a": 1}))])
+    );
+    assert_eq!(row[7], Value::Text("[1,5)".into()));
+
+    // Backed up, dropped and restored: the same values come back.
+    let before = typed_rows_as_text(&*d).await;
+    let dump = std::env::temp_dir().join(format!("faro_live_b8_{}.sql", std::process::id()));
+    backup::write_backup(
+        &*d,
+        &dump,
+        &BackupOptions {
+            tables: vec![TableRef {
+                schema: Some("faro_b8".into()),
+                name: "typed".into(),
+            }],
+            include_schema: true,
+            include_data: true,
+            drop_existing: true,
+        },
+        CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let restored = backup::restore(
+        &*d,
+        &std::fs::read_to_string(&dump).unwrap(),
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        CancellationToken::new(),
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.failed, 0, "{:#?}", restored.errors);
+    assert_eq!(typed_rows_as_text(&*d).await, before);
+
+    let _ = std::fs::remove_file(&dump);
+    d.execute("DROP SCHEMA faro_b8 CASCADE", CancellationToken::new())
+        .await
+        .unwrap();
+    d.close().await;
+}
+
+#[tokio::test]
+async fn postgres_dump_restores_into_an_empty_schema_with_its_sequences_and_constraints() {
+    // The generic DDL kept `DEFAULT nextval('…_seq')` but never created the
+    // sequence, so a restore into a fresh database failed on its first table.
+    // It also dropped UNIQUE, CHECK and identity, and named enum types it never
+    // created. Restored into an empty schema, everything has to come back —
+    // and behave, not just exist.
+    let d = engine_or_skip!(Engine::Postgres, 55432, "faro_test");
+    let exec = |sql: &'static str| {
+        let d = &d;
+        async move {
+            d.execute(sql, CancellationToken::new())
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        }
+    };
+    exec("DROP SCHEMA IF EXISTS faro_b9 CASCADE").await;
+    exec("CREATE SCHEMA faro_b9").await;
+    exec("CREATE TYPE faro_b9.mood AS ENUM ('calm', 'busy')").await;
+    exec(
+        "CREATE TABLE faro_b9.parent (
+           id serial PRIMARY KEY,
+           code text UNIQUE,
+           qty integer CHECK (qty >= 0),
+           total integer GENERATED ALWAYS AS (qty * 2) STORED,
+           ident integer GENERATED ALWAYS AS IDENTITY
+         )",
+    )
+    .await;
+    exec(
+        "CREATE TABLE faro_b9.child (
+           id serial PRIMARY KEY,
+           parent_id integer REFERENCES faro_b9.parent(id),
+           m faro_b9.mood
+         )",
+    )
+    .await;
+    exec("INSERT INTO faro_b9.parent (code, qty) VALUES ('a', 1), ('b', 2), ('c', 3)").await;
+    exec("INSERT INTO faro_b9.child (parent_id, m) VALUES (1, 'busy'), (3, 'calm')").await;
+
+    let dump = std::env::temp_dir().join(format!("faro_live_b9_{}.sql", std::process::id()));
+    backup::write_backup(
+        &*d,
+        &dump,
+        &BackupOptions {
+            tables: ["parent", "child"]
+                .map(|name| TableRef {
+                    schema: Some("faro_b9".into()),
+                    name: name.into(),
+                })
+                .to_vec(),
+            include_schema: true,
+            include_data: true,
+            drop_existing: false,
+        },
+        CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    // An empty schema: no tables, no sequences, no enum type.
+    exec("DROP SCHEMA faro_b9 CASCADE").await;
+    exec("CREATE SCHEMA faro_b9").await;
+
+    let restored = backup::restore(
+        &*d,
+        &std::fs::read_to_string(&dump).unwrap(),
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        CancellationToken::new(),
+        |_, _| {},
+    )
+    .await
+    .unwrap_or_else(|e| panic!("restore into an empty schema failed: {e}"));
+    assert_eq!(restored.failed, 0, "{:#?}", restored.errors);
+
+    assert_eq!(
+        scalar(&*d, "SELECT count(*) FROM faro_b9.parent").await,
+        Value::Int(3)
+    );
+    assert_eq!(
+        scalar(&*d, "SELECT m::text FROM faro_b9.child WHERE parent_id = 1").await,
+        Value::Text("busy".into())
+    );
+    // The generated column is computed again, not copied.
+    assert_eq!(
+        scalar(&*d, "SELECT total FROM faro_b9.parent WHERE code = 'c'").await,
+        Value::Int(6)
+    );
+
+    // The sequence continues past the restored keys rather than colliding.
+    exec("INSERT INTO faro_b9.parent (code, qty) VALUES ('d', 4)").await;
+    assert_eq!(
+        scalar(&*d, "SELECT id FROM faro_b9.parent WHERE code = 'd'").await,
+        Value::Int(4)
+    );
+    // Identity is ALWAYS again, and continues too.
+    assert_eq!(
+        scalar(
+            &*d,
+            "SELECT attidentity::text FROM pg_attribute \
+             WHERE attrelid = 'faro_b9.parent'::regclass AND attname = 'ident'"
+        )
+        .await,
+        Value::Text("a".into())
+    );
+    assert_eq!(
+        scalar(&*d, "SELECT ident FROM faro_b9.parent WHERE code = 'd'").await,
+        Value::Int(4)
+    );
+
+    // And the constraints are enforced, not just listed.
+    for (sql, what) in [
+        (
+            "INSERT INTO faro_b9.parent (code, qty) VALUES ('a', 9)",
+            "UNIQUE",
+        ),
+        (
+            "INSERT INTO faro_b9.parent (code, qty) VALUES ('z', -1)",
+            "CHECK",
+        ),
+        (
+            "INSERT INTO faro_b9.child (parent_id) VALUES (999)",
+            "FOREIGN KEY",
+        ),
+    ] {
+        assert!(
+            d.execute(sql, CancellationToken::new()).await.is_err(),
+            "the {what} constraint did not survive the restore"
+        );
+    }
+
+    let _ = std::fs::remove_file(&dump);
+    exec("DROP SCHEMA faro_b9 CASCADE").await;
+    d.close().await;
+}
+
+// -- SQL Server sessions, procedures and identity ----------------------------
+
+#[tokio::test]
+async fn sqlserver_runs_a_manual_transaction_script() {
+    let _serial = SQLSERVER.lock().await;
+    // Each statement ran inside `sp_executesql`, where changing the
+    // transaction count is error 266 — so `BEGIN TRANSACTION … COMMIT`
+    // failed, and a ROLLBACK could not undo anything.
+    let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
+    let run = |sql: &'static str| {
+        let d = &d;
+        async move {
+            d.run(sql, 10, CancellationToken::new())
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        }
+    };
+    run("DROP TABLE IF EXISTS faro_tx").await;
+    run("CREATE TABLE faro_tx (id int PRIMARY KEY, v int)").await;
+    run("INSERT INTO faro_tx VALUES (1, 1)").await;
+
+    run("BEGIN TRANSACTION").await;
+    run("UPDATE faro_tx SET v = 2 WHERE id = 1").await;
+    run("ROLLBACK").await;
+    assert_eq!(
+        scalar(&*d, "SELECT v FROM faro_tx WHERE id = 1").await,
+        Value::Int(1),
+        "the rollback did not undo the update"
+    );
+
+    run("BEGIN TRANSACTION").await;
+    run("UPDATE faro_tx SET v = 3 WHERE id = 1").await;
+    run("COMMIT").await;
+    assert_eq!(
+        scalar(&*d, "SELECT v FROM faro_tx WHERE id = 1").await,
+        Value::Int(3)
+    );
+    run("DROP TABLE faro_tx").await;
+    d.close().await;
+}
+
+#[tokio::test]
+async fn sqlserver_shows_the_rows_a_procedure_returns() {
+    let _serial = SQLSERVER.lock().await;
+    // `EXEC` was routed to `execute`, which reports a count and discards rows.
+    let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
+    match d
+        .run(
+            "EXEC sp_executesql N'SELECT 7 AS answer'",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    {
+        QueryOutcome::Rows(rs) => {
+            assert_eq!(rs.columns[0].name, "answer");
+            assert_eq!(rs.rows[0][0], Value::Int(7));
+        }
+        other => panic!("the procedure's rows were discarded: {other:?}"),
+    }
+    d.close().await;
+}
+
+#[tokio::test]
+async fn sqlserver_identity_table_survives_an_atomic_backup_and_restore() {
+    let _serial = SQLSERVER.lock().await;
+    // Three things failed here: the restore's own BEGIN TRANSACTION hit error
+    // 266, the generic DDL dropped IDENTITY, and the dump inserted explicit
+    // identity values without IDENTITY_INSERT.
+    let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
+    for sql in [
+        "DROP TABLE IF EXISTS faro_ident",
+        "CREATE TABLE faro_ident (id int IDENTITY(10, 5) PRIMARY KEY, name nvarchar(20))",
+        "INSERT INTO faro_ident (name) VALUES (N'a'), (N'b')",
+    ] {
+        d.execute(sql, CancellationToken::new()).await.unwrap();
+    }
+    let dump = std::env::temp_dir().join(format!("faro_live_ident_{}.sql", std::process::id()));
+    backup::write_backup(
+        &*d,
+        &dump,
+        &BackupOptions {
+            tables: vec![TableRef {
+                schema: Some("dbo".into()),
+                name: "faro_ident".into(),
+            }],
+            include_schema: true,
+            include_data: true,
+            drop_existing: true,
+        },
+        CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    // Atomic: stop on the first error, inside one transaction.
+    let restored = backup::restore(
+        &*d,
+        &std::fs::read_to_string(&dump).unwrap(),
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        CancellationToken::new(),
+        |_, _| {},
+    )
+    .await
+    .unwrap_or_else(|e| panic!("atomic restore failed: {e}"));
+    assert_eq!(restored.failed, 0, "{:#?}", restored.errors);
+
+    // The restored rows keep their keys, and new rows continue the identity.
+    assert_eq!(
+        scalar(&*d, "SELECT name FROM faro_ident WHERE id = 15").await,
+        Value::Text("b".into())
+    );
+    d.execute(
+        "INSERT INTO faro_ident (name) VALUES (N'c')",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        scalar(&*d, "SELECT id FROM faro_ident WHERE name = N'c'").await,
+        Value::Int(20)
+    );
+
+    let _ = std::fs::remove_file(&dump);
+    d.execute("DROP TABLE faro_ident", CancellationToken::new())
+        .await
+        .unwrap();
+    d.close().await;
+}
+
+#[tokio::test]
+async fn sqlserver_streams_an_import_and_rolls_back_an_unfinished_one() {
+    let _serial = SQLSERVER.lock().await;
+    // SQL Server buffered a whole import in memory before applying any of it.
+    use faro_lib::model::ApplyChunk;
+    let d = engine_or_skip!(Engine::SqlServer, 51433, "faro_test");
+    for sql in [
+        "DROP TABLE IF EXISTS faro_stream",
+        "CREATE TABLE faro_stream (id int PRIMARY KEY)",
+    ] {
+        d.execute(sql, CancellationToken::new()).await.unwrap();
+    }
+    let batch = |from: i64| {
+        vec![GuardedStatement {
+            sql: format!(
+                "INSERT INTO faro_stream VALUES {}",
+                (from..from + 50)
+                    .map(|i| format!("({i})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            expect: None,
+        }]
+    };
+    let stream = |batches: Vec<Vec<GuardedStatement>>, finish: bool| {
+        let d = &d;
+        async move {
+            let (tx, rx) = tokio::sync::mpsc::channel::<ApplyChunk>(2);
+            let producer = tokio::spawn(async move {
+                for b in batches {
+                    if tx.send(ApplyChunk::Batch(b)).await.is_err() {
+                        return;
+                    }
+                }
+                if finish {
+                    let _ = tx.send(ApplyChunk::Done).await;
+                }
+            });
+            let applied = d.apply_streaming(rx).await;
+            producer.await.unwrap();
+            applied
+        }
+    };
+
+    // More batches than the channel holds: applied while still arriving.
+    stream((0..6).map(|i| batch(i * 50)).collect(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        scalar(&*d, "SELECT count(*) FROM faro_stream").await,
+        Value::Int(300)
+    );
+
+    // A reader that stops partway leaves nothing behind.
+    let err = stream(vec![batch(1000)], false).await.unwrap_err();
+    assert!(err.to_string().contains("nothing was applied"), "{err}");
+    assert_eq!(
+        scalar(&*d, "SELECT count(*) FROM faro_stream").await,
+        Value::Int(300)
+    );
+
+    d.execute("DROP TABLE faro_stream", CancellationToken::new())
+        .await
+        .unwrap();
     d.close().await;
 }

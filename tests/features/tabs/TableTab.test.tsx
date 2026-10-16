@@ -126,6 +126,89 @@ describe('TableTab', () => {
     });
   });
 
+  it('comes back to the page and sort it was left on, without re-querying', async () => {
+    // Only the active tab is mounted. Held in the component, the page and sort
+    // reset on every switch back, and the table was read again from scratch.
+    mockInvoke({
+      describe_table: () => detail(),
+      browse_table: () => browseResult([[int(1), text('Alice')]]),
+    });
+    const { id, unmount } = renderTableTab();
+    await screen.findByText('Alice');
+
+    fireEvent.click(screen.getByRole('columnheader', { name: /name/ }));
+    await waitFor(() => expectCallCount('browse_table', 2));
+    await waitFor(() => expect(currentTab().browseSort).toEqual({ column: 'name', desc: false }));
+
+    // Switch away (the tab unmounts) and back.
+    unmount();
+    render(<Harness id={id} />);
+    await screen.findByText('Alice');
+
+    expect(screen.getByRole('columnheader', { name: /name/ })).toHaveAttribute(
+      'aria-sort',
+      'ascending',
+    );
+    expectCallCount('browse_table', 2);
+  });
+
+  it('cancels a superseded page load instead of letting it hold the session', async () => {
+    // Its reply is ignored either way; left running, the next page queued
+    // behind it on the connection's single session.
+    let calls = 0;
+    mockInvoke({
+      describe_table: () => detail(),
+      browse_table: () => {
+        calls += 1;
+        // The first load answers; every later one hangs, like a slow query.
+        return calls === 1
+          ? browseResult([[int(1), text('Alice')]])
+          : new Promise<ResultSet>(() => {});
+      },
+      cancel_query: () => true,
+    });
+    renderTableTab();
+    await screen.findByText('Alice');
+
+    const header = screen.getByRole('columnheader', { name: /name/ });
+    fireEvent.click(header); // starts a sorted load, which hangs
+    await waitFor(() => expectCallCount('browse_table', 2));
+    const slow = callsTo('browse_table')[1]!.queryId;
+
+    fireEvent.click(header); // supersedes it
+    await waitFor(() => expectCallCount('browse_table', 3));
+
+    expect(callsTo('cancel_query')).toEqual([{ connectionId: 'c1', queryId: slow }]);
+  });
+
+  it('keeps a table with a floating-point primary key read-only, and says why', async () => {
+    // A float rendered back may not equal the stored value, so an edit could
+    // never be sure of finding its row again.
+    mockInvoke({
+      describe_table: () => detail(),
+      browse_table: () => browseResult([[{ kind: 'float', value: 0.1 }, text('Alice')]]),
+    });
+    renderTableTab();
+    await screen.findByText('Alice');
+
+    expect(await screen.findByText(/holds floating-point numbers/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Row/ })).not.toBeInTheDocument();
+  });
+
+  it('lets a table with a binary primary key be edited', async () => {
+    // Keys now travel as the bytes they were read as, so these tables — once
+    // read-only because their key displayed only as a size badge — work.
+    mockInvoke({
+      describe_table: () => detail(),
+      browse_table: () => browseResult([[{ kind: 'bytes', value: [1, 2, 3] }, text('Alice')]]),
+    });
+    renderTableTab();
+    await screen.findByText('Alice');
+
+    expect(await screen.findByRole('button', { name: /Row/ })).toBeInTheDocument();
+    expect(screen.queryByText(/cannot yet match exactly/)).not.toBeInTheDocument();
+  });
+
   describe('pagination', () => {
     it('disables Previous on the first page and enables Next when more rows exist', async () => {
       mockInvoke({
@@ -324,7 +407,7 @@ describe('TableTab', () => {
         type: 'update',
         // The *original* key, taken from the result set — editing a key must
         // still find the row it started from.
-        key: [{ column: 'id', value: { kind: 'text', value: '1' } }],
+        key: [{ column: 'id', value: { kind: 'stored', value: { kind: 'int', value: 1 } } }],
         cells: [{ column: 'name', value: { kind: 'text', value: 'Alicia' } }],
       },
     ]);

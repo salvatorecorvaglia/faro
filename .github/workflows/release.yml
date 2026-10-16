@@ -33,13 +33,10 @@ jobs:
           
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           
-          # Read package.json version
           PKG_VERSION=$(jq -r .version package.json)
           
-          # Read tauri.conf.json version
           TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           
-          # Read Cargo.toml version
           CARGO_VERSION=$(grep -m 1 '^version = ' src-tauri/Cargo.toml | cut -d '"' -f 2)
           
           echo "Tag version: $TAG_VERSION"

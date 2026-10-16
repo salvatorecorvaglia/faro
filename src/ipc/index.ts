@@ -29,6 +29,7 @@ import type {
   RunResult,
   SavedQuery,
   SchemaInfo,
+  ScriptSummary,
   TableColumns,
   TableDetail,
   TableInfo,
@@ -126,8 +127,19 @@ export const applyChanges = (connectionId: string, table: TableRef, changes: Pen
 
 // -- Import and export -----------------------------------------------------
 
-export const exportResult = (path: string, result: ResultSet, options: ExportOptions) =>
-  invoke<TransferResult>('export_result', { path, result, options });
+/**
+ * Write a result the backend already holds — a query run or a table page,
+ * named by the query id it ran under — to a file.
+ *
+ * The rows are not sent back from here: large binary values only ever reach
+ * the UI as their size, so the backend's copy is the faithful one.
+ */
+export const exportCached = (
+  queryId: string,
+  statement: number,
+  path: string,
+  options: ExportOptions,
+) => invoke<TransferResult>('export_cached', { queryId, statement, path, options });
 
 /**
  * Re-reads the table from the database, so it is not capped at one page.
@@ -198,6 +210,10 @@ export const cancelQuery = (connectionId: string, queryId: string) =>
 
 export const statementAtCursor = (sqlText: string, offset: number) =>
   invoke<string | null>('statement_at_cursor', { sqlText, offset });
+
+/** How many statements a script holds and how many of them write. */
+export const scriptSummary = (connectionId: string | null, sqlText: string) =>
+  invoke<ScriptSummary>('script_summary', { connectionId, sqlText });
 
 // -- Saved queries and history ---------------------------------------------
 

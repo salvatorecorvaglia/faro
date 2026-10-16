@@ -1,6 +1,6 @@
 [package]
 name = "faro"
-version = "1.0.0"
+version = "1.1.0"
 description = "Fast, clean, cross-platform database client"
 edition = "2021"
 # Floor set by the spreadsheet crates; Cargo's MSRV-aware resolver silently
@@ -12,20 +12,22 @@ name = "faro_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = [] }
-tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+tauri = { version = "2.12.4", features = [] }
+tauri-plugin-dialog = "2.8.3"
+tauri-plugin-updater = "2.14.0"
+tauri-plugin-process = "2.4.0"
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `rc` lets a command return an `Arc` it also keeps in the result cache, so
+# caching a result costs no second copy of its rows.
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1.0.154"
 thiserror = "2"
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-tokio-util = "0.7"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = "0.7.20"
 async-trait = "0.1"
 futures = "0.3"
 
@@ -49,20 +51,20 @@ sqlx = { version = "0.9", default-features = false, features = [
 
 # Pinned to 0.39: it shares libsqlite3-sys 0.37 with sqlx-sqlite. rusqlite 0.40
 # requires 0.38, and two crates cannot both link the native sqlite3 library.
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # The default "v1" feature pulls in the native store for each platform:
 # Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 keyring = "4"
 
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.26.0", features = ["v4", "serde"] }
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
 # Arbitrary-precision decimals. Version tracks sqlx's, so the `BigDecimal`
 # decoded out of a row is the same type this crate names.
-bigdecimal = "0.4"
-dirs = "6"
+bigdecimal = "0.4.11"
+dirs = "7.0.0"
 # `bundled` compiles DuckDB in; there is no system libduckdb to link against on
 # a typical machine. It is the reason this crate is behind a feature.
-duckdb = { version = "1", features = ["bundled"], optional = true }
+duckdb = { version = "1.10506.0", features = ["bundled"], optional = true }
 
 # MongoDB. `bson` is re-exported by the driver but named explicitly because the
 # query parser converts JSON into BSON directly.
@@ -86,7 +88,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "q
 
 # SQL Server. tiberius is not sqlx: it has no pool of its own and needs a
 # tokio-util compat layer over the socket, so bb8 supplies the pooling.
-tiberius = { version = "0.12", default-features = false, features = ["native-tls", "tds73", "chrono"] }
+tiberius = { version = "0.13.0", default-features = false, features = ["native-tls", "tds73", "chrono"] }
 bb8 = "0.9"
 bb8-tiberius = "0.16"
 
@@ -105,6 +107,7 @@ duckdb-engine = ["duckdb"]
 
 # Tauri's custom-protocol is enabled by the CLI for production builds.
 custom-protocol = ["tauri/custom-protocol"]
+duckdb = ["dep:duckdb"]
 
 [profile.release]
 codegen-units = 1

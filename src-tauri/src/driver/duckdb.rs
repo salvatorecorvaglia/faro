@@ -30,6 +30,21 @@ impl Dialect for DuckDbDialect {
         dialect::hex_bytes_x(bytes)
     }
 
+    /// Nested columns are dumped in DuckDB's own text form.
+    ///
+    /// Read normally they become JSON, and JSON text does not cast back to
+    /// every nested type — `'{"k":7}'` is not a MAP to DuckDB, so a restore of
+    /// a MAP column failed. DuckDB's rendering of its own values (`{k=7}`)
+    /// always casts back to the declared type, so the backup reads that.
+    fn dump_column(&self, column: &crate::model::ColumnDetail) -> String {
+        let name = self.quote_ident(&column.name);
+        if is_nested_type(&column.type_name) {
+            format!("CAST({name} AS VARCHAR) AS {name}")
+        } else {
+            name
+        }
+    }
+
     /// DuckDB has real schemas, but a file-backed database has one that matters
     /// (`main`). Faro presents it as schema-less so generated SQL stays
     /// unqualified, matching how it treats SQLite.
@@ -50,6 +65,12 @@ impl Dialect for DuckDbDialect {
 /// the SQLite driver.
 pub struct DuckDbDriver {
     conn: Arc<Mutex<Connection>>,
+    /// Interrupts whatever statement the connection is running.
+    ///
+    /// Held outside the mutex on purpose: the running statement holds the
+    /// lock, so anything that had to take it to stop the statement would wait
+    /// for the statement to finish first.
+    interrupt: Arc<duckdb::InterruptHandle>,
     dialect: DuckDbDialect,
 }
 
@@ -88,6 +109,7 @@ impl DuckDbDriver {
         .map_err(|e| FaroError::Connection(e.to_string()))?;
 
         Ok(Self {
+            interrupt: conn.interrupt_handle(),
             conn: Arc::new(Mutex::new(conn)),
             dialect: DuckDbDialect,
         })
@@ -110,6 +132,46 @@ impl DuckDbDriver {
         .map_err(|e| FaroError::Other(format!("DuckDB task failed: {e}")))?
     }
 
+    /// [`with_conn`](Self::with_conn), stopping the statement when `cancel`
+    /// fires.
+    ///
+    /// Cancel used to do nothing here: the statement ran on a blocking thread
+    /// that cannot be dropped like a future, so pressing Stop changed nothing
+    /// until the query finished on its own — and it held the connection's only
+    /// lock all the while. DuckDB can interrupt a running statement from
+    /// another thread, which is what this does.
+    async fn with_conn_cancellable<T, F>(&self, cancel: CancellationToken, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
+        let token = cancel.clone();
+        let work = self.with_conn(move |c| {
+            // Checked again once the lock is held. A cancel that arrived while
+            // this waited behind an earlier statement had nothing running to
+            // interrupt yet, and would otherwise be ignored.
+            if token.is_cancelled() {
+                return Err(FaroError::Cancelled);
+            }
+            f(c)
+        });
+        tokio::pin!(work);
+        tokio::select! {
+            biased;
+            res = &mut work => res,
+            _ = cancel.cancelled() => {
+                self.interrupt.interrupt();
+                // Wait for the interrupted statement to return, so the lock is
+                // released — and the connection usable — before reporting.
+                let _ = work.await;
+                Err(FaroError::Cancelled)
+            }
+        }
+    }
+
     /// Fetch a result set, capping at `limit` with one extra row to detect
     /// truncation.
     fn fetch(conn: &Connection, sql: &str, limit: u64) -> Result<ResultSet> {
@@ -120,6 +182,10 @@ impl DuckDbDriver {
 
         // Column names are only available once the statement has run.
         let mut columns: Vec<ColumnInfo> = Vec::new();
+        // Which columns are TIMESTAMPTZ. Their values arrive exactly like a
+        // plain TIMESTAMP's — microseconds since the epoch — so only the
+        // column's declared type tells them apart.
+        let mut zoned: Vec<bool> = Vec::new();
         let mut data: Vec<Vec<Value>> = Vec::new();
         let mut seen = 0u64;
 
@@ -140,6 +206,19 @@ impl DuckDbDriver {
                             .unwrap_or_else(|_| "UNKNOWN".into()),
                     })
                     .collect();
+                zoned = (0..columns.len())
+                    .map(|i| {
+                        matches!(
+                            row.as_ref().column_type(i),
+                            duckdb::arrow::datatypes::DataType::Timestamp(_, Some(_))
+                        )
+                    })
+                    .collect();
+                for (column, &tz) in columns.iter_mut().zip(&zoned) {
+                    if tz {
+                        column.type_name = "TIMESTAMPTZ".into();
+                    }
+                }
             }
 
             seen += 1;
@@ -151,7 +230,18 @@ impl DuckDbDriver {
             let width = columns.len();
             data.push(
                 (0..width)
-                    .map(|i| row.get_ref(i).map(decode_value).unwrap_or(Value::Null))
+                    .map(|i| match row.get_ref(i) {
+                        // An instant, so it says so: RFC 3339 with its UTC
+                        // offset. Shown as a bare `2024-01-01 08:00:00` it lost
+                        // the fact that it was UTC — and a dump of it restored
+                        // as that wall time in whatever zone the session used,
+                        // shifting every value by the difference.
+                        Ok(ValueRef::Timestamp(unit, v)) if zoned[i] => {
+                            Value::Timestamp(format_timestamp_utc(unit, v))
+                        }
+                        Ok(v) => decode_value(v),
+                        Err(_) => Value::Null,
+                    })
                     .collect(),
             );
         }
@@ -175,6 +265,16 @@ impl DuckDbDriver {
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
+}
+
+/// Whether a DuckDB type name is a nested type: a list or array (`INTEGER[]`,
+/// `INTEGER[2]`), a STRUCT, a MAP or a UNION.
+fn is_nested_type(type_name: &str) -> bool {
+    let t = type_name.trim().to_ascii_uppercase();
+    t.ends_with(']')
+        || ["STRUCT(", "MAP(", "UNION("]
+            .iter()
+            .any(|p| t.starts_with(p))
 }
 
 /// Roll the transaction back, preserving `cause` as the error the user sees.
@@ -357,29 +457,20 @@ impl Driver for DuckDbDriver {
                 )
                 .map_err(map_err)?;
 
-            let mut out: Vec<TableColumns> = Vec::new();
+            let mut pairs = Vec::new();
             let mut rows = stmt.query([]).map_err(map_err)?;
             while let Some(row) = rows.next().map_err(map_err)? {
-                let table: String = row.get(0).map_err(map_err)?;
-                let column: String = row.get(1).map_err(map_err)?;
-                match out.last_mut().filter(|t| t.name == table) {
-                    Some(entry) => entry.columns.push(column),
-                    None => out.push(TableColumns {
-                        schema: None,
-                        name: table,
-                        columns: vec![column],
-                    }),
-                }
+                pairs.push((
+                    row.get::<_, String>(0).map_err(map_err)?,
+                    row.get::<_, String>(1).map_err(map_err)?,
+                ));
             }
-            Ok(out)
+            Ok(super::catalog::group_columns(pairs, None))
         })
         .await
     }
 
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
-        if cancel.is_cancelled() {
-            return Err(FaroError::Cancelled);
-        }
         // `fetch` already stops one row past the limit, so the wrapping is only
         // there to keep the surplus rows on the engine's side. Statements that
         // cannot be a derived table — `PRAGMA`, `DESCRIBE`, `SHOW`, `EXPLAIN` —
@@ -390,15 +481,13 @@ impl Driver for DuckDbDriver {
         } else {
             sql.to_string()
         };
-        self.with_conn(move |c| Self::fetch(c, &sql, limit)).await
+        self.with_conn_cancellable(cancel, move |c| Self::fetch(c, &sql, limit))
+            .await
     }
 
     async fn execute(&self, sql: &str, cancel: CancellationToken) -> Result<ExecResult> {
-        if cancel.is_cancelled() {
-            return Err(FaroError::Cancelled);
-        }
         let owned = sql.to_string();
-        self.with_conn(move |c| {
+        self.with_conn_cancellable(cancel, move |c| {
             let started = Instant::now();
             // `execute` reports affected rows; a script it rejects as
             // multi-statement falls back to execute_batch, which reports none.
@@ -469,6 +558,70 @@ impl Driver for DuckDbDriver {
         .await
     }
 
+    /// Apply an import's statements as they arrive, in one transaction.
+    ///
+    /// The default buffered every statement before running any, which for a
+    /// large file meant holding all of it in memory as SQL text — the thing the
+    /// streaming import exists to avoid.
+    ///
+    /// The whole import runs in one blocking task holding the connection's
+    /// mutex, receiving batches with `blocking_recv`. Taking the lock per batch
+    /// instead would let any other DuckDB call — a browse, a schema refresh —
+    /// slip in between batches and run *inside* the import's open transaction.
+    async fn apply_streaming(
+        &self,
+        mut chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+    ) -> Result<u64> {
+        use crate::model::ApplyChunk;
+
+        self.with_conn(move |c| {
+            c.execute_batch("BEGIN TRANSACTION").map_err(map_err)?;
+            let mut total = 0u64;
+            let mut index = 0usize;
+            let mut done = false;
+
+            while let Some(chunk) = chunks.blocking_recv() {
+                let batch = match chunk {
+                    ApplyChunk::Batch(batch) => batch,
+                    ApplyChunk::Done => {
+                        done = true;
+                        break;
+                    }
+                };
+                for stmt in &batch {
+                    let affected = match c.execute(&stmt.sql, []) {
+                        Ok(n) => n as u64,
+                        Err(e) => return Err(rollback(c, map_err(e))),
+                    };
+                    if let Some(expected) = stmt.expect {
+                        if affected != expected {
+                            let guard = super::tx::guard_error(index, None, expected, affected);
+                            return Err(rollback(c, guard));
+                        }
+                    }
+                    total += affected;
+                    index += 1;
+                }
+            }
+
+            // Only an explicit `Done` earns a commit; a sender dropped without
+            // one means the reader failed partway through the file.
+            if !done {
+                return Err(rollback(
+                    c,
+                    FaroError::Other(
+                        "the source could not be read to the end, so nothing was applied".into(),
+                    ),
+                ));
+            }
+            if let Err(e) = c.execute_batch("COMMIT") {
+                return Err(rollback(c, map_err(e)));
+            }
+            Ok(total)
+        })
+        .await
+    }
+
     fn dialect(&self) -> &dyn Dialect {
         &self.dialect
     }
@@ -501,6 +654,7 @@ fn type_name_of(value: ValueRef<'_>) -> String {
         ValueRef::Int(_) => "INTEGER",
         ValueRef::BigInt(_) => "BIGINT",
         ValueRef::HugeInt(_) => "HUGEINT",
+        ValueRef::UHugeInt(_) => "UHUGEINT",
         ValueRef::UTinyInt(_) => "UTINYINT",
         ValueRef::USmallInt(_) => "USMALLINT",
         ValueRef::UInt(_) => "UINTEGER",
@@ -520,6 +674,8 @@ fn type_name_of(value: ValueRef<'_>) -> String {
         ValueRef::Array(..) => "ARRAY",
         ValueRef::Map(..) => "MAP",
         ValueRef::Union(..) => "UNION",
+        // Named so a refusal says what the column is rather than "UNKNOWN".
+        ValueRef::Geometry(..) => "GEOMETRY",
         _ => "UNKNOWN",
     }
     .to_string()
@@ -547,6 +703,12 @@ fn decode_value(value: ValueRef<'_>) -> Value {
             Ok(n) => Value::Int(n),
             Err(_) => Value::Decimal(v.to_string()),
         },
+        // Fell through to `Unsupported("UNKNOWN")` while its signed sibling was
+        // decoded — a UHUGEINT column showed no values at all.
+        ValueRef::UHugeInt(v) => match i64::try_from(v) {
+            Ok(n) => Value::Int(n),
+            Err(_) => Value::Decimal(v.to_string()),
+        },
         ValueRef::Float(v) => Value::Float(v as f64),
         ValueRef::Double(v) => Value::Float(v),
         ValueRef::Decimal(d) => Value::Decimal(d.to_string()),
@@ -556,16 +718,130 @@ fn decode_value(value: ValueRef<'_>) -> Value {
             Err(_) => Value::Bytes(bytes.to_vec()),
         },
         ValueRef::Blob(bytes) => Value::Bytes(bytes.to_vec()),
-        ValueRef::Date32(days) => Value::Date(
-            chrono::DateTime::from_timestamp(days as i64 * 86_400, 0)
-                .map(|d| d.date_naive().to_string())
-                .unwrap_or_else(|| days.to_string()),
-        ),
+        ValueRef::Date32(days) => Value::Date(format_date(days)),
         ValueRef::Timestamp(unit, v) => Value::Timestamp(format_timestamp(unit, v)),
         ValueRef::Time64(unit, v) => Value::Time(format_time(unit, v)),
-        // Composite and interval types have no faithful scalar form; their type
-        // name is reported so the user sees something truthful.
+        // In DuckDB's own spelling, which it reads back as an INTERVAL — so a
+        // dump of the column restores to the same values.
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => Value::Text(format_interval(months, days, nanos)),
+        // Nested values. These used to come back as `Unsupported` — the column
+        // showed only its type name, and could be neither exported nor backed
+        // up. An enum is its label; the rest keep their structure as JSON,
+        // which the grid shows collapsed and the inspector in full.
+        composite @ (ValueRef::Enum(..)
+        | ValueRef::List(..)
+        | ValueRef::Array(..)
+        | ValueRef::Struct(..)
+        | ValueRef::Map(..)
+        | ValueRef::Union(..)) => match composite.to_owned() {
+            duckdb::types::Value::Enum(label) => Value::Text(label),
+            owned => Value::Json(duck_json(&owned)),
+        },
         other => Value::Unsupported(type_name_of(other)),
+    }
+}
+
+/// A day count since the epoch, as an ISO-8601 date.
+fn format_date(days: i32) -> String {
+    chrono::DateTime::from_timestamp(days as i64 * 86_400, 0)
+        .map(|d| d.date_naive().to_string())
+        .unwrap_or_else(|| days.to_string())
+}
+
+/// An interval as DuckDB itself prints it — `1 year 2 months 3 days
+/// 04:05:06.5` — which is also a form DuckDB accepts back as an INTERVAL.
+fn format_interval(months: i32, days: i32, nanos: i64) -> String {
+    let unit = |n: i64, one: &str| format!("{n} {one}{}", if n.abs() == 1 { "" } else { "s" });
+    let mut parts = Vec::new();
+    let (years, months) = (months / 12, months % 12);
+    if years != 0 {
+        parts.push(unit(years.into(), "year"));
+    }
+    if months != 0 {
+        parts.push(unit(months.into(), "month"));
+    }
+    if days != 0 {
+        parts.push(unit(days.into(), "day"));
+    }
+    if nanos != 0 || parts.is_empty() {
+        let sign = if nanos < 0 { "-" } else { "" };
+        let total = nanos.unsigned_abs();
+        let micros = (total / 1_000) % 1_000_000;
+        let seconds = total / 1_000_000_000;
+        let mut time = format!(
+            "{sign}{:02}:{:02}:{:02}",
+            seconds / 3600,
+            (seconds / 60) % 60,
+            seconds % 60
+        );
+        if micros != 0 {
+            time.push_str(format!(".{micros:06}").trim_end_matches('0'));
+        }
+        parts.push(time);
+    }
+    parts.join(" ")
+}
+
+/// A nested DuckDB value as JSON, recursively.
+///
+/// Numbers too wide for JSON — HUGEINT, a decimal — become strings so no digit
+/// is lost, and temporal values use the same text as their scalar columns. Map
+/// keys become object keys; a non-text key is written as its JSON text.
+fn duck_json(value: &duckdb::types::Value) -> serde_json::Value {
+    use duckdb::types::Value as D;
+    use serde_json::Value as J;
+    let float = |f: f64| serde_json::Number::from_f64(f).map_or(J::Null, J::Number);
+    match value {
+        D::Null => J::Null,
+        D::Boolean(b) => J::Bool(*b),
+        D::TinyInt(i) => (*i).into(),
+        D::SmallInt(i) => (*i).into(),
+        D::Int(i) => (*i).into(),
+        D::BigInt(i) => (*i).into(),
+        D::UTinyInt(i) => (*i).into(),
+        D::USmallInt(i) => (*i).into(),
+        D::UInt(i) => (*i).into(),
+        D::UBigInt(i) => (*i).into(),
+        D::HugeInt(i) => J::String(i.to_string()),
+        D::UHugeInt(i) => J::String(i.to_string()),
+        D::Float(f) => float(f64::from(*f)),
+        D::Double(f) => float(*f),
+        D::Decimal(d) => J::String(d.to_string()),
+        D::Timestamp(unit, v) => J::String(format_timestamp(*unit, *v)),
+        D::Text(s) | D::Enum(s) => J::String(s.clone()),
+        D::Blob(b) => J::String(b.iter().map(|x| format!("{x:02x}")).collect()),
+        D::Date32(days) => J::String(format_date(*days)),
+        D::Time64(unit, v) => J::String(format_time(*unit, *v)),
+        D::Interval {
+            months,
+            days,
+            nanos,
+        } => J::String(format_interval(*months, *days, *nanos)),
+        D::List(items) | D::Array(items) => J::Array(items.iter().map(duck_json).collect()),
+        D::Struct(fields) => J::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), duck_json(v)))
+                .collect(),
+        ),
+        D::Map(entries) => J::Object(
+            entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        D::Text(s) => s.clone(),
+                        other => duck_json(other).to_string(),
+                    };
+                    (key, duck_json(v))
+                })
+                .collect(),
+        ),
+        D::Union(inner) => duck_json(inner),
+        other => J::String(format!("{other:?}")),
     }
 }
 
@@ -574,6 +850,14 @@ fn format_timestamp(unit: TimeUnit, value: i64) -> String {
     let (secs, nanos) = split_unit(unit, value);
     chrono::DateTime::from_timestamp(secs, nanos)
         .map(|d| d.naive_utc().to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
+/// A TIMESTAMPTZ instant as RFC 3339 in UTC, offset included.
+fn format_timestamp_utc(unit: TimeUnit, value: i64) -> String {
+    let (secs, nanos) = split_unit(unit, value);
+    chrono::DateTime::from_timestamp(secs, nanos)
+        .map(|d| d.to_rfc3339())
         .unwrap_or_else(|| value.to_string())
 }
 
@@ -612,6 +896,33 @@ mod tests {
     fn duckdb_is_presented_as_schema_less() {
         assert!(!DuckDbDialect.supports_schemas());
         assert_eq!(DuckDbDialect.qualify(Some("main"), "t"), r#""t""#);
+    }
+
+    #[test]
+    fn nested_types_are_recognised_by_their_declared_name() {
+        for t in [
+            "VARCHAR[]",
+            "INTEGER[2]",
+            "STRUCT(x INTEGER, y INTEGER)",
+            "MAP(VARCHAR, INTEGER)",
+            "UNION(t VARCHAR)",
+        ] {
+            assert!(is_nested_type(t), "{t}");
+        }
+        for t in ["VARCHAR", "INTEGER", "INTERVAL", "DECIMAL(10,2)", "mood"] {
+            assert!(!is_nested_type(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn intervals_print_as_duckdb_prints_them() {
+        assert_eq!(
+            format_interval(14, 3, 14_706_500_000_000),
+            "1 year 2 months 3 days 04:05:06.5"
+        );
+        assert_eq!(format_interval(1, 1, 0), "1 month 1 day");
+        assert_eq!(format_interval(0, 0, 0), "00:00:00");
+        assert_eq!(format_interval(0, 0, -1_000_000_000), "-00:00:01");
     }
 
     #[test]

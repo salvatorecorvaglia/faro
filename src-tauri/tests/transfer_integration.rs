@@ -577,3 +577,120 @@ mod streaming {
         assert_eq!(count(&*d).await, 0, "a partial import was committed");
     }
 }
+
+#[tokio::test]
+async fn a_streamed_json_export_is_valid_and_complete_across_pages() {
+    // JSON used to be built whole in memory before a byte was written. Streamed,
+    // the array has to stay valid JSON across page boundaries — one missing or
+    // extra comma between pages and the file does not parse at all.
+    let mut f = fixture_or_skip!("paging_json");
+    let d = open(&f).await;
+
+    for sql in [
+        "CREATE TABLE wide (id INTEGER PRIMARY KEY, label TEXT)",
+        "INSERT INTO wide (id, label) SELECT value, 'row-' || value \
+         FROM (WITH RECURSIVE seq(value) AS \
+               (SELECT 1 UNION ALL SELECT value + 1 FROM seq WHERE value < 12000) \
+               SELECT value FROM seq)",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .expect("could not build the wide table");
+    }
+
+    let path = f.file("wide_streamed.json");
+    let written = export::export_table_streaming(
+        &*d,
+        &table("wide"),
+        &path,
+        &opts(ExportFormat::Json, "wide"),
+        Some(d.dialect()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written, 12_000);
+
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .expect("the streamed JSON did not parse");
+    let mut ids: Vec<i64> = parsed.iter().map(|o| o["id"].as_i64().unwrap()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 12_000, "rows were lost or repeated across pages");
+    assert_eq!(parsed[0]["label"], "row-1");
+}
+
+#[tokio::test]
+async fn a_table_too_large_for_a_worksheet_is_refused_while_reading() {
+    // Excel holds 1,048,576 rows. Reading every row of a larger table into
+    // memory only to be refused at the end wasted the whole wait; the capped
+    // read stops as soon as the table proves too big.
+    let f = fixture_or_skip!("xlsx_cap");
+    let d = open(&f).await;
+
+    let err = export::read_table_paged_capped(
+        &*d,
+        &table("access_log"),
+        CancellationToken::new(),
+        Some(100),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Excel"), "{err}");
+
+    // Within the cap, it reads the table as usual.
+    let all = export::read_table_paged_capped(
+        &*d,
+        &table("access_log"),
+        CancellationToken::new(),
+        Some(10_000),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.rows.len(), 5000);
+}
+
+#[tokio::test]
+async fn keyset_paging_over_a_composite_text_key_is_still_a_partition() {
+    // Paging continues from the last key seen rather than by offset. With a
+    // composite key, a page boundary falls in the middle of one `region`'s run
+    // of rows; continuing from just `region` would skip the rest of that run.
+    let f = fixture_or_skip!("keyset_composite");
+    let d = open(&f).await;
+
+    for sql in [
+        "CREATE TABLE sales (region TEXT, seq INTEGER, amount INTEGER, \
+         PRIMARY KEY (region, seq))",
+        // 4 regions × 3000 rows: 12 000 rows, crossing two 5000-row pages
+        // partway through a region.
+        "INSERT INTO sales (region, seq, amount) \
+         SELECT r.name, s.value, s.value * 10 \
+         FROM (SELECT 'north' AS name UNION ALL SELECT 'south' \
+               UNION ALL SELECT 'east' UNION ALL SELECT 'o''west') r \
+         CROSS JOIN (WITH RECURSIVE seq(value) AS \
+               (SELECT 1 UNION ALL SELECT value + 1 FROM seq WHERE value < 3000) \
+               SELECT value FROM seq) s",
+    ] {
+        d.execute(sql, CancellationToken::new())
+            .await
+            .expect("could not build the sales table");
+    }
+
+    let exported = export::read_table_paged(&*d, &table("sales"), CancellationToken::new())
+        .await
+        .unwrap();
+
+    let mut keys: Vec<(String, i64)> = exported
+        .rows
+        .iter()
+        .map(|r| match (&r[0], &r[1]) {
+            (Value::Text(region), Value::Int(seq)) => (region.clone(), *seq),
+            other => panic!("unexpected key shape {other:?}"),
+        })
+        .collect();
+    assert_eq!(keys.len(), 12_000, "wrong number of rows exported");
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), 12_000, "keyset paging skipped or repeated rows");
+}

@@ -70,7 +70,7 @@ export function ApplyBar({
       }}
     >
       <div className="flex h-9 items-center gap-2 px-2.5">
-        <IconWarning size={12} style={{ color: 'var(--warning)' }} />
+        <IconWarning size={12} className="text-warning" />
         <span className="text-sm font-medium">
           {changeCount} unsaved {changeCount === 1 ? 'change' : 'changes'}
         </span>
@@ -107,34 +107,20 @@ export function ApplyBar({
       )}
 
       {preview && (
-        <div
-          className="max-h-40 overflow-auto border-t px-2.5 py-2"
-          style={{ borderColor: 'var(--border)' }}
-        >
+        <div className="max-h-40 overflow-auto border-t px-2.5 py-2 border-line">
           {preview.length === 0 ? (
-            <p className="text-xs" style={{ color: 'var(--text-faint)' }}>
-              Nothing to run.
-            </p>
+            <p className="text-xs text-faint">Nothing to run.</p>
           ) : (
             <div className="flex flex-col gap-1">
               {preview.map((s, i) => (
                 <div key={i} className="flex items-start gap-2">
-                  <span
-                    className="shrink-0 pt-0.5 text-2xs tabular-nums"
-                    style={{ color: 'var(--text-faint)' }}
-                  >
-                    {i + 1}
-                  </span>
-                  <code
-                    className="selectable min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"
-                    style={{ color: 'var(--text)' }}
-                  >
+                  <span className="shrink-0 pt-0.5 text-2xs tabular-nums text-faint">{i + 1}</span>
+                  <code className="selectable min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs text-fg">
                     {s.sql}
                   </code>
                   {s.expect !== null && (
                     <span
-                      className="shrink-0 pt-0.5 text-2xs"
-                      style={{ color: 'var(--text-faint)' }}
+                      className="shrink-0 pt-0.5 text-2xs text-faint"
                       title="This statement must affect exactly this many rows, or the whole batch is rolled back"
                     >
                       = {s.expect} row
@@ -163,10 +149,8 @@ export function ReadOnlyNotice({ reason, onDismiss }: { reason: string; onDismis
       className="flex shrink-0 items-center gap-2 border-t px-2.5 py-1.5"
       style={{ borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}
     >
-      <IconWarning size={11} style={{ color: 'var(--text-faint)' }} />
-      <span className="flex-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-        {reason}
-      </span>
+      <IconWarning size={11} className="text-faint" />
+      <span className="flex-1 text-xs text-muted">{reason}</span>
       <button
         type="button"
         className="opacity-60 hover:opacity-100"

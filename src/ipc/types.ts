@@ -65,6 +65,8 @@ export type Value =
   | { kind: 'decimal'; value: string }
   | { kind: 'text'; value: string }
   | { kind: 'bytes'; value: number[] }
+  /** A binary value too large to send whole: only its size in bytes. */
+  | { kind: 'largeBytes'; value: number }
   | { kind: 'date'; value: string }
   | { kind: 'time'; value: string }
   | { kind: 'timestamp'; value: string }
@@ -95,12 +97,19 @@ export type QueryOutcome = ({ type: 'rows' } & ResultSet) | ({ type: 'affected' 
 export interface StatementResult {
   sql: string;
   outcome: QueryOutcome | null;
-  error: string | null;
+  /** Structured, as every other command's error is: kind, message and code. */
+  error: FaroError | null;
 }
 
 export interface RunResult {
   statements: StatementResult[];
   totalElapsedMs: number;
+}
+
+/** What running a script would do; see `script_summary`. */
+export interface ScriptSummary {
+  statements: number;
+  writes: number;
 }
 
 export type TableKind = 'table' | 'view' | 'materializedView';
@@ -218,7 +227,16 @@ export interface HistoryEntry {
  * `null` and `text` are distinct because an emptied cell is otherwise
  * ambiguous; `default` omits the column so the database supplies its own value.
  */
-export type EditValue = { kind: 'null' } | { kind: 'text'; value: string } | { kind: 'default' };
+export type EditValue =
+  | { kind: 'null' }
+  | { kind: 'text'; value: string }
+  | { kind: 'default' }
+  /**
+   * A value exactly as it was read, sent back to find its row. Used for
+   * primary keys, whose display text is not always the value — a binary key
+   * displays as a size badge.
+   */
+  | { kind: 'stored'; value: Value };
 
 export interface CellEdit {
   column: string;

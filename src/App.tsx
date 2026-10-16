@@ -17,25 +17,67 @@ import { useConnections } from '@/state/connections';
 import { useLibrary } from '@/state/library';
 import { useTabs } from '@/state/tabs';
 
+/**
+ * Whatever fills the main area: the active tab, or the empty state.
+ *
+ * Its own component so that it — and only it — subscribes to the active tab.
+ * Every keystroke in the editor writes the tab's SQL into the store, which
+ * produces a new tab object; subscribed from `App`, that re-rendered the whole
+ * shell on each key — sidebar, schema tree, palette and all — for a change
+ * only the editor needed to see.
+ */
+function ActiveTab() {
+  const active = useTabs((s) => s.tabs.find((t) => t.id === s.activeId));
+  const openQueryTab = useTabs((s) => s.openQueryTab);
+  const connections = useConnections((s) => s.items);
+
+  if (active) {
+    return active.kind === 'query' ? (
+      <QueryTab key={active.id} tab={active} />
+    ) : (
+      <TableTab key={active.id} tab={active} />
+    );
+  }
+
+  const connected = connections.filter((c) => c.connected);
+  return (
+    <EmptyState
+      icon={<IconLighthouse size={40} />}
+      title={connected.length === 0 ? 'Connect to a database' : 'No tab open'}
+      hint={
+        connected.length === 0
+          ? 'Add a connection in the sidebar to browse tables and run queries.'
+          : 'Press ⌘K to search, ⌘T for a new query tab, or ? for keyboard shortcuts.'
+      }
+      action={
+        connected.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => openQueryTab(connected[0]!.id, starterQuery(connected[0]!.engine))}
+          >
+            <IconDatabase size={13} /> New query
+          </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
 export default function App() {
   useUpdater();
 
-  const tabs = useTabs((s) => s.tabs);
-  const activeId = useTabs((s) => s.activeId);
   const openQueryTab = useTabs((s) => s.openQueryTab);
   const closeTab = useTabs((s) => s.closeTab);
-  const connections = useConnections((s) => s.items);
   const refreshHistory = useLibrary((s) => s.refreshHistory);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
-  const active = tabs.find((t) => t.id === activeId);
-  const connected = connections.filter((c) => c.connected);
-
   // Keep history fresh after a run finishes, so the panel and palette do not
-  // lag behind what the user just did.
-  const anyRunning = tabs.some((t) => t.running);
+  // lag behind what the user just did. A boolean selector, so the shell
+  // re-renders when a run starts or ends and not on every edit.
+  const anyRunning = useTabs((s) => s.tabs.some((t) => t.running));
   useEffect(() => {
     if (!anyRunning) refreshHistory();
   }, [anyRunning, refreshHistory]);
@@ -103,37 +145,10 @@ export default function App() {
         <SplitHandle direction="horizontal" />
 
         <SplitPanel>
-          <div className="flex h-full flex-col" style={{ background: 'var(--bg)' }}>
+          <div className="flex h-full flex-col bg-surface">
             <TabBar />
             <div className="min-h-0 flex-1">
-              {!active ? (
-                <EmptyState
-                  icon={<IconLighthouse size={40} />}
-                  title={connected.length === 0 ? 'Connect to a database' : 'No tab open'}
-                  hint={
-                    connected.length === 0
-                      ? 'Add a connection in the sidebar to browse tables and run queries.'
-                      : 'Press ⌘K to search, ⌘T for a new query tab, or ? for keyboard shortcuts.'
-                  }
-                  action={
-                    connected.length > 0 ? (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() =>
-                          openQueryTab(connected[0]!.id, starterQuery(connected[0]!.engine))
-                        }
-                      >
-                        <IconDatabase size={13} /> New query
-                      </button>
-                    ) : undefined
-                  }
-                />
-              ) : active.kind === 'query' ? (
-                <QueryTab key={active.id} tab={active} />
-              ) : (
-                <TableTab key={active.id} tab={active} />
-              )}
+              <ActiveTab />
             </div>
           </div>
         </SplitPanel>

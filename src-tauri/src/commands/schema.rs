@@ -73,8 +73,14 @@ pub async fn browse_table(
     table: TableRef,
     options: BrowseOptions,
     query_id: String,
-) -> Result<ResultSet> {
+) -> Result<std::sync::Arc<ResultSet>> {
     let driver = state.registry.get(&connection_id).await?;
     let query = state.registry.begin_query(&connection_id, &query_id);
-    driver.browse(&table, &options, query.token()).await
+    let page = std::sync::Arc::new(driver.browse(&table, &options, query.token()).await?);
+    drop(query);
+    // Kept so "export this page" reads it from here; see `results`.
+    state
+        .results
+        .insert(query_id, crate::results::Cached::Page(page.clone()));
+    Ok(page)
 }

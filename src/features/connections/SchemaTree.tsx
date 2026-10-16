@@ -38,10 +38,7 @@ export function SchemaTree({ connectionId }: { connectionId: string }) {
   }
   if (!schemas) {
     return (
-      <div
-        className="flex items-center gap-2 py-1 pl-7 text-xs"
-        style={{ color: 'var(--text-faint)' }}
-      >
+      <div className="flex items-center gap-2 py-1 pl-7 text-xs text-faint">
         <Spinner size={11} /> Loading schemas…
       </div>
     );
@@ -126,11 +123,7 @@ function SchemaNode({
         >
           {schema.name}
         </span>
-        {tables && (
-          <span className="text-2xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-            {tables.length}
-          </span>
-        )}
+        {tables && <span className="text-2xs tabular-nums text-faint">{tables.length}</span>}
       </div>
 
       {open && (
@@ -141,10 +134,7 @@ function SchemaNode({
             </div>
           )}
           {!tables && !error && (
-            <div
-              className="flex items-center gap-2 py-1 pl-9 text-xs"
-              style={{ color: 'var(--text-faint)' }}
-            >
+            <div className="flex items-center gap-2 py-1 pl-9 text-xs text-faint">
               <Spinner size={10} /> Loading…
             </div>
           )}
@@ -159,11 +149,7 @@ function SchemaNode({
             />
           )}
 
-          {tables?.length === 0 && (
-            <p className="py-1 pl-9 text-xs" style={{ color: 'var(--text-faint)' }}>
-              No tables
-            </p>
-          )}
+          {tables?.length === 0 && <p className="py-1 pl-9 text-xs text-faint">No tables</p>}
 
           {shown.map((t) => {
             const open = () => openTableTab(connectionId, { schema: t.schema, name: t.name });

@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::catalog::{cell_int, cell_text, group_columns};
 use super::dialect::{self, Dialect};
 use super::Driver;
 use crate::error::{FaroError, Result};
 use crate::model::{
-    ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement, IndexInfo, ResultSet,
-    SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind, TableRef, Value,
+    is_plain_number, ColumnDetail, ColumnInfo, ConnectionConfig, ExecResult, GuardedStatement,
+    IndexInfo, ResultSet, SchemaInfo, SslMode, TableColumns, TableDetail, TableInfo, TableKind,
+    TableRef, Value,
 };
 
 pub struct ClickHouseDialect;
@@ -263,23 +265,6 @@ fn parse_error(body: &str) -> FaroError {
     }
 }
 
-fn text_of(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::Text(s)) => s.clone(),
-        Some(Value::Int(i)) => i.to_string(),
-        Some(Value::Decimal(d)) => d.clone(),
-        _ => String::new(),
-    }
-}
-
-fn int_of(value: Option<&Value>) -> i64 {
-    match value {
-        Some(Value::Int(i)) => *i,
-        Some(Value::Decimal(d)) | Some(Value::Text(d)) => d.parse().unwrap_or(0),
-        _ => 0,
-    }
-}
-
 #[async_trait]
 impl Driver for ClickHouseDriver {
     async fn ping(&self) -> Result<()> {
@@ -294,7 +279,7 @@ impl Driver for ClickHouseDriver {
         Ok(rows
             .iter()
             .map(|r| {
-                let name = text_of(r.first());
+                let name = cell_text(r.first());
                 SchemaInfo {
                     // ClickHouse's own bookkeeping databases, which are rarely
                     // what someone opened the app to look at.
@@ -321,10 +306,10 @@ impl Driver for ClickHouseDriver {
         Ok(rows
             .iter()
             .map(|r| {
-                let engine = text_of(r.get(1));
+                let engine = cell_text(r.get(1));
                 TableInfo {
                     schema: Some(db.clone()),
-                    name: text_of(r.first()),
+                    name: cell_text(r.first()),
                     // ClickHouse spells views as engine names rather than a
                     // separate object type.
                     kind: if engine.contains("View") {
@@ -336,7 +321,7 @@ impl Driver for ClickHouseDriver {
                     // estimates the other engines expose.
                     estimated_rows: match r.get(2) {
                         Some(Value::Null) | None => None,
-                        other => Some(int_of(other)),
+                        other => Some(cell_int(other)),
                     },
                 }
             })
@@ -373,8 +358,14 @@ impl Driver for ClickHouseDriver {
                  WHERE database = {d_lit} AND name = {t_lit}"
             ))
             .await?;
-        let engine = meta.first().map(|r| text_of(r.first())).unwrap_or_default();
-        let sorting_key = meta.first().map(|r| text_of(r.get(1))).unwrap_or_default();
+        let engine = meta
+            .first()
+            .map(|r| cell_text(r.first()))
+            .unwrap_or_default();
+        let sorting_key = meta
+            .first()
+            .map(|r| cell_text(r.get(1)))
+            .unwrap_or_default();
 
         // The sorting key is surfaced as an index so the user can see it, but
         // never as a primary key.
@@ -405,17 +396,17 @@ impl Driver for ClickHouseDriver {
             columns: col_rows
                 .iter()
                 .map(|r| {
-                    let type_name = text_of(r.get(1));
-                    let default = text_of(r.get(2));
+                    let type_name = cell_text(r.get(1));
+                    let default = cell_text(r.get(2));
                     ColumnDetail {
-                        name: text_of(r.first()),
+                        name: cell_text(r.first()),
                         // Nullability is part of the type in ClickHouse
                         // (`Nullable(String)`), not a separate flag.
                         nullable: type_name.starts_with("Nullable("),
                         type_name,
                         default: (!default.is_empty()).then_some(default),
                         is_primary_key: false,
-                        ordinal: int_of(r.get(3)) as i32,
+                        ordinal: cell_int(r.get(3)) as i32,
                     }
                 })
                 .collect(),
@@ -451,7 +442,7 @@ impl Driver for ClickHouseDriver {
         // ClickHouse keeps the full CREATE TABLE, including the ENGINE and
         // ORDER BY clauses that a column-by-column rebuild cannot express.
         Ok(rows.first().map(|r| {
-            let sql = text_of(r.first());
+            let sql = cell_text(r.first());
             format!("{};", sql.trim().trim_end_matches(';'))
         }))
     }
@@ -466,20 +457,11 @@ impl Driver for ClickHouseDriver {
             ))
             .await?;
 
-        let mut out: Vec<TableColumns> = Vec::new();
-        for r in &rows {
-            let table = text_of(r.first());
-            let column = text_of(r.get(1));
-            match out.last_mut().filter(|t| t.name == table) {
-                Some(entry) => entry.columns.push(column),
-                None => out.push(TableColumns {
-                    schema: Some(db.clone()),
-                    name: table,
-                    columns: vec![column],
-                }),
-            }
-        }
-        Ok(out)
+        Ok(group_columns(
+            rows.iter()
+                .map(|r| (cell_text(r.first()), cell_text(r.get(1)))),
+            Some(db),
+        ))
     }
 
     async fn query(&self, sql: &str, limit: u64, cancel: CancellationToken) -> Result<ResultSet> {
@@ -584,8 +566,7 @@ fn decode_value(cell: Option<&serde_json::Value>, type_name: &str) -> Value {
     }
 }
 
-/// Whether `s` is a bare numeric literal: an optional leading `-`, digits,
-/// and at most one decimal point.
+/// Interpret a JSON string according to the column's ClickHouse type.
 ///
 /// `Value::Decimal` is rendered into generated SQL verbatim, unescaped, on the
 /// premise that a decimal is always just digits — see `Value::to_sql_literal`.
@@ -593,27 +574,9 @@ fn decode_value(cell: Option<&serde_json::Value>, type_name: &str) -> Value {
 /// comes straight from the HTTP response body: a compromised server could
 /// return anything here. Checked before trusting it as a bare literal;
 /// anything else falls back to `Value::Text`, which is quoted and escaped.
-fn looks_numeric(s: &str) -> bool {
-    let s = s.strip_prefix('-').unwrap_or(s);
-    if s.is_empty() {
-        return false;
-    }
-    let mut seen_dot = false;
-    let mut seen_digit = false;
-    for c in s.chars() {
-        match c {
-            '0'..='9' => seen_digit = true,
-            '.' if !seen_dot => seen_dot = true,
-            _ => return false,
-        }
-    }
-    seen_digit
-}
-
-/// Interpret a JSON string according to the column's ClickHouse type.
 fn decode_string(s: &str, inner: &str) -> Value {
     if inner.starts_with("Decimal") {
-        return if looks_numeric(s) {
+        return if is_plain_number(s) {
             Value::Decimal(s.to_string())
         } else {
             Value::Text(s.to_string())
@@ -625,7 +588,7 @@ fn decode_string(s: &str, inner: &str) -> Value {
         // to -1.
         return match s.parse::<i64>() {
             Ok(n) => Value::Int(n),
-            Err(_) if looks_numeric(s) => Value::Decimal(s.to_string()),
+            Err(_) if is_plain_number(s) => Value::Decimal(s.to_string()),
             Err(_) => Value::Text(s.to_string()),
         };
     }
@@ -766,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn looks_numeric_accepts_only_bare_signed_decimals() {
+    fn only_bare_signed_decimals_count_as_numbers() {
         for ok in [
             "0",
             "42",
@@ -775,10 +738,10 @@ mod tests {
             "-1.5",
             "12345678901234567890.0987654321",
         ] {
-            assert!(looks_numeric(ok), "{ok} should be accepted");
+            assert!(is_plain_number(ok), "{ok} should be accepted");
         }
         for bad in ["", "-", ".", "1.2.3", "1e10", "nan", "1 OR 1=1", "1'; --"] {
-            assert!(!looks_numeric(bad), "{bad} should be rejected");
+            assert!(!is_plain_number(bad), "{bad} should be rejected");
         }
     }
 

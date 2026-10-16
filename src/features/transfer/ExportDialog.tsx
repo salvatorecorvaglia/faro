@@ -27,6 +27,7 @@ export function ExportDialog({
   open,
   onClose,
   result,
+  source,
   connectionId,
   table,
   defaultName,
@@ -34,6 +35,11 @@ export function ExportDialog({
   open: boolean;
   onClose: () => void;
   result: ResultSet | null;
+  /**
+   * Where the backend holds `result`: the query id it came back under, and
+   * which statement's result set it is. Exports are written from that copy.
+   */
+  source: { queryId: string; statement: number } | null;
   connectionId: string | null;
   /** Set when the export can target a whole table rather than a result set. */
   table?: TableRef | null;
@@ -66,10 +72,13 @@ export function ExportDialog({
         tableName: table?.name ?? null,
         sanitizeFormulas,
       };
+      if (!(wholeTable && canExportTable) && !source) {
+        throw new Error('Run the query again to export its results.');
+      }
       const outcome =
         wholeTable && canExportTable
           ? await ipc.exportTable(connectionId!, table!, path, options, `exp-${++exportCounter}`)
-          : await ipc.exportResult(path, result!, options);
+          : await ipc.exportCached(source!.queryId, source!.statement, path, options);
 
       return `Wrote ${outcome.rows.toLocaleString()} rows to ${outcome.path}`;
     });
@@ -121,14 +130,14 @@ export function ExportDialog({
                 onChange={() => setWholeTable(false)}
               />
               Just this page
-              <span style={{ color: 'var(--text-faint)' }}>
+              <span className="text-faint">
                 ({(result?.rows.length ?? 0).toLocaleString()} rows)
               </span>
             </label>
             {!wholeTable && truncated && (
               // Without this, someone exports 1000 rows of a million-row table
               // and has no way to know the file is incomplete.
-              <p className="text-xs" style={{ color: 'var(--warning)' }}>
+              <p className="text-xs text-warning">
                 This page is truncated — the table has more rows than are shown.
               </p>
             )}
@@ -155,7 +164,7 @@ export function ExportDialog({
             />
             <span>
               Escape spreadsheet formulas
-              <span className="block text-xs" style={{ color: 'var(--text-muted)' }}>
+              <span className="block text-xs text-muted">
                 Prefixes cells starting with = + - @ so Excel shows them as text instead of running
                 them. Turn off only when feeding the file to another program.
               </span>
@@ -164,11 +173,7 @@ export function ExportDialog({
         )}
 
         {error && <ErrorBanner message={error} onDismiss={reset} />}
-        {done && (
-          <p className="break-all text-xs" style={{ color: 'var(--success)' }}>
-            {done}
-          </p>
-        )}
+        {done && <p className="break-all text-xs text-success">{done}</p>}
 
         <div className="mt-1 flex justify-end gap-2">
           <button className="btn btn-ghost" onClick={onClose} type="button">

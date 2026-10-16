@@ -81,10 +81,7 @@ export function Modal({
       className="m-auto rounded-xl p-0"
       style={{ background: 'var(--bg)', color: 'var(--text)', width, maxWidth: '92vw' }}
     >
-      <div
-        className="flex items-center justify-between border-b px-4 py-2.5"
-        style={{ borderColor: 'var(--border)' }}
-      >
+      <div className="flex items-center justify-between border-b px-4 py-2.5 border-line">
         <h2 id={titleId} className="text-base font-semibold">
           {title}
         </h2>
@@ -118,11 +115,7 @@ export function Field({
     <label className="block">
       <span className="label">{label}</span>
       {children}
-      {hint && (
-        <span className="mt-1 block text-xs" style={{ color: 'var(--text-faint)' }}>
-          {hint}
-        </span>
-      )}
+      {hint && <span className="mt-1 block text-xs text-faint">{hint}</span>}
     </label>
   );
 }
@@ -206,15 +199,9 @@ export function EmptyState({
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-      {icon && <div style={{ color: 'var(--text-faint)' }}>{icon}</div>}
-      <p className="text-base font-medium" style={{ color: 'var(--text-muted)' }}>
-        {title}
-      </p>
-      {hint && (
-        <p className="max-w-xs text-sm" style={{ color: 'var(--text-faint)' }}>
-          {hint}
-        </p>
-      )}
+      {icon && <div className="text-faint">{icon}</div>}
+      <p className="text-base font-medium text-muted">{title}</p>
+      {hint && <p className="max-w-xs text-sm text-faint">{hint}</p>}
       {action && <div className="mt-1">{action}</div>}
     </div>
   );

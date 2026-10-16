@@ -158,7 +158,7 @@ export function toPendingChanges(
     primaryKey.map((name) => {
       const i = columnIndex.get(name);
       const cell = i === undefined ? undefined : result.rows[rowIndex]?.[i];
-      return { column: name, value: toEditValue(cell) };
+      return { column: name, value: toKeyValue(cell) };
     });
 
   for (const rowIndex of edits.deletes) {
@@ -189,8 +189,63 @@ export function toPendingChanges(
   return changes;
 }
 
-/** Represent an existing cell as the edit value that would reproduce it. */
-function toEditValue(cell: Value | undefined): EditValue {
+/**
+ * Key cell kinds a row cannot be found again by.
+ *
+ * Keys travel as the value they were read as (see `keyFor`), so binary keys —
+ * once shown only as a size badge and so impossible to match — work. These do
+ * not: a float rendered back may not equal the stored binary value, JSON has
+ * no equality on several engines, and arrays and unreadable types have no
+ * reliable literal. An edit on one would match no row and fail with a message
+ * blaming a concurrent change that never happened, so the table stays
+ * read-only instead. The backend refuses them too.
+ */
+const UNADDRESSABLE_KEY_KINDS: Partial<Record<Value['kind'], string>> = {
+  // Too large to be sent to the UI whole, so its bytes are not here to send
+  // back. Keys, hashes and UUIDs are well under the limit.
+  largeBytes: 'binary data too large to match on',
+  float: 'floating-point numbers',
+  json: 'JSON',
+  array: 'arrays',
+  unsupported: 'a type Faro cannot read yet',
+};
+
+/**
+ * Why the rows on this page cannot be edited through their primary key, or
+ * null when they can.
+ *
+ * Checked against the values actually on the page rather than the declared
+ * types, since those are what the key would be rebuilt from.
+ */
+export function unaddressableKeyReason(
+  result: ResultSet | null,
+  primaryKey: string[],
+): string | null {
+  if (!result || primaryKey.length === 0) return null;
+  const keyColumns = primaryKey.map(
+    (name) => [name, result.columns.findIndex((c) => c.name === name)] as const,
+  );
+  for (const row of result.rows) {
+    for (const [name, index] of keyColumns) {
+      const cell = index >= 0 ? row[index] : undefined;
+      const described = cell ? UNADDRESSABLE_KEY_KINDS[cell.kind] : undefined;
+      if (described) {
+        return `Rows cannot be edited here: the primary key column “${name}” holds ${described}, which Faro cannot yet match exactly, so an edit could not find its row.`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A key cell as the value it was read as.
+ *
+ * It used to go as `formatValue(cell)` — the text the grid shows — which is
+ * not the value for every type: a binary key showed as `[16 B]`, so the row
+ * could never be found again. The value itself lets the backend write the
+ * engine's exact literal.
+ */
+function toKeyValue(cell: Value | undefined): EditValue {
   if (!cell || cell.kind === 'null') return { kind: 'null' };
-  return { kind: 'text', value: formatValue(cell) };
+  return { kind: 'stored', value: cell };
 }

@@ -1,7 +1,7 @@
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { json } from '@codemirror/lang-json';
-import { PostgreSQL, SQLite, sql } from '@codemirror/lang-sql';
+import { MariaSQL, MSSQL, MySQL, PostgreSQL, SQLite, sql } from '@codemirror/lang-sql';
 import { bracketMatching, HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
@@ -23,6 +23,8 @@ export interface EditorHandle {
   /** Text the user selected, or null when the selection is empty. */
   selection: () => string | null;
   replaceAll: (text: string) => void;
+  /** The cursor, as a UTF-16 offset — read at the moment it is needed. */
+  cursorOffset: () => number;
 }
 
 /**
@@ -122,9 +124,10 @@ export function Editor({
       sqlConf.current.of(languageExtension(engine, schema, placeholderText)),
       syntaxHighlighting(highlightStyle),
       keymap.of([
+        // Mod-Enter only. Shift-Enter used to run too, but Shift+Enter is also
+        // how a newline is typed in chat apps and many editors, so a habit
+        // from elsewhere ran the whole script — writes and all — mid-sentence.
         { key: 'Mod-Enter', ...runBinding },
-        // Shift-Enter is the same action; both are common muscle memory.
-        { key: 'Shift-Enter', ...runBinding },
         {
           // Runs just the statement under the cursor, where Mod-Enter runs the
           // whole script. Listed before the plainer bindings so it wins.
@@ -206,6 +209,7 @@ export function Editor({
           changes: { from: 0, to: v.state.doc.length, insert: text },
         });
       },
+      cursorOffset: () => view.current?.state.selection.main.head ?? 0,
     };
   }, [handle]);
 
@@ -231,13 +235,27 @@ function languageExtension(
   return [sql({ dialect: dialectFor(engine), schema, upperCaseKeywords: false }), hint];
 }
 
-function dialectFor(engine: Engine | null) {
+/**
+ * The CodeMirror SQL dialect for an engine.
+ *
+ * The dialect decides quoting, not just keywords. MySQL and MariaDB used to be
+ * highlighted as Postgres, where a backtick is not a quote at all — so every
+ * `` `table` `` lit up as stray punctuation — and SQL Server's `[bracketed]`
+ * names likewise.
+ */
+export function dialectFor(engine: Engine | null) {
   switch (engine) {
     case 'sqlite':
     case 'duckdb':
       return SQLite;
-    // Postgres is the closest match for the PG-wire family and a reasonable
-    // default for engines whose dialect is not yet modelled.
+    case 'mysql':
+      return MySQL;
+    case 'mariadb':
+      return MariaSQL;
+    case 'sqlserver':
+      return MSSQL;
+    // Postgres is the closest match for the PG-wire family, and for
+    // ClickHouse, whose `"` is an identifier quote as in Postgres.
     default:
       return PostgreSQL;
   }

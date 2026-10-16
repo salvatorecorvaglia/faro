@@ -38,6 +38,14 @@ pub trait Dialect: Send + Sync {
         false
     }
 
+    /// Whether this engine's own `CREATE TABLE` text declares the table's
+    /// foreign keys, so a backup need not add them again. True for MySQL and
+    /// SQLite, whose stored DDL has them inline; Postgres's reconstructed DDL
+    /// leaves them out so they can be added after every table and row exists.
+    fn native_ddl_includes_foreign_keys(&self) -> bool {
+        true
+    }
+
     /// The type to cast to when a value has to be compared as text, as in the
     /// `LIKE` used by the `Contains` and `StartsWith` browse filters.
     ///
@@ -119,8 +127,33 @@ pub trait Dialect: Send + Sync {
         }
     }
 
+    /// A boolean literal.
+    ///
+    /// T-SQL has no `TRUE`/`FALSE` — its boolean is the `bit` type, written
+    /// `1`/`0` — so a dump of a `bit` column written with the standard keywords
+    /// failed to restore with "Invalid column name 'TRUE'".
+    fn bool_literal(&self, value: bool) -> &'static str {
+        if value {
+            "TRUE"
+        } else {
+            "FALSE"
+        }
+    }
+
+    /// How a backup reads one column — by default, just the column.
+    ///
+    /// An engine whose values do not survive the trip out as Faro values and
+    /// back in as literals reads them in its own text form instead; see
+    /// DuckDB's override.
+    fn dump_column(&self, column: &crate::model::ColumnDetail) -> String {
+        self.quote_ident(&column.name)
+    }
+
     fn literal(&self, value: &Value) -> String {
-        value.to_sql_literal(&|b| self.quote_bytes(b), &|s| self.quote_string(s))
+        match value {
+            Value::Bool(b) => self.bool_literal(*b).to_string(),
+            _ => value.to_sql_literal(&|b| self.quote_bytes(b), &|s| self.quote_string(s)),
+        }
     }
 }
 
@@ -141,12 +174,17 @@ pub fn quote_bracket(ident: &str) -> String {
 }
 
 /// `LIMIT n OFFSET m` — Postgres, SQLite, MySQL, DuckDB, ClickHouse.
+///
+/// The closing parenthesis goes on its own line. A statement ending in a line
+/// comment — `SELECT * FROM t -- latest` — otherwise swallowed the `)` into
+/// the comment, and the wrapped query was a syntax error the user could not
+/// see the cause of.
 pub fn paginate_limit_offset(sql: &str, limit: u64, offset: u64) -> String {
     let trimmed = sql.trim().trim_end_matches(';');
     if offset > 0 {
-        format!("SELECT * FROM ({trimmed}) AS faro_q LIMIT {limit} OFFSET {offset}")
+        format!("SELECT * FROM ({trimmed}\n) AS faro_q LIMIT {limit} OFFSET {offset}")
     } else {
-        format!("SELECT * FROM ({trimmed}) AS faro_q LIMIT {limit}")
+        format!("SELECT * FROM ({trimmed}\n) AS faro_q LIMIT {limit}")
     }
 }
 
@@ -179,7 +217,7 @@ mod tests {
         let out = paginate_limit_offset(sql, 10, 0);
         assert_eq!(
             out,
-            "SELECT * FROM (SELECT * FROM t LIMIT 5) AS faro_q LIMIT 10"
+            "SELECT * FROM (SELECT * FROM t LIMIT 5\n) AS faro_q LIMIT 10"
         );
     }
 
@@ -187,7 +225,18 @@ mod tests {
     fn pagination_strips_trailing_semicolon() {
         // A trailing ';' inside a subquery is a syntax error.
         let out = paginate_limit_offset("SELECT 1;", 10, 20);
-        assert_eq!(out, "SELECT * FROM (SELECT 1) AS faro_q LIMIT 10 OFFSET 20");
+        assert_eq!(
+            out,
+            "SELECT * FROM (SELECT 1\n) AS faro_q LIMIT 10 OFFSET 20"
+        );
+    }
+
+    #[test]
+    fn a_trailing_line_comment_cannot_swallow_the_closing_parenthesis() {
+        let out = paginate_limit_offset("SELECT * FROM t -- newest first", 10, 0);
+        // The comment ends at the line break, so `)` is SQL again.
+        let after_comment = out.split("-- newest first").nth(1).unwrap();
+        assert!(after_comment.starts_with("\n)"), "{out}");
     }
 
     #[test]

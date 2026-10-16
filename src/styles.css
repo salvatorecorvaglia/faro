@@ -35,6 +35,34 @@
   --text-base--line-height: initial;
 }
 
+/*
+ * The palette below as Tailwind colour utilities: `text-faint`, `bg-inset`,
+ * `border-line` and so on.
+ *
+ * Components used to reach the palette through inline style objects —
+ * `style={{ color: 'var(--text-faint)' }}`, about a hundred of them — because
+ * no utility named it. `inline` makes each utility emit the variable itself
+ * rather than a copy of its light-mode value, so the `:root.dark` overrides
+ * still apply and a class and the old inline style compute identically.
+ *
+ * Migrated one feature folder at a time (`features/results` first). An inline
+ * style always beats a class, so an element whose other classes also set the
+ * same property — `.btn-*` — keeps its inline style until it is checked.
+ */
+@theme inline {
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-surface: var(--bg);
+  --color-subtle: var(--bg-subtle);
+  --color-inset: var(--bg-inset);
+  --color-line: var(--border);
+}
+
 :root {
   --bg: #ffffff;
   --bg-subtle: #f7f8fa;

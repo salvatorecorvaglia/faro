@@ -77,10 +77,7 @@ export function ShortcutSheet({ open, onClose }: { open: boolean; onClose: () =>
       <div className="flex flex-col gap-4">
         {GROUPS.map((group) => (
           <div key={group.title}>
-            <h3
-              className="mb-1.5 text-2xs font-semibold uppercase tracking-wide"
-              style={{ color: 'var(--text-faint)' }}
-            >
+            <h3 className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-faint">
               {group.title}
             </h3>
             <div className="flex flex-col gap-0.5">
@@ -98,18 +95,14 @@ export function ShortcutSheet({ open, onClose }: { open: boolean; onClose: () =>
                     {s.keys}
                   </kbd>
                   <span>{s.action}</span>
-                  {s.note && (
-                    <span className="text-xs" style={{ color: 'var(--text-faint)' }}>
-                      — {s.note}
-                    </span>
-                  )}
+                  {s.note && <span className="text-xs text-faint">— {s.note}</span>}
                 </div>
               ))}
             </div>
           </div>
         ))}
 
-        <p className="text-xs" style={{ color: 'var(--text-faint)' }}>
+        <p className="text-xs text-faint">
           A run returns at most the Rows limit set in the query toolbar — 1 000 by default. When
           more rows exist, the footer says so rather than letting a partial result look complete.
         </p>

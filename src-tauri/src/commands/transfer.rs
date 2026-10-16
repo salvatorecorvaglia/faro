@@ -3,7 +3,7 @@ use tauri::State;
 
 use super::AppState;
 use crate::error::{FaroError, Result};
-use crate::model::{ApplyChunk, EditValue, GuardedStatement, ResultSet, TableRef};
+use crate::model::{ApplyChunk, EditValue, GuardedStatement, TableRef};
 use crate::transfer::export::{self, ExportFormat, ExportOptions};
 use crate::transfer::import::{self, ImportFormat, ImportOptions, ImportPreview};
 
@@ -20,20 +20,42 @@ pub struct TransferResult {
     pub path: String,
 }
 
-/// Write an in-hand result set to a file.
+/// Write a result the backend already holds — a query's run, or a table page —
+/// to a file.
+///
+/// Replaces `export_result`, which received the rows back from the UI. The UI
+/// is not a faithful copy: large binary values reach it only as their size.
+/// Reading from the result cache exports exactly what the database returned,
+/// and nothing large crosses IPC a second time.
+///
+/// `statement` picks one result set of a multi-statement run; a page has
+/// only `0`.
 #[tauri::command]
-pub async fn export_result(
+pub async fn export_cached(
+    state: State<'_, AppState>,
+    query_id: String,
+    statement: usize,
     path: String,
-    result: ResultSet,
     options: ExportOptions,
 ) -> Result<TransferResult> {
+    let cached = state.results.get(&query_id).ok_or_else(|| {
+        FaroError::Other(
+            "These results are no longer held — only the most recent ones are kept. \
+             Run the query again to export them."
+                .into(),
+        )
+    })?;
     let target = PathBuf::from(&path);
     // Writing is synchronous and can be large (XLSX builds the whole workbook),
     // so it goes to the blocking pool rather than stalling a runtime worker.
-    let rows =
-        tokio::task::spawn_blocking(move || export::write_file(&target, &result, &options, None))
-            .await
-            .map_err(|e| FaroError::Io(format!("could not write the file: {e}")))??;
+    let rows = tokio::task::spawn_blocking(move || {
+        let result = cached
+            .result_set(statement)
+            .ok_or_else(|| FaroError::Other("that statement returned no rows to export".into()))?;
+        export::write_file(&target, result, &options, None)
+    })
+    .await
+    .map_err(|e| FaroError::Io(format!("could not write the file: {e}")))??;
     Ok(TransferResult { rows, path })
 }
 
@@ -42,11 +64,11 @@ pub async fn export_result(
 /// The grid only ever holds one page, so exporting what is on screen would
 /// silently truncate a large table. This re-reads from the database instead.
 ///
-/// CSV, TSV and SQL are streamed straight to disk page by page, since their
-/// writers never needed the whole table in memory to begin with. XLSX and
-/// JSON still read every page into one `ResultSet` first — producing either
-/// genuinely requires the complete row set before the first byte can be
-/// written.
+/// CSV, TSV, SQL and JSON are streamed straight to disk page by page, since
+/// their writers never needed the whole table in memory to begin with. XLSX
+/// still reads every page into one `ResultSet` first — a workbook is built
+/// whole before it is written — and stops reading as soon as the table proves
+/// too large for a worksheet.
 ///
 /// `query_id` is registered the same way a query's is, so `cancel_query` can
 /// stop a full-table export mid-flight too.
@@ -69,7 +91,7 @@ pub async fn export_table(
     let query = state.registry.begin_query(&connection_id, &query_id);
 
     let outcome = match options.format {
-        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Sql => {
+        ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Sql | ExportFormat::Json => {
             export::export_table_streaming(
                 &*driver,
                 &table,
@@ -80,12 +102,16 @@ pub async fn export_table(
             )
             .await
         }
-        ExportFormat::Json | ExportFormat::Xlsx => {
-            // These two need the complete row set before the first byte can be
-            // written, so the read stays here and only the write is offloaded.
-            // The driver goes along so the dialect can be borrowed inside;
-            // `Arc<dyn Driver>` is Send + Sync, so it may cross the boundary.
-            match export::read_table_paged(&*driver, &table, query.token()).await {
+        ExportFormat::Xlsx => {
+            // A workbook needs the complete row set before the first byte can
+            // be written, so the read stays here and only the write is
+            // offloaded. The driver goes along so the dialect can be borrowed
+            // inside; `Arc<dyn Driver>` is Send + Sync, so it may cross the
+            // boundary.
+            let max_rows = export::XLSX_MAX_ROWS - usize::from(options.include_header);
+            match export::read_table_paged_capped(&*driver, &table, query.token(), Some(max_rows))
+                .await
+            {
                 Ok(result) => {
                     let driver = driver.clone();
                     let options = options.clone();
@@ -113,7 +139,12 @@ pub async fn preview_import(path: String, has_header: bool) -> Result<ImportPrev
             "unrecognized file type — Faro can import .csv, .tsv, .json and .xlsx".into(),
         )
     })?;
-    import::preview(&source, format, has_header)
+    // On the blocking pool: CSV previews stop early, but JSON and XLSX have to
+    // be parsed whole before their first row exists, and that ran on an async
+    // runtime worker for as long as a large workbook took to read.
+    tokio::task::spawn_blocking(move || import::preview(&source, format, has_header))
+        .await
+        .map_err(|e| FaroError::Io(format!("could not read the file: {e}")))?
 }
 
 /// The producer's error once the applier has given up and dropped its end of

@@ -20,4 +20,4 @@ pub use schema::{
     ColumnDetail, ForeignKey, IndexInfo, SchemaInfo, TableColumns, TableDetail, TableInfo,
     TableKind, TableRef,
 };
-pub use value::{quote_sql_string, quote_sql_string_backslash, Value};
+pub use value::{is_plain_number, quote_sql_string, quote_sql_string_backslash, Value};

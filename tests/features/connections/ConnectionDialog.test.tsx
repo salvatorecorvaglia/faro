@@ -161,3 +161,29 @@ describe('ConnectionDialog — failures', () => {
     expect(await screen.findByLabelText(/Display name/)).toBeInTheDocument();
   });
 });
+
+describe('ConnectionDialog — SSL hint', () => {
+  const mongoEngines = [
+    ...engines,
+    { id: 'mongodb', label: 'MongoDB', defaultPort: 27017, fileBased: false },
+  ] as unknown as EngineInfo[];
+
+  it('does not promise encryption that MongoDB’s Prefer never delivers', async () => {
+    // Mongo cannot negotiate TLS, so Prefer connects in the clear — while the
+    // hint used to say it "encrypts only if the server offers it".
+    mockInvoke({ list_engines: () => mongoEngines });
+    renderDialog({ ...existing, engine: 'mongodb', port: 27017, sslMode: 'prefer' });
+    await ready();
+
+    expect(screen.getByText(/connects without TLS/)).toBeInTheDocument();
+    expect(screen.queryByText(/Encrypts only if the server offers it/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the negotiated meaning of Prefer for engines that have one', async () => {
+    mockInvoke({ list_engines: () => engines });
+    renderDialog({ ...existing, sslMode: 'prefer' });
+    await ready();
+
+    expect(screen.getByText(/Encrypts only if the server offers it/)).toBeInTheDocument();
+  });
+});

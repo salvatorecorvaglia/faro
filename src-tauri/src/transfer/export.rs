@@ -87,6 +87,46 @@ fn sanitize_formula(field: String) -> String {
     }
 }
 
+/// Whether a cell's rendered text came from someone's data rather than from
+/// Faro's own formatting, and so could be a spreadsheet formula.
+///
+/// Numbers, booleans, dates and ids are rendered by Faro and can only start
+/// with `-` as a sign — apostrophizing those turned every negative number in a
+/// CSV into the text `'-5`, which no loader reads back as a number.
+fn is_free_text(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Text(_) | Value::Json(_) | Value::Unsupported(_)
+    )
+}
+
+/// Refuse to write a row holding a value Faro could not read.
+///
+/// `Value::Unsupported` carries the column's *type name* so the grid can say
+/// what it could not show. Written to a file, that name reads as data — every
+/// row of an `interval` column would export as the string "interval", and a
+/// backup would restore it that way — so the export stops instead, naming the
+/// column and how to get its contents out.
+pub(crate) fn reject_unsupported(
+    columns: &[crate::model::ColumnInfo],
+    row: &[Value],
+) -> Result<()> {
+    let Some((index, Value::Unsupported(type_name))) = row
+        .iter()
+        .enumerate()
+        .find(|(_, v)| matches!(v, Value::Unsupported(_)))
+    else {
+        return Ok(());
+    };
+    let column = columns.get(index).map(|c| c.name.as_str()).unwrap_or("?");
+    Err(FaroError::Other(format!(
+        "Column \"{column}\" has type {type_name}, which Faro cannot read yet, so writing it \
+         out would store the type name in place of the data. Nothing was exported for it. \
+         Cast the column to text in a query — for example CAST({column} AS TEXT) — and \
+         export that result instead."
+    )))
+}
+
 /// Render a cell for a text-based export.
 ///
 /// NULL becomes an empty field in CSV and TSV, which is the convention every
@@ -138,24 +178,65 @@ async fn walk_table_pages<F>(
     driver: &dyn crate::driver::Driver,
     table: &crate::model::TableRef,
     cancel: tokio_util::sync::CancellationToken,
+    on_page: F,
+) -> Result<()>
+where
+    F: FnMut(ResultSet) -> Result<()>,
+{
+    let detail = driver.describe_table(table).await?;
+    walk_pages(driver, &detail, "*", READ_BATCH, cancel, on_page).await
+}
+
+/// Walk every row of a table in a stable order, `batch` rows per query.
+///
+/// Shared by export and backup, which used to page separately and identically.
+/// `select_list` is the column list to read — `*`, or backup's explicit list.
+///
+/// Pages continue from the last primary key seen whenever they can (see
+/// [`crate::sql::keyset_after`]): a keyed table is read with one index seek per
+/// page rather than an `OFFSET` that re-reads every earlier row. A keyless
+/// table, or a key whose values cannot be compared exactly, falls back to the
+/// offset — which is always the number of rows read so far, so switching mode
+/// partway through stays correct.
+///
+/// Not a single snapshot: rows written to the table while it is being walked
+/// may or may not appear. A consistent snapshot would need a transaction on
+/// the user's session connection, where Faro's `COMMIT` could end one the user
+/// had opened themselves.
+pub(crate) async fn walk_pages<F>(
+    driver: &dyn crate::driver::Driver,
+    detail: &crate::model::TableDetail,
+    select_list: &str,
+    batch: u64,
+    cancel: tokio_util::sync::CancellationToken,
     mut on_page: F,
 ) -> Result<()>
 where
     F: FnMut(ResultSet) -> Result<()>,
 {
     let dialect = driver.dialect();
-    let qualified = dialect.qualify(table.schema.as_deref(), &table.name);
-    let detail = driver.describe_table(table).await?;
+    let qualified = dialect.qualify(detail.table.schema.as_deref(), &detail.table.name);
     let order = crate::sql::stable_order_by(&detail.primary_key, &detail.columns, dialect);
-    let base = format!("SELECT * FROM {qualified}{order}");
 
     let mut offset = 0u64;
+    let mut after: Option<String> = None;
     loop {
-        let paged = dialect.paginate(&base, READ_BATCH + 1, offset);
-        let page = driver.query(&paged, READ_BATCH, cancel.clone()).await?;
+        let filter = after
+            .as_deref()
+            .map(|condition| format!(" WHERE {condition}"))
+            .unwrap_or_default();
+        let sql = format!("SELECT {select_list} FROM {qualified}{filter}{order}");
+        let skip = if after.is_some() { 0 } else { offset };
+        let paged = dialect.paginate(&sql, batch + 1, skip);
+        let page = driver.query(&paged, batch, cancel.clone()).await?;
 
         let more = page.truncated;
         let count = page.rows.len() as u64;
+        after = if more {
+            next_keyset(&page, &detail.primary_key, dialect)
+        } else {
+            None
+        };
         on_page(page)?;
 
         if !more || count == 0 {
@@ -164,6 +245,19 @@ where
         offset += count;
     }
     Ok(())
+}
+
+/// The keyset condition continuing after a page's last row, when it has one.
+fn next_keyset(page: &ResultSet, primary_key: &[String], dialect: &dyn Dialect) -> Option<String> {
+    let last = page.rows.last()?;
+    let values = primary_key
+        .iter()
+        .map(|key| {
+            let index = page.columns.iter().position(|c| &c.name == key)?;
+            last.get(index)
+        })
+        .collect::<Option<Vec<&Value>>>()?;
+    crate::sql::keyset_after(primary_key, &values, dialect)
 }
 
 /// Read an entire table into one `ResultSet`, a page at a time.
@@ -177,11 +271,30 @@ pub async fn read_table_paged(
     table: &crate::model::TableRef,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<ResultSet> {
+    read_table_paged_capped(driver, table, cancel, None).await
+}
+
+/// [`read_table_paged`], giving up once the table proves larger than
+/// `max_rows`.
+///
+/// For a destination with a hard size limit. Reading all of a table that can
+/// never fit — every row held in memory — only to be refused at the end costs
+/// the user the whole wait for nothing; this refuses as soon as it knows.
+pub async fn read_table_paged_capped(
+    driver: &dyn crate::driver::Driver,
+    table: &crate::model::TableRef,
+    cancel: tokio_util::sync::CancellationToken,
+    max_rows: Option<usize>,
+) -> Result<ResultSet> {
     let mut combined: Option<ResultSet> = None;
     walk_table_pages(driver, table, cancel, |page| {
         match &mut combined {
             None => combined = Some(page),
             Some(acc) => acc.rows.extend(page.rows),
+        }
+        let read = combined.as_ref().map_or(0, |c| c.rows.len());
+        if let Some(max) = max_rows.filter(|&max| read > max) {
+            return Err(too_many_rows_for_xlsx(max));
         }
         Ok(())
     })
@@ -201,12 +314,10 @@ pub async fn read_table_paged(
 }
 
 /// Export an entire table straight to disk, one page at a time — for CSV,
-/// TSV and SQL, whose writers already emit one row at a time and never
-/// needed the whole table in memory to begin with. `format` on `options`
-/// must be one of those three; XLSX and JSON still go through
-/// `read_table_paged` + `write_file` (see `export_table` in
-/// `commands/transfer.rs`), since producing either genuinely does require
-/// every row before the first byte can be written.
+/// TSV, SQL and JSON, whose writers emit one row at a time and never need the
+/// whole table in memory. XLSX still goes through `read_table_paged_capped` +
+/// `write_file` (see `export_table` in `commands/transfer.rs`), since a
+/// workbook is built whole before it is written.
 pub async fn export_table_streaming(
     driver: &dyn crate::driver::Driver,
     table: &crate::model::TableRef,
@@ -215,10 +326,17 @@ pub async fn export_table_streaming(
     dialect: Option<&dyn Dialect>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<u64> {
+    // A full-table export takes long enough to be cancelled or to fail
+    // partway, so it is written aside and moved into place only when done.
+    let output = super::PartialFile::new(path);
+    let path = output.path();
     let mut sink: Option<TableSink> = None;
     let mut total_rows = 0u64;
 
     walk_table_pages(driver, table, cancel, |page| {
+        for row in &page.rows {
+            reject_unsupported(&page.columns, row)?;
+        }
         // `get_or_insert` rather than an `is_none` check followed by an
         // `expect`: the compiler then carries the invariant instead of a
         // comment, and there is no panic to reason about.
@@ -238,6 +356,7 @@ pub async fn export_table_streaming(
     // for its column list), so the sink was always opened.
     if let Some(s) = sink {
         s.finish()?;
+        output.commit()?;
     }
     Ok(total_rows)
 }
@@ -248,13 +367,22 @@ pub fn write_file(
     options: &ExportOptions,
     dialect: Option<&dyn Dialect>,
 ) -> Result<u64> {
-    match options.format {
-        ExportFormat::Csv => write_delimited(path, result, options, b','),
-        ExportFormat::Tsv => write_delimited(path, result, options, b'\t'),
-        ExportFormat::Json => write_json(path, result),
-        ExportFormat::Sql => write_sql(path, result, options, dialect),
-        ExportFormat::Xlsx => write_xlsx(path, result, options),
+    // Checked before the file is created, so a refused export leaves nothing
+    // behind that could be mistaken for a complete one.
+    for row in &result.rows {
+        reject_unsupported(&result.columns, row)?;
     }
+    // Written aside and moved into place once complete; see `PartialFile`.
+    let output = super::PartialFile::new(path);
+    let written = match options.format {
+        ExportFormat::Csv => write_delimited(output.path(), result, options, b','),
+        ExportFormat::Tsv => write_delimited(output.path(), result, options, b'\t'),
+        ExportFormat::Json => write_json(output.path(), result),
+        ExportFormat::Sql => write_sql(output.path(), result, options, dialect),
+        ExportFormat::Xlsx => write_xlsx(output.path(), result, options),
+    }?;
+    output.commit()?;
+    Ok(written)
 }
 
 /// A CSV/TSV destination that can be written to one row at a time.
@@ -301,7 +429,7 @@ impl DelimitedSink {
         self.writer
             .write_record(row.iter().map(|v| {
                 let text = cell_text(v);
-                if self.sanitize {
+                if self.sanitize && is_free_text(v) {
                     sanitize_formula(text)
                 } else {
                     text
@@ -338,25 +466,72 @@ fn write_delimited(
 }
 
 fn write_json(path: &Path, result: &ResultSet) -> Result<u64> {
-    let rows: Vec<serde_json::Map<String, serde_json::Value>> = result
-        .rows
-        .iter()
-        .map(|row| {
-            let mut obj = serde_json::Map::new();
-            for (i, col) in result.columns.iter().enumerate() {
-                let value = row
-                    .get(i)
-                    .map(json_value)
-                    .unwrap_or(serde_json::Value::Null);
-                obj.insert(unique_key(&obj, &col.name), value);
-            }
-            obj
-        })
-        .collect();
-
-    let file = std::fs::File::create(path)?;
-    serde_json::to_writer_pretty(std::io::BufWriter::new(file), &rows)?;
+    let mut sink = JsonSink::open(path, &result.columns)?;
+    for row in &result.rows {
+        sink.write_row(row)?;
+    }
+    sink.finish()?;
     Ok(result.rows.len() as u64)
+}
+
+/// A JSON-array destination written one object at a time.
+///
+/// A JSON array has no length prefix, so nothing about the format needs the
+/// whole row set up front — only the old implementation did, building every
+/// object in memory beside the rows it came from before writing a byte. A
+/// full-table JSON export held the table twice over; now it streams like CSV.
+struct JsonSink {
+    file: std::io::BufWriter<std::fs::File>,
+    /// Object keys, one per column, with duplicate column names made unique
+    /// once rather than per row.
+    keys: Vec<String>,
+    rows: u64,
+}
+
+impl JsonSink {
+    fn open(path: &Path, columns: &[crate::model::ColumnInfo]) -> Result<Self> {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(b"[")?;
+
+        let mut seen = serde_json::Map::new();
+        let keys = columns
+            .iter()
+            .map(|c| {
+                let key = unique_key(&seen, &c.name);
+                seen.insert(key.clone(), serde_json::Value::Null);
+                key
+            })
+            .collect();
+
+        Ok(Self {
+            file,
+            keys,
+            rows: 0,
+        })
+    }
+
+    fn write_row(&mut self, row: &[Value]) -> Result<()> {
+        let mut obj = serde_json::Map::with_capacity(self.keys.len());
+        for (i, key) in self.keys.iter().enumerate() {
+            let value = row
+                .get(i)
+                .map(json_value)
+                .unwrap_or(serde_json::Value::Null);
+            obj.insert(key.clone(), value);
+        }
+        let separator: &[u8] = if self.rows == 0 { b"\n" } else { b",\n" };
+        self.file.write_all(separator)?;
+        serde_json::to_writer_pretty(&mut self.file, &obj)?;
+        self.rows += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        let close: &[u8] = if self.rows == 0 { b"]\n" } else { b"\n]\n" };
+        self.file.write_all(close)?;
+        self.file.flush()?;
+        Ok(())
+    }
 }
 
 /// JSON representation of a cell.
@@ -466,12 +641,13 @@ fn write_sql(
 
 /// Dispatches to whichever streaming sink `options.format` calls for.
 ///
-/// Only `Csv`, `Tsv` and `Sql` are valid here — `export_table_streaming` is
-/// never called for `Json`/`Xlsx`, which read the whole table first instead
+/// Everything but `Xlsx` streams — `export_table_streaming` is never called
+/// for it, since a workbook is built whole in memory before it is written
 /// (see `commands/transfer.rs`).
 enum TableSink<'a> {
     Delimited(Box<DelimitedSink>),
     Sql(SqlSink<'a>),
+    Json(JsonSink),
 }
 
 impl<'a> TableSink<'a> {
@@ -497,15 +673,16 @@ impl<'a> TableSink<'a> {
                 options.sanitize_formulas,
             )?))),
             ExportFormat::Sql => Ok(Self::Sql(SqlSink::open(path, columns, options, dialect)?)),
+            ExportFormat::Json => Ok(Self::Json(JsonSink::open(path, columns)?)),
             // An error rather than `unreachable!`. The invariant is real — see
             // `export_table` — but it is enforced by a `match` in another module,
             // and with `panic = "abort"` in release getting it wrong would take
             // the whole app down rather than failing one export.
-            ExportFormat::Json | ExportFormat::Xlsx => Err(FaroError::Other(format!(
-                "{:?} cannot be streamed a row at a time; it needs the whole \
-                 result set before the first byte can be written",
-                options.format
-            ))),
+            ExportFormat::Xlsx => Err(FaroError::Other(
+                "Xlsx cannot be streamed a row at a time; a workbook is built whole \
+                 before the first byte can be written"
+                    .into(),
+            )),
         }
     }
 
@@ -513,6 +690,7 @@ impl<'a> TableSink<'a> {
         match self {
             Self::Delimited(s) => s.write_row(row),
             Self::Sql(s) => s.write_row(row),
+            Self::Json(s) => s.write_row(row),
         }
     }
 
@@ -520,12 +698,31 @@ impl<'a> TableSink<'a> {
         match self {
             Self::Delimited(s) => s.finish(),
             Self::Sql(s) => s.finish(),
+            Self::Json(s) => s.finish(),
         }
     }
 }
 
+/// Rows in one Excel worksheet, including the header row.
+pub const XLSX_MAX_ROWS: usize = 1_048_576;
+
+fn too_many_rows_for_xlsx(max_data_rows: usize) -> FaroError {
+    FaroError::Other(format!(
+        "This is more than an Excel worksheet can hold ({max_data_rows} rows plus the \
+         header), so nothing was exported. Export to CSV instead — it has no row \
+         limit and Excel opens it."
+    ))
+}
+
 fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Result<u64> {
     use rust_xlsxwriter::{Format, Workbook};
+
+    // Checked before building anything: the writer only refuses at the row that
+    // overflows, after the whole sheet up to it has been assembled.
+    let max_data_rows = XLSX_MAX_ROWS - usize::from(options.include_header);
+    if result.rows.len() > max_data_rows {
+        return Err(too_many_rows_for_xlsx(max_data_rows));
+    }
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
@@ -763,6 +960,85 @@ mod tests {
     }
 
     #[test]
+    fn numbers_are_never_apostrophized() {
+        // `-5` is a number, not a formula. Prefixing it made every negative
+        // value in a CSV unreadable as a number.
+        let rs = ResultSet {
+            columns: vec![
+                ColumnInfo {
+                    name: "i".into(),
+                    type_name: "int4".into(),
+                },
+                ColumnInfo {
+                    name: "d".into(),
+                    type_name: "numeric".into(),
+                },
+                ColumnInfo {
+                    name: "f".into(),
+                    type_name: "float8".into(),
+                },
+                ColumnInfo {
+                    name: "t".into(),
+                    type_name: "text".into(),
+                },
+            ],
+            rows: vec![vec![
+                Value::Int(-5),
+                Value::Decimal("-1.25".into()),
+                Value::Float(-0.5),
+                Value::Text("-1+2".into()),
+            ]],
+            truncated: false,
+            elapsed_ms: 0,
+        };
+        let path = tmp("negative.csv");
+        write_file(&path, &rs, &opts(ExportFormat::Csv), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // The text cell is still neutralized; the numbers are left alone.
+        assert_eq!(text.lines().nth(1), Some("-5,-1.25,-0.5,'-1+2"), "{text}");
+    }
+
+    #[test]
+    fn a_value_faro_cannot_read_is_refused_rather_than_written_as_its_type_name() {
+        let rs = ResultSet {
+            columns: vec![
+                ColumnInfo {
+                    name: "id".into(),
+                    type_name: "int4".into(),
+                },
+                ColumnInfo {
+                    name: "span".into(),
+                    type_name: "interval".into(),
+                },
+            ],
+            rows: vec![vec![Value::Int(1), Value::Unsupported("INTERVAL".into())]],
+            truncated: false,
+            elapsed_ms: 0,
+        };
+        for format in [
+            ExportFormat::Csv,
+            ExportFormat::Tsv,
+            ExportFormat::Json,
+            ExportFormat::Sql,
+            ExportFormat::Xlsx,
+        ] {
+            let path = tmp(&format!("unsupported.{}", format.extension()));
+            let _ = std::fs::remove_file(&path);
+            let err = write_file(&path, &rs, &opts(format), None).unwrap_err();
+            assert!(err.to_string().contains("\"span\""), "{format:?}: {err}");
+            assert!(
+                err.to_string().contains("CAST(span AS TEXT)"),
+                "{format:?}: {err}"
+            );
+            // Refused before the file was created, so nothing half-written
+            // is left to be mistaken for an export.
+            assert!(!path.exists(), "{format:?} left a file behind");
+        }
+    }
+
+    #[test]
     fn a_formula_shaped_column_name_is_neutralized_too() {
         let mut rs = formula_sample();
         rs.columns[0].name = "=cmd".into();
@@ -827,6 +1103,23 @@ mod tests {
         assert!(parsed[0]["amount"].is_string(), "{}", parsed[0]);
         assert_eq!(parsed[0]["id"], 1);
         assert!(parsed[1]["name"].is_null());
+    }
+
+    #[test]
+    fn an_empty_json_export_is_an_empty_array() {
+        let empty = ResultSet {
+            columns: sample().columns,
+            rows: vec![],
+            truncated: false,
+            elapsed_ms: 0,
+        };
+        let path = tmp("empty_array.json");
+        write_file(&path, &empty, &opts(ExportFormat::Json), None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        assert!(parsed.is_empty(), "{text}");
     }
 
     #[test]

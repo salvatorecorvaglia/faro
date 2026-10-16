@@ -8,14 +8,42 @@ import { SaveQueryDialog } from '@/features/library/SaveQueryDialog';
 import { ResultPanel } from '@/features/results/ResultPanel';
 import { ExportDialog } from '@/features/transfer/ExportDialog';
 import * as ipc from '@/ipc';
-import type { Engine } from '@/ipc/types';
+import type { Engine, ScriptSummary } from '@/ipc/types';
 import { isSqlEngine } from '@/lib/engine';
 import { formatSql } from '@/lib/format';
+import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { toCompletionSchema, useSchemaCache } from '@/state/schemaCache';
 import { ROW_LIMIT_CHOICES, type Tab, useTabs } from '@/state/tabs';
 
 let queryCounter = 0;
+
+/**
+ * Ask before ⌘↵ runs a multi-statement script that changes data.
+ *
+ * ⌘↵ runs everything in the editor. Out of habit — the shortcut that runs the
+ * current statement in most other SQL clients — it ran a whole scratch script,
+ * `DELETE`s included, when the user meant the one `SELECT` under the cursor.
+ * A single statement, or a script of reads, runs straight away; only the case
+ * where the surprise would be destructive asks.
+ *
+ * A failed lookup is not a reason to refuse: the run goes ahead exactly as it
+ * did before this check existed.
+ */
+async function confirmScript(connectionId: string, sql: string): Promise<boolean> {
+  let summary: ScriptSummary;
+  try {
+    summary = await ipc.scriptSummary(connectionId, sql);
+  } catch {
+    return true;
+  }
+  if (summary.statements < 2 || summary.writes === 0) return true;
+  const writes = summary.writes === 1 ? '1 of them changes' : `${summary.writes} of them change`;
+  return confirmDialog(
+    `This runs all ${summary.statements} statements in the editor, and ${writes} data or schema.\n\nTo run only the statement under the cursor, press ⌘⇧↵ instead.`,
+    { confirmLabel: 'Run all', danger: true },
+  );
+}
 
 /**
  * Collapse a statement onto one line for the toolbar hint.
@@ -86,6 +114,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
         update(t.id, {
           running: false,
           queryId: null,
+          resultQueryId: queryId,
           results: result.statements,
           // Land on the failing statement: it is what the user needs to see.
           activeResultIndex: Math.max(
@@ -102,11 +131,26 @@ export function QueryTab({ tab }: { tab: Tab }) {
     [update],
   );
 
-  const run = useCallback(() => {
+  // A run that is still being summarized or confirmed. `inFlight` is only set
+  // once the query is sent, so without this a second click during the check
+  // would queue a second confirmation for the same script.
+  const checking = useRef(false);
+
+  const run = useCallback(async () => {
+    const t = tabRef.current;
+    if (!t.connectionId || t.running || inFlight.current || checking.current) return;
     // The selection when there is one — the standard way to try part of a
     // script without deleting the rest — and otherwise the whole script.
-    const selected = editor.current?.selection();
-    return runText(selected ?? tabRef.current.sql);
+    const text = editor.current?.selection() ?? t.sql;
+    if (!text.trim()) return;
+    checking.current = true;
+    let proceed: boolean;
+    try {
+      proceed = await confirmScript(t.connectionId, text);
+    } finally {
+      checking.current = false;
+    }
+    if (proceed) return runText(text);
   }, [runText]);
 
   /**
@@ -119,6 +163,10 @@ export function QueryTab({ tab }: { tab: Tab }) {
    */
   const [cursorStatement, setCursorStatement] = useState<string | null>(null);
   const [cursorOffset, setCursorOffset] = useState(0);
+  // The same offset without waiting for a render, for `runStatement`'s
+  // fallback when the editor handle is not mounted.
+  const cursorOffsetRef = useRef(0);
+  cursorOffsetRef.current = cursorOffset;
 
   useEffect(() => {
     if (!tab.sql.trim()) {
@@ -144,9 +192,27 @@ export function QueryTab({ tab }: { tab: Tab }) {
     };
   }, [tab.sql, cursorOffset]);
 
-  const runStatement = useCallback(() => {
-    if (cursorStatement) return runText(cursorStatement);
-  }, [cursorStatement, runText]);
+  /**
+   * Run the statement under the cursor *now*, not the one the hint last saw.
+   *
+   * `cursorStatement` is debounced for the toolbar, so for 120ms after a
+   * cursor move or a keystroke it still names the previous statement — and
+   * running it then executed a statement the cursor had already left, which in
+   * a script mixing SELECT and DELETE is the wrong kind of surprise. The
+   * resolution is repeated here against the live document and cursor.
+   */
+  const runStatement = useCallback(async () => {
+    const t = tabRef.current;
+    const offset = editor.current?.cursorOffset() ?? cursorOffsetRef.current;
+    let statement: string | null;
+    try {
+      statement = await ipc.statementAtCursor(t.sql, offset);
+    } catch (e) {
+      update(t.id, { error: ipc.errorMessage(e) });
+      return;
+    }
+    if (statement) return runText(statement);
+  }, [runText, update]);
 
   const format = useCallback(() => {
     if (!canFormat) return;
@@ -196,10 +262,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="flex h-9 shrink-0 items-center gap-2 border-b px-2"
-        style={{ borderColor: 'var(--border)' }}
-      >
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2 border-line">
         {tab.running ? (
           <button type="button" className="btn btn-outline" onClick={cancel}>
             <IconStop size={11} /> Cancel
@@ -258,8 +321,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
           {!tab.running && cursorStatement && (
             <button
               type="button"
-              className="block w-full truncate text-left font-mono text-2xs"
-              style={{ color: 'var(--text-faint)' }}
+              className="block w-full truncate text-left font-mono text-2xs text-faint"
               onClick={runStatement}
               disabled={!tab.connectionId}
               title={`Run just this statement — ⌘⇧↵\n\n${cursorStatement}`}
@@ -270,15 +332,13 @@ export function QueryTab({ tab }: { tab: Tab }) {
         </div>
 
         {cached && cached.length > 0 && (
-          <span className="text-2xs" style={{ color: 'var(--text-faint)' }}>
-            {cached.length} tables indexed
-          </span>
+          <span className="text-2xs text-faint">{cached.length} tables indexed</span>
         )}
 
         {/* Every run was capped at the backend's default page and there was no
             way to ask for more, so the only recourse for a truncated result was
             to rewrite the query with a LIMIT of its own. */}
-        <label className="flex items-center gap-1 text-2xs" style={{ color: 'var(--text-faint)' }}>
+        <label className="flex items-center gap-1 text-2xs text-faint">
           Rows
           <select
             className="input w-auto py-1 text-xs"
@@ -351,6 +411,11 @@ export function QueryTab({ tab }: { tab: Tab }) {
         open={exportOpen}
         onClose={() => setExportOpen(false)}
         result={shownResult}
+        source={
+          tab.resultQueryId
+            ? { queryId: tab.resultQueryId, statement: tab.activeResultIndex }
+            : null
+        }
         connectionId={tab.connectionId}
         defaultName={tab.title}
       />

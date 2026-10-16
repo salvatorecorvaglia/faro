@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { useConfirmStore } from '@/state/confirm';
-import { useTabs } from '@/state/tabs';
+import { flushTabStorage, TABS_STORAGE_KEY, useTabs } from '@/state/tabs';
 
 const reset = () => useTabs.setState({ tabs: [], activeId: null });
 
@@ -205,5 +205,104 @@ describe('leaving a tab with staged edits', () => {
     const id = useTabs.getState().openQueryTab(null, 'select 1', 'A');
     expect(useTabs.getState().activeId).toBe(id);
     expect(useConfirmStore.getState().request).toBeNull();
+  });
+});
+
+describe('tab persistence', () => {
+  beforeEach(() => {
+    reset();
+    flushTabStorage();
+    localStorage.removeItem(TABS_STORAGE_KEY);
+  });
+
+  function saved(): { tabs: Record<string, unknown>[]; activeId: string | null } {
+    flushTabStorage();
+    const raw = localStorage.getItem(TABS_STORAGE_KEY);
+    if (!raw) throw new Error('nothing was persisted');
+    return JSON.parse(raw).state;
+  }
+
+  it('keeps query tabs — what the user wrote — and nothing else', () => {
+    // Quitting used to throw away every unsaved query.
+    const query = useTabs.getState().openQueryTab('c1', 'SELECT 1', 'Report');
+    useTabs.getState().update(query, {
+      running: true,
+      results: [{ sql: 'SELECT 1', outcome: null, error: null }],
+    });
+    useTabs.getState().openTableTab('c1', { schema: 'public', name: 'users' });
+
+    const state = saved();
+    expect(state.tabs).toEqual([
+      { id: query, title: 'Report', connectionId: 'c1', sql: 'SELECT 1', rowLimit: 1000 },
+    ]);
+    // The active tab is the table tab, which is not restored, so nothing is
+    // remembered as active rather than a dangling id.
+    expect(state.activeId).toBeNull();
+  });
+
+  it('writes after a short delay rather than on every keystroke', () => {
+    const id = useTabs.getState().openQueryTab('c1', 'S', 'Q');
+    flushTabStorage();
+    useTabs.getState().update(id, { sql: 'SE' });
+    useTabs.getState().update(id, { sql: 'SEL' });
+    // Not yet written...
+    expect(JSON.parse(localStorage.getItem(TABS_STORAGE_KEY)!).state.tabs[0].sql).toBe('S');
+    // ...and the latest value once flushed.
+    expect(saved().tabs[0]!.sql).toBe('SEL');
+  });
+
+  it('restores saved tabs fresh, as if just opened', async () => {
+    localStorage.setItem(
+      TABS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        state: {
+          tabs: [
+            {
+              id: 'tab-old-1',
+              title: 'Report',
+              connectionId: 'c1',
+              sql: 'SELECT 1',
+              rowLimit: 50000,
+            },
+          ],
+          activeId: 'tab-old-1',
+        },
+      }),
+    );
+
+    await useTabs.persist.rehydrate();
+
+    const { tabs, activeId } = useTabs.getState();
+    expect(activeId).toBe('tab-old-1');
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]).toMatchObject({
+      kind: 'query',
+      title: 'Report',
+      sql: 'SELECT 1',
+      rowLimit: 50000,
+      running: false,
+      results: [],
+      queryId: null,
+      dirty: false,
+    });
+  });
+
+  it('gives a tab opened after a restart an id no restored tab has', async () => {
+    localStorage.setItem(
+      TABS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        state: {
+          tabs: [{ id: 'tab-1', title: 'Old', connectionId: null, sql: '', rowLimit: 1000 }],
+          activeId: null,
+        },
+      }),
+    );
+    await useTabs.persist.rehydrate();
+
+    const fresh = useTabs.getState().openQueryTab(null);
+    expect(useTabs.getState().tabs.map((t) => t.id)).toEqual(['tab-1', fresh]);
+    expect(fresh).not.toBe('tab-1');
   });
 });

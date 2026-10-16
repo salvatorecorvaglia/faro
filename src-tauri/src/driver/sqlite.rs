@@ -80,7 +80,7 @@ impl SqliteDriver {
         // schema tree stays responsive). No `acquire_timeout` here — unlike a
         // networked engine, a local file has no host to hang on. WAL permits
         // concurrent readers, so splitting catalog reads off costs nothing.
-        let (pool, meta) = super::pool::dual_pool::<sqlx::Sqlite>(opts, None).await?;
+        let (pool, meta) = super::pool::dual_pool::<sqlx::Sqlite>(opts, None, None).await?;
 
         Ok(Self {
             pool,

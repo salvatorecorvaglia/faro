@@ -135,10 +135,7 @@ function SavedList() {
           groups.map((g) => (
             <div key={g.folder ?? '__loose'}>
               {g.folder && (
-                <div
-                  className="px-2 pt-1.5 pb-0.5 text-2xs font-semibold uppercase tracking-wide"
-                  style={{ color: 'var(--text-faint)' }}
-                >
+                <div className="px-2 pt-1.5 pb-0.5 text-2xs font-semibold uppercase tracking-wide text-faint">
                   {g.folder}
                 </div>
               )}
@@ -289,9 +286,7 @@ function HistoryRow({
       title={entry.sql}
     >
       <div className="flex items-center gap-1">
-        {!entry.succeeded && (
-          <IconWarning size={10} style={{ color: 'var(--danger)' }} className="shrink-0" />
-        )}
+        {!entry.succeeded && <IconWarning size={10} className="shrink-0 text-danger" />}
         <span
           className="min-w-0 flex-1 truncate font-mono text-xs"
           style={{ color: entry.succeeded ? 'var(--text)' : 'var(--danger)' }}
@@ -310,7 +305,7 @@ function HistoryRow({
           <IconClose size={10} />
         </button>
       </div>
-      <div className="flex items-center gap-1.5 text-2xs" style={{ color: 'var(--text-faint)' }}>
+      <div className="flex items-center gap-1.5 text-2xs text-faint">
         <span>{relativeTime(entry.executedAt)}</span>
         {entry.connectionName && (
           <>
@@ -338,9 +333,5 @@ function HistoryRow({
 }
 
 function Hint({ text }: { text: string }) {
-  return (
-    <p className="px-3 py-4 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
-      {text}
-    </p>
-  );
+  return <p className="px-3 py-4 text-center text-xs text-faint">{text}</p>;
 }

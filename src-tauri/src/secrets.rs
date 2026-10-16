@@ -45,6 +45,16 @@ const REPROBE_AFTER: Duration = Duration::from_secs(5);
 /// fallback and was silently lost on quit, with the UI still reporting the
 /// state it saw at launch.
 pub fn keychain_available() -> bool {
+    // Unit tests use the in-memory store unless asked otherwise. Run against
+    // the real backend they wrote entries into the developer's own Keychain or
+    // Secret Service, could raise an OS access prompt mid-run, and behaved
+    // differently on a CI runner that has no keychain at all. Set
+    // `FARO_TEST_REAL_KEYCHAIN=1` to exercise the real store deliberately.
+    #[cfg(test)]
+    if std::env::var_os("FARO_TEST_REAL_KEYCHAIN").is_none() {
+        return false;
+    }
+
     static AVAILABLE: AtomicBool = AtomicBool::new(false);
     if AVAILABLE.load(Ordering::Relaxed) {
         return true;
@@ -166,6 +176,15 @@ mod tests {
         // And deleting must clear it wherever it lives.
         delete_password(&key).unwrap();
         assert_eq!(get_password(&key), None);
+    }
+
+    #[test]
+    fn unit_tests_stay_out_of_the_real_keychain() {
+        // Hermetic by default: nothing here may write to the machine's own
+        // keychain unless the run opts in.
+        if std::env::var_os("FARO_TEST_REAL_KEYCHAIN").is_none() {
+            assert!(!keychain_available());
+        }
     }
 
     #[test]
