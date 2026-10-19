@@ -161,7 +161,7 @@ Backend integration tests live in `src-tauri/tests/` (including live database en
 1. **Branch Naming**: Use descriptive branch names:
    - `feature/short-description`
    - `fix/short-description`
-   - `docs/short-description`
+   - `documentation/short-description`
 2. **Commit Messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/):
    - `feat: add support for connection read-only enforcement`
    - `fix: resolve CSV export encoding issue`
