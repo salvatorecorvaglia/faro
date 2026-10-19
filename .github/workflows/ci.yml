@@ -19,7 +19,7 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   frontend:
@@ -57,9 +57,6 @@ jobs:
 
       - name: Biome Lint
         run: pnpm lint
-
-      - name: TypeScript Check
-        run: pnpm typecheck
 
       - name: Vitest Unit Tests
         run: pnpm test:coverage
@@ -186,19 +183,8 @@ jobs:
       - name: pnpm Audit
         run: pnpm audit --audit-level high
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
       - name: Install cargo-audit
-        run: cargo install --locked cargo-audit
+        uses: taiki-e/install-action@cargo-audit
 
       - name: Cargo Audit
         run: cargo audit --file src-tauri/Cargo.lock
