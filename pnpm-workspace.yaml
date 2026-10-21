@@ -3,8 +3,8 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@codemirror/view@6.43.11'
-  - '@codemirror/state@6.7.4'
+  - '@codemirror/view@6.43.15'
+  - '@codemirror/state@6.7.6'
   - '@rolldown/binding-darwin-x64@1.2.5'
   - '@rolldown/binding-linux-arm64-gnu@1.2.5'
   - '@vitejs/plugin-react@6.1.0'
@@ -24,5 +24,5 @@ minimumReleaseAgeExclude:
 # checks at runtime. Forcing one version keeps the editor working, not just the
 # types happy.
 overrides:
-  '@codemirror/view': 6.43.11
-  '@codemirror/state': 6.7.4
+  '@codemirror/view': 6.43.15
+  '@codemirror/state': 6.7.6

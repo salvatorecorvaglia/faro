@@ -89,6 +89,7 @@ services:
   mongo:
     image: mongo:8
     environment:
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
       MONGO_INITDB_ROOT_USERNAME: faro
       MONGO_INITDB_ROOT_PASSWORD: faro
     ports:
