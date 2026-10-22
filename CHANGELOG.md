@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated frontend and Rust dependencies, including the SQL editor, virtualized
+  grid, DuckDB and Excel import/export libraries.
+- CI now cancels superseded runs and reports database startup diagnostics when
+  integration test services fail to start.
+
+### Fixed
+
+- Pinned `rusqlite` to a version that shares the native SQLite library with
+  SQLx, avoiding conflicting SQLite library dependencies during builds.
+- Pinned the SQL Server driver to the version used by its connection pool.
+
+### Security
+
+- Disabled unused Windows authentication dependencies in the SQL Server
+  connection pool, removing the vulnerable `rand` 0.7 dependency. SQL Server
+  connections continue to use username and password authentication.
+
 ## [1.1.0] - 2026-10-16
 
 ### Added
