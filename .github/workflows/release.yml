@@ -86,7 +86,6 @@ jobs:
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-      # Match CI: compile bundled DuckDB directly with MSVC on Windows.
       RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
       SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
     steps:

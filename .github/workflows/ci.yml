@@ -145,7 +145,6 @@ jobs:
   rust-unit:
     name: Rust Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # sccache's MSVC invocation breaks DuckDB's bundled C++ build (/WX-).
     env:
       RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
       SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
