@@ -1,4 +1,5 @@
 ---
+
 name: "\U0001F41B Bug Report"
 about: Report an error or unexpected behavior
 title: '[BUG]: '

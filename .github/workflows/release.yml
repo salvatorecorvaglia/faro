@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 concurrency:
@@ -30,25 +30,25 @@ jobs:
             echo "::error::Release workflow must be run on a version tag ref starting with 'v' (e.g. refs/tags/v1.0.0)"
             exit 1
           fi
-          
+
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          
+
           PKG_VERSION=$(jq -r .version package.json)
-          
+
           TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          
+
           CARGO_VERSION=$(grep -m 1 '^version = ' src-tauri/Cargo.toml | cut -d '"' -f 2)
-          
+
           echo "Tag version: $TAG_VERSION"
           echo "package.json version: $PKG_VERSION"
           echo "tauri.conf.json version: $TAURI_VERSION"
           echo "Cargo.toml version: $CARGO_VERSION"
-          
+
           if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
             echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
             exit 1
           fi
-          
+
           if [[ "$TAG_VERSION" != "$TAURI_VERSION" ]]; then
             echo "::error::Tag version ($TAG_VERSION) does not match tauri.conf.json version ($TAURI_VERSION)"
             exit 1
@@ -68,26 +68,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-15'
-            target: 'aarch64-apple-darwin'
-            args: '--target aarch64-apple-darwin'
-          - platform: 'macos-15'
-            target: 'x86_64-apple-darwin'
-            args: '--target x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04'
-            target: ''
-            args: ''
-          - platform: 'windows-latest'
-            target: ''
-            args: ''
+          - platform: "macos-15"
+            target: "aarch64-apple-darwin"
+            args: "--target aarch64-apple-darwin"
+          - platform: "macos-15"
+            target: "x86_64-apple-darwin"
+            args: "--target x86_64-apple-darwin"
+          - platform: "ubuntu-22.04"
+            target: ""
+            args: ""
+          - platform: "windows-latest"
+            target: ""
+            args: ""
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 40
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-      RUSTC_WRAPPER: "sccache"
-      SCCACHE_GHA_ENABLED: "true"
+      # Match CI: compile bundled DuckDB directly with MSVC on Windows.
+      RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
+      SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -112,6 +113,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Setup sccache
+        if: runner.os != 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install Linux dependencies (ubuntu only)
@@ -138,8 +140,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Faro v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseName: "Faro v__VERSION__"
+          releaseBody: "See the assets to download this version and install."
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

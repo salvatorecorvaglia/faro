@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths-ignore:
-      - '**.md'
+      - "**.md"
   pull_request:
-    branches: [ main ]
+    branches: [main]
     paths-ignore:
-      - '**.md'
+      - "**.md"
 
 permissions:
   contents: read
@@ -37,7 +37,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: 'pnpm'
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -145,6 +145,10 @@ jobs:
   rust-unit:
     name: Rust Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # sccache's MSVC invocation breaks DuckDB's bundled C++ build (/WX-).
+    env:
+      RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
+      SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -163,6 +167,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Setup sccache
+        if: runner.os != 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Cargo Unit Tests
@@ -183,7 +188,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: 'pnpm'
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -22,16 +22,16 @@
 
 ## 🗄️ Supported Database Engines
 
-| Database Engine | Type | Connection Protocol / Driver | Test Suite Port |
-| :--- | :--- | :--- | :--- |
-| **PostgreSQL** | Relational | Native (`sqlx-postgres`) | `55432` |
-| **MySQL** | Relational | Native (`sqlx-mysql`) | `53306` |
-| **MariaDB** | Relational | Native (`sqlx-mysql`) | `53307` |
-| **SQLite** | Embedded Relational | Bundled (`rusqlite` / `sqlx-sqlite`) | Local file |
-| **DuckDB** | Embedded Analytical | Bundled (`duckdb-rs`) | Local file |
-| **MongoDB** | Document / NoSQL | Native (`mongodb` Rust driver + BSON parser) | `57017` |
-| **ClickHouse** | Analytical Columnar | HTTP Interface (`reqwest`) | `58123` |
-| **SQL Server (MSSQL)** | Relational | Native TDS (`tiberius` with `native-tls` + `bb8`) | `51433` |
+| Database Engine        | Type                | Connection Protocol / Driver                      | Test Suite Port |
+| :--------------------- | :------------------ | :------------------------------------------------ | :-------------- |
+| **PostgreSQL**         | Relational          | Native (`sqlx-postgres`)                          | `55432`         |
+| **MySQL**              | Relational          | Native (`sqlx-mysql`)                             | `53306`         |
+| **MariaDB**            | Relational          | Native (`sqlx-mysql`)                             | `53307`         |
+| **SQLite**             | Embedded Relational | Bundled (`rusqlite` / `sqlx-sqlite`)              | Local file      |
+| **DuckDB**             | Embedded Analytical | Bundled (`duckdb-rs`)                             | Local file      |
+| **MongoDB**            | Document / NoSQL    | Native (`mongodb` Rust driver + BSON parser)      | `57017`         |
+| **ClickHouse**         | Analytical Columnar | HTTP Interface (`reqwest`)                        | `58123`         |
+| **SQL Server (MSSQL)** | Relational          | Native TDS (`tiberius` with `native-tls` + `bb8`) | `51433`         |
 
 > **SQL Server read-only mode, specifically:** Faro's read-only setting is enforced two ways — its own SQL statement validator, and (where the engine supports it) a server-side session flag. For SQL Server that flag is `ApplicationIntent=ReadOnly`, which Azure SQL Database and an Always On availability group both enforce server-side, but a **standalone** SQL Server instance — including the one in this project's own test containers — silently ignores it and accepts writes anyway. Against a standalone instance, Faro's own statement validator is the only thing actually preventing a write; every other supported engine additionally rejects writes at the server itself.
 
@@ -42,7 +42,6 @@
 ### Prerequisites
 
 Ensure you have the following installed on your machine:
-
 - **Node.js**: `v20.0.0` or higher (v22 recommended)
 - **pnpm**: `v11.23.0`+ (`corepack enable` or `npm i -g pnpm`)
 - **Rust Toolchain**: `1.85`+ (`rustup update stable`)
@@ -51,21 +50,25 @@ Ensure you have the following installed on your machine:
 ### Installation & Local Development
 
 1. **Clone the repository**:
+
    ```bash
    git clone https://github.com/salvatorecorvaglia/faro.git
    cd faro
    ```
 
 2. **Install frontend dependencies**:
+
    ```bash
    pnpm install
    ```
 
 3. **Launch Faro in development mode**:
+
    ```bash
    pnpm tauri dev
    ```
-   *This starts the Vite development server on `http://localhost:1420` and launches the native desktop client window with Hot Module Replacement (HMR).*
+
+   _This starts the Vite development server on `http://localhost:1420` and launches the native desktop client window with Hot Module Replacement (HMR)._
 
 ---
 
@@ -76,23 +79,27 @@ Faro includes a Docker Compose environment containing pre-configured instances o
 ### Running Test Databases
 
 1. **Spin up the test containers**:
+
    ```bash
    docker compose -f tests/docker-compose.test.yml up -d
    ```
 
 2. **Seed the database fixtures**:
+
    ```bash
    ./scripts/seed.sh
    ```
 
 ### Running Test Suites
 
-- **Run Frontend Tests (Vitest)** (*located in `tests/`*):
+- **Run Frontend Tests (Vitest)** (_located in `tests/`_):
+
   ```bash
   pnpm test
   ```
 
-- **Run Backend Integration Tests (Rust)** (*located in `src-tauri/tests/`*):
+- **Run Backend Integration Tests (Rust)** (_located in `src-tauri/tests/`_):
+
   ```bash
   # Run all Rust unit and integration tests (includes DuckDB and live driver tests in live_engines.rs)
   cargo test --manifest-path src-tauri/Cargo.toml
@@ -102,6 +109,7 @@ Faro includes a Docker Compose environment containing pre-configured instances o
   ```
 
 - **Linting & Code Quality**:
+
   ```bash
   # Check TypeScript types
   pnpm typecheck
@@ -127,16 +135,17 @@ Faro includes a Docker Compose environment containing pre-configured instances o
 
 ### macOS
 
-Since pre-built release binaries may not be notarized with an Apple Developer certificate, macOS Gatekeeper may block the app or display a warning saying **`"Faro" is damaged and can't be opened`** (*`"Faro" è danneggiato e non può essere aperto`*).
+Since pre-built release binaries may not be notarized with an Apple Developer certificate, macOS Gatekeeper may block the app or display a warning saying **`"Faro" is damaged and can't be opened`** (_`"Faro" è danneggiato e non può essere aperto`_).
 
 To resolve this and allow Faro to open:
-
 1. **Remove Quarantine Attribute** (Recommended):
    Open Terminal and run:
+
    ```bash
    xattr -cr /Applications/Faro.app
    ```
-   *(If the app is in your Downloads folder, use `xattr -cr ~/Downloads/Faro.app` instead).*
+
+   _(If the app is in your Downloads folder, use `xattr -cr ~/Downloads/Faro.app` instead)._
 
 2. **Alternative (First Launch via Finder)**:
    - Locate `Faro.app` in `Finder`.
@@ -144,6 +153,7 @@ To resolve this and allow Faro to open:
    - Click **Open** in the confirmation dialog.
 
 ### Windows
+
 If Windows SmartScreen blocks execution of unsigned binaries, click **More info** and then choose **Run anyway**.
 
 ---

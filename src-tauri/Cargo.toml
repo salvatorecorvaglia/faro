@@ -17,7 +17,9 @@ tauri-build = { version = "2.7.3", features = [] }
 [dependencies]
 tauri = { version = "2.12.4", features = [] }
 tauri-plugin-dialog = "2.8.3"
-tauri-plugin-updater = "2.14.0"
+# Faro publishes v2 updater artifacts. The optional `zip` feature only supports
+# legacy v1 bundles and pulls in zip 4, which has unpatched advisories.
+tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2.4.0"
 
 # `rc` lets a command return an `Arc` it also keeps in the result cache, so
