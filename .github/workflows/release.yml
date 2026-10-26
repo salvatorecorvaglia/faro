@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-run-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -59,11 +59,16 @@ jobs:
             exit 1
           fi
 
+  quality:
+    name: Release checks
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
   publish-tauri:
     name: Release (${{ matrix.platform }})
     permissions:
       contents: write
-    needs: validate
+    needs: [validate, quality]
     strategy:
       fail-fast: false
       matrix:
@@ -86,8 +91,6 @@ jobs:
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-      RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
-      SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -137,6 +140,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
+          SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
         with:
           tagName: v__VERSION__
           releaseName: "Faro v__VERSION__"

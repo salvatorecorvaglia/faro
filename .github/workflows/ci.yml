@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
+  workflow_call:
 
 permissions:
   contents: read
@@ -145,9 +146,6 @@ jobs:
   rust-unit:
     name: Rust Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    env:
-      RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
-      SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -170,6 +168,9 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Cargo Unit Tests
+        env:
+          RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
+          SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
   security-audit:
