@@ -40,6 +40,9 @@
     "category": "DeveloperTool",
     "shortDescription": "A fast, clean SQL client",
     "longDescription": "Faro is a cross-platform database client for PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, DuckDB, ClickHouse and MongoDB. Connect, browse tables, run queries with autocomplete, edit data safely, import and export, and back up your databases \u2014 without installing any command-line tools.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "publisher": "Faro",
     "copyright": "MIT licensed",
     "licenseFile": "../LICENSE",
