@@ -13,18 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grid, DuckDB and Excel import/export libraries.
 - CI now cancels superseded runs and reports database startup diagnostics when
   integration test services fail to start.
+- Require the reusable CI quality checks before packaging releases.
+- Update Tokio to `1.54.1` and Biome to `2.6.3`.
+- Refresh the application logo and documentation, and use ad-hoc signing for macOS bundles.
+
 
 ### Fixed
 
 - Pinned `rusqlite` to a version that shares the native SQLite library with
   SQLx, avoiding conflicting SQLite library dependencies during builds.
 - Pinned the SQL Server driver to the version used by its connection pool.
+- Disable sccache on Windows for Rust tests and release builds.
+
 
 ### Security
 
 - Disabled unused Windows authentication dependencies in the SQL Server
   connection pool, removing the vulnerable `rand` 0.7 dependency. SQL Server
   connections continue to use username and password authentication.
+- Disable legacy ZIP support in the Tauri updater to remove ZIP dependencies with unpatched advisories, retaining native v2 updates, Rustls TLS and system-proxy support.
 
 ## [1.1.0] - 2026-10-16
 
