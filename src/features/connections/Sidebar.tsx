@@ -1,3 +1,4 @@
+import faroLogo from '../../../resources/faro.svg';
 import { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -6,7 +7,6 @@ import {
   IconDatabase,
   IconDownload,
   IconEdit,
-  IconLighthouse,
   IconPlus,
   IconRefresh,
   IconTrash,
@@ -142,7 +142,7 @@ export function Sidebar() {
   return (
     <div className="flex h-full flex-col bg-subtle">
       <header className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2.5 border-line">
-        <IconLighthouse size={15} className="opacity-90" />
+        <img src={faroLogo} alt="" width={20} height={20} className="shrink-0" />
         <span className="flex-1 text-sm font-semibold tracking-wide">Faro</span>
         {/* Named for what it actually reloads: each connected row now has its
             own Refresh for the schema tree, and two buttons both saying

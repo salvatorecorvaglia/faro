@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Faro</title>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#101729"/><stop offset="1" stop-color="#070c18"/></linearGradient>
+    <linearGradient id="tower"><stop stop-color="#f4f7fc"/><stop offset="1" stop-color="#bec9d8"/></linearGradient>
+    <linearGradient id="red"><stop stop-color="#e65848"/><stop offset="1" stop-color="#a73b31"/></linearGradient>
+    <radialGradient id="beam"><stop stop-color="#ffd064" stop-opacity=".35"/><stop offset="1" stop-color="#ffd064" stop-opacity="0"/></radialGradient>
+    <clipPath id="card"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <clipPath id="tower-clip"><path d="M438 308h148l74 527H364Z"/></clipPath>
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <path d="M512 353 0 210v286ZM512 353l512-143v286Z" fill="url(#beam)"/>
+    <path d="M438 308h148l74 527H364Z" fill="url(#tower)"/>
+    <g clip-path="url(#tower-clip)" fill="url(#red)"><path d="M350 475h320v67H350ZM350 642h320v67H350Z"/></g>
+    <path d="M376 386h272v29H376Z" fill="#f4f7fc"/>
+    <circle cx="512" cy="353" r="59" fill="#ffcf60"/>
+    <path d="M307 835h410l162 189H145Z" fill="#202b3e"/>
+  </g>
+</svg>
