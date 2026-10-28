@@ -1,7 +1,5 @@
-import faroLogo from '../../../resources/faro.svg';
 import { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-
 import {
   IconChevron,
   IconDatabase,
@@ -24,6 +22,7 @@ import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { useSchemaCache } from '@/state/schemaCache';
 import { useTabs } from '@/state/tabs';
+import faroLogo from '../../../resources/faro.svg';
 import { ConnectionDialog } from './ConnectionDialog';
 import { SchemaTree } from './SchemaTree';
 

@@ -344,6 +344,7 @@ jobs:
         with:
           args: ${{ matrix.args }}
       - name: Stage and checksum the installers
+        shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.installers.outputs.artifactPaths }}
           APP_VERSION: ${{ steps.installers.outputs.appVersion }}
