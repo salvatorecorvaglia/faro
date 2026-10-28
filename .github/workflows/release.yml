@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NODE_OPTIONS: "--max-old-space-size=6144"
@@ -63,128 +63,170 @@ jobs:
     name: Release checks
     needs: validate
     uses: ./.github/workflows/ci.yml
+    with:
+      release: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-  publish-tauri:
-    name: Release (${{ matrix.platform }})
+  publish:
+    name: Publish verified installers
+    needs: [validate, quality]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
-    needs: [validate, quality]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: "macos-15"
-            target: "aarch64-apple-darwin"
-            args: "--target aarch64-apple-darwin"
-          - platform: "macos-15"
-            target: "x86_64-apple-darwin"
-            args: "--target x86_64-apple-darwin"
-          - platform: "ubuntu-22.04"
-            target: ""
-            args: ""
-          - platform: "windows-latest"
-            target: ""
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
-    timeout-minutes: 40
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v6
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Setup sccache
-        if: runner.os != 'Windows'
-        uses: mozilla-actions/sccache-action@v0.0.11
-
-      - name: Install Linux dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+          pattern: tauri-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify build identities, checksums and updater signatures
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev sqlite3
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+          import { basename, join } from 'node:path';
+          const platforms = ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'windows-x86_64'];
+          const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+          const safeName = (name) =>
+            typeof name === 'string' &&
+            basename(name) === name &&
+            !/[\\/]/.test(name) &&
+            !['.', '..'].includes(name);
+          const updaterFile = (platform, files) => {
+            const suffixes = platform.startsWith('darwin')
+              ? ['.app.tar.gz']
+              : platform.startsWith('linux')
+                ? ['.AppImage', '.AppImage.tar.gz']
+                : ['.msi.zip', '.msi', '.nsis.zip', '.exe'];
+            return suffixes.map((suffix) => files.find((file) => file.name.endsWith(suffix))).find(Boolean);
+          };
 
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+          function prepare({
+            directory,
+            version,
+            commit,
+            repository,
+            notes = '',
+            date = new Date().toISOString(),
+          }) {
+            const manifests = platforms.map((platform) =>
+              JSON.parse(readFileSync(join(directory, `manifest-${platform}.json`), 'utf8')),
+            );
+            const seen = new Set();
+            for (const manifest of manifests) {
+              if (
+                !platforms.includes(manifest.platform) ||
+                seen.has(manifest.platform) ||
+                manifest.version !== version ||
+                manifest.commit !== commit
+              )
+                throw new Error('Artifact version, commit or platform mismatch');
+              seen.add(manifest.platform);
+              for (const file of manifest.files) {
+                if (!safeName(file.name) || sha256(join(directory, file.name)) !== file.sha256)
+                  throw new Error(`Invalid artifact: ${file.name}`);
+              }
+            }
+            if (manifests.some((m) => m.signed) && !manifests.every((m) => m.signed))
+              throw new Error('Mixed signed and unsigned installers');
+            const published = manifests.flatMap((m) => m.files.map((file) => file.name));
+            if (new Set(published).size !== published.length) throw new Error('Colliding installer names');
+            if (manifests.every((m) => m.signed)) {
+              const feed = { version, notes, pub_date: date, platforms: {} };
+              for (const manifest of manifests) {
+                const file = updaterFile(manifest.platform, manifest.files);
+                if (!file || !manifest.files.some((f) => f.name === `${file.name}.sig`))
+                  throw new Error('Updater signature missing');
+                const signature = readFileSync(join(directory, `${file.name}.sig`), 'utf8').trim();
+                if (!signature) throw new Error('Empty updater signature');
+                feed.platforms[manifest.platform] = {
+                  signature,
+                  url: `https://github.com/${repository}/releases/download/v${version}/${encodeURIComponent(file.name)}`,
+                };
+                for (const candidate of manifest.files) {
+                  if (!manifest.files.some((entry) => entry.name === `${candidate.name}.sig`)) continue;
+                  const bundle = candidate.name.endsWith('.app.tar.gz')
+                    ? 'app'
+                    : /\.AppImage(?:\.tar\.gz)?$/.test(candidate.name)
+                      ? 'appimage'
+                      : /\.msi(?:\.zip)?$/.test(candidate.name)
+                        ? 'msi'
+                        : /(?:\.exe|\.nsis\.zip)$/.test(candidate.name)
+                          ? 'nsis'
+                          : null;
+                  if (!bundle) continue;
+                  const scopedSignature = readFileSync(
+                    join(directory, `${candidate.name}.sig`),
+                    'utf8',
+                  ).trim();
+                  if (!scopedSignature) throw new Error('Empty updater signature');
+                  feed.platforms[`${manifest.platform}-${bundle}`] = {
+                    signature: scopedSignature,
+                    url: `https://github.com/${repository}/releases/download/v${version}/${encodeURIComponent(candidate.name)}`,
+                  };
+                }
+              }
+              writeFileSync(join(directory, 'latest.json'), `${JSON.stringify(feed, null, 2)}\n`);
+              published.push('latest.json');
+            }
+            writeFileSync(
+              join(directory, 'SHA256SUMS'),
+              `${published
+                .sort()
+                .map((name) => `${sha256(join(directory, name))}  ${name}`)
+                .join('\n')}\n`,
+            );
+            return published;
+          }
 
-      - name: Disable updater if signing key is missing
-        if: ${{ !env.TAURI_SIGNING_PRIVATE_KEY }}
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+          if (
+            process.env.GITHUB_REF_NAME !== `v${version}` ||
+            JSON.parse(readFileSync('package.json')).version !== version
+          )
+            throw new Error('Tag/version mismatch');
+          const lines = readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+          const start = lines.findIndex(
+            (line) => line === `## [${version}]` || line.startsWith(`## [${version}] - `),
+          );
+          const end = lines.findIndex((line, index) => index > start && /^## /.test(line));
+          const notes =
+            start < 0
+              ? ''
+              : lines
+                  .slice(start + 1, end < 0 ? undefined : end)
+                  .join('\n')
+                  .trim();
+          prepare({
+            directory: 'release-assets',
+            version,
+            commit: process.env.GITHUB_SHA,
+            repository: process.env.GITHUB_REPOSITORY,
+            notes,
+          });
+          NODE
+      - name: Publish the verified installers and feed
         shell: bash
-        run: |
-          echo "TAURI_SIGNING_PRIVATE_KEY is not set. Disabling updater."
-          jq '.bundle.createUpdaterArtifacts = false | del(.plugins.updater)' src-tauri/tauri.conf.json > temp.json && mv temp.json src-tauri/tauri.conf.json
-
-      - name: Build and Publish Release
-        uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          RUSTC_WRAPPER: ${{ runner.os != 'Windows' && 'sccache' || '' }}
-          SCCACHE_GHA_ENABLED: ${{ runner.os != 'Windows' && 'true' || 'false' }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "Faro v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
-
-  finalize:
-    name: Finalize Release
-    runs-on: ubuntu-24.04
-    needs: publish-tauri
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Extract Release Notes
-        id: extract_notes
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          NOTES=""
-          if [ -f CHANGELOG.md ]; then
-            NOTES=$(sed -e "1,/## \[$VERSION\]/d" -e '/## \[/,$d' CHANGELOG.md 2>/dev/null || true)
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v version="$version" '
+            /^## / { heading=$2; gsub(/[][]/, "", heading); selected=(heading==version); next }
+            selected { print }
+          ' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then printf 'Faro %s\n' "$GITHUB_REF_NAME" > "$notes"; fi
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "Faro $GITHUB_REF_NAME" --notes-file "$notes"
           fi
-          if [ -z "$(echo "$NOTES" | tr -d '[:space:]')" ]; then
-            NOTES="Faro release $TAG"
-          fi
-          {
-            echo 'notes<<EOF'
-            echo "$NOTES"
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
-
-      - name: Update Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_NOTES: ${{ steps.extract_notes.outputs.notes }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
-          gh release edit "$TAG" \
-            --draft=false \
-            --title "Faro v$VERSION" \
-            --notes "$RELEASE_NOTES" \
-            --repo "$GITHUB_REPOSITORY"
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f ! -name 'manifest-*' -print0)
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --title "Faro $GITHUB_REF_NAME" --notes-file "$notes"
