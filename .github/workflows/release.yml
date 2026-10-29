@@ -25,39 +25,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate tag format and version match
-        run: |
-          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
-            echo "::error::Release workflow must be run on a version tag ref starting with 'v' (e.g. refs/tags/v1.0.0)"
-            exit 1
-          fi
-
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-
-          PKG_VERSION=$(jq -r .version package.json)
-
-          TAURI_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-
-          CARGO_VERSION=$(grep -m 1 '^version = ' src-tauri/Cargo.toml | cut -d '"' -f 2)
-
-          echo "Tag version: $TAG_VERSION"
-          echo "package.json version: $PKG_VERSION"
-          echo "tauri.conf.json version: $TAURI_VERSION"
-          echo "Cargo.toml version: $CARGO_VERSION"
-
-          if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
-            exit 1
-          fi
-
-          if [[ "$TAG_VERSION" != "$TAURI_VERSION" ]]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match tauri.conf.json version ($TAURI_VERSION)"
-            exit 1
-          fi
-
-          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match src-tauri/Cargo.toml version ($CARGO_VERSION)"
-            exit 1
-          fi
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: python3 scripts/check_versions.py --tag "$RELEASE_REF"
 
   quality:
     name: Release checks
