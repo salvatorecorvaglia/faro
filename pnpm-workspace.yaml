@@ -18,6 +18,17 @@ minimumReleaseAgeExclude:
   - vitest@5.0.5
   - "@vitest/coverage-v8@5.0.5"
   - react-resizable-panels@4.14.6 || 4.14.8
+  - '@biomejs/biome@2.6.4'
+  - '@biomejs/cli-android-arm64@2.6.4'
+  - '@biomejs/cli-android-x64@2.6.4'
+  - '@biomejs/cli-darwin-arm64@2.6.4'
+  - '@biomejs/cli-darwin-x64@2.6.4'
+  - '@biomejs/cli-linux-arm64-musl@2.6.4'
+  - '@biomejs/cli-linux-arm64@2.6.4'
+  - '@biomejs/cli-linux-x64-musl@2.6.4'
+  - '@biomejs/cli-linux-x64@2.6.4'
+  - '@biomejs/cli-win32-arm64@2.6.4'
+  - '@biomejs/cli-win32-x64@2.6.4'
 
 # CodeMirror breaks if two copies of @codemirror/view load: the packages
 # exchange class instances, and duplicate module identities fail instanceof

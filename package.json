@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.2.0",
   "type": "module",
-  "packageManager": "pnpm@11.23.0",
+  "packageManager": "pnpm@12.16.1",
   "description": "Fast, clean, cross-platform database client",
   "icon": "resources/faro.svg",
   "scripts": {
@@ -40,7 +40,7 @@
     "zustand": "^5.0.16"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.3",
+    "@biomejs/biome": "^2.6.4",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.12.4",
     "@testing-library/jest-dom": "^7.0.1",
