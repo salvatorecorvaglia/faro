@@ -50,7 +50,7 @@ Ensure you have the following installed on your machine:
 - **Rust Toolchain**: `1.85`+ (`rustup update stable`)
 - **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk-4.1-dev`, or Windows C++ Build Tools).
 
-### Installation & Local Development
+### Installation
 
 1. **Clone the repository**:
 
