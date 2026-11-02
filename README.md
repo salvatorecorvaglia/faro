@@ -10,7 +10,7 @@
 
 ---
 
-## ✨ Features
+## Features ✨
 
 - ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes, automatic protocol fallback probing (`Prefer` HTTPS to HTTP), and custom CA/client certificate authentication.
 - 🛡️ **Read-Only Mode & Safety**: Enhanced SQL statement parser and validator for strict connection-level read-only enforcement, preventing accidental data mutations or destructive DDL queries on production environments.
@@ -41,7 +41,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start 🚀
 
 ### Prerequisites
 
@@ -75,81 +75,22 @@ Ensure you have the following installed on your machine:
 
 ---
 
-## 🧪 Testing & Verification
-
-Faro includes a Docker Compose environment containing pre-configured instances of all supported database engines for end-to-end integration testing.
-
-### Running Test Databases
-
-1. **Spin up the test containers**:
-
-   ```bash
-   docker compose -f tests/docker-compose.test.yml up -d
-   ```
-
-2. **Seed the database fixtures**:
-
-   ```bash
-   ./scripts/seed.sh
-   ```
-
-### Running Test Suites
-
-- **Run Frontend Tests (Vitest)** (_located in `tests/`_):
-
-  ```bash
-  pnpm test
-  ```
-
-- **Run Backend Integration Tests (Rust)** (_located in `src-tauri/tests/`_):
-
-  ```bash
-  # Run all Rust unit and integration tests (includes DuckDB and live driver tests in live_engines.rs)
-  cargo test --manifest-path src-tauri/Cargo.toml
-
-  # Fast iteration mode (skips compiling bundled DuckDB C++ amalgamation)
-  cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
-  ```
-
-- **Linting & Code Quality**:
-
-  ```bash
-  # Check TypeScript types
-  pnpm typecheck
-
-  # Lint frontend & configuration files with Biome
-  pnpm lint
-
-  # Format frontend files automatically
-  pnpm format
-
-  # Check Rust formatting and clippy lints (matches what CI enforces)
-  cargo fmt --check --manifest-path src-tauri/Cargo.toml
-  cargo clippy --manifest-path src-tauri/Cargo.toml --no-deps -- -D warnings
-
-  # Faster local iteration: skips compiling the bundled DuckDB C++ amalgamation,
-  # but does not cover the duckdb-engine code path that CI lints
-  cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --no-deps -- -D warnings
-  ```
-
----
-
-## 🤝 Contributing
+## Contributing 🤝
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## 📜 Changelog
+## Changelog 📜
 
 Detailed release history and version changes can be found in [CHANGELOG.md](CHANGELOG.md).
 
-## 🔐 Security
+## Security 🔐
 
 If you discover a security vulnerability, please see our [Security Policy](SECURITY.md).
 
-## 📝 License
+## License 📝
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
 
----
+## Author ✍️
 
-**Author**: [Salvatore Corvaglia](https://github.com/salvatorecorvaglia)
+[Salvatore Corvaglia](https://github.com/salvatorecorvaglia)
