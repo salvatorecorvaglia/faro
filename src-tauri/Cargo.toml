@@ -100,7 +100,7 @@ csv = "1.4"
 # Spreadsheet write and read. Pinned to current majors — older releases are
 # what Cargo's MSRV-aware resolver picks if rust-version is left too low.
 rust_xlsxwriter = "0.100.0"
-calamine = "0.37.0"
+calamine = "0.38.0"
 
 [features]
 # DuckDB is on by default so shipped builds include it, but it compiles a large
