@@ -82,7 +82,10 @@ pub fn run() {
         })
         .setup(move |app| {
             #[cfg(all(feature = "desktop-smoke", debug_assertions))]
-            app.manage(smoke::Started(started));
+            {
+                eprintln!("Native smoke: window setup completed");
+                app.manage(smoke::Started(started));
+            }
             let _ = app;
             Ok(())
         })

@@ -20,6 +20,14 @@ const config = {
         height: 900,
         incognito: true,
         dataDirectory: path.join(directory, 'webview'),
+        // Hosted Windows runners do not reliably keep the test window foregrounded.
+        // Keep timers and worker-driven checks running when WebView2 is occluded.
+        ...(process.platform === 'win32'
+          ? {
+              additionalBrowserArgs:
+                '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding',
+            }
+          : {}),
       },
     ],
   },
@@ -103,7 +111,7 @@ try {
       );
     }
     console.log(JSON.stringify({ directory, action, code: native.code, ...result }, null, 2));
-    if (native.code !== 0 || !result.ok) {
+    if (native.code !== 0 || native.timedOut || !result.ok) {
       process.exitCode = 1;
       break;
     }

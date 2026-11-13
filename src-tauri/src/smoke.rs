@@ -12,6 +12,7 @@ async fn smoke_action(
     started: State<'_, Started>,
     action: String,
 ) -> std::result::Result<serde_json::Value, String> {
+    eprintln!("Native smoke action: {action}");
     match action.as_str() {
         "finish" => Ok(serde_json::json!(
             std::env::var("FARO_SMOKE_EXIT").unwrap_or_else(|_| "quit".into())

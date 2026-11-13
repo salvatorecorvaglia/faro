@@ -24,6 +24,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
 // Removed from normal production bundles by Vite.
 if (import.meta.env.MODE === 'desktop-smoke') {
-  void import('../tests/native/smoke.js').then((smoke) => smoke.start());
-  void import('./test/desktopBridge').then((bridge) => bridge.start());
+  const reportFailure = (error: unknown) =>
+    import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke('smoke_report', {
+        result: { ok: false, error: String(error), phase: 'frontend bootstrap' },
+      }),
+    );
+  window.addEventListener('error', (event) => void reportFailure(event.error ?? event.message));
+  window.addEventListener('unhandledrejection', (event) => void reportFailure(event.reason));
+  void import('../tests/native/smoke.js').then((smoke) => smoke.start()).catch(reportFailure);
+  void import('./test/desktopBridge').then((bridge) => bridge.start()).catch(reportFailure);
 }
