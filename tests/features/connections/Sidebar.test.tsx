@@ -45,6 +45,30 @@ beforeEach(() => {
 });
 
 describe('Sidebar schema tree', () => {
+  it('shows the actual active destination and mode while saved settings await reconnection', async () => {
+    mockInvoke({
+      list_connection_status: () => [
+        connection({
+          host: 'new-host',
+          database: 'new-database',
+          readOnly: true,
+          activeConfig: connection({ host: 'old-host', database: 'old-database', readOnly: false }),
+          reconnectRequired: true,
+        }),
+      ],
+      keychain_available: () => true,
+      list_saved_queries: () => [],
+      list_history: () => [],
+      list_engines: () => [],
+    });
+    render(<Sidebar />);
+    expect(await screen.findByText('Reconnect required')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Active: old-host:5432\/old-database · Read\/write/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Active: new-host/)).not.toBeInTheDocument();
+  });
+
   it('opens a table on click', async () => {
     render(<Sidebar />);
     fireEvent.click(await screen.findByText('Local Postgres'));

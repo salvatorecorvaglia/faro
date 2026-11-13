@@ -84,7 +84,7 @@ pub fn keychain_available() -> bool {
 
 pub fn set_password(key: &str, password: &str) -> Result<()> {
     if keychain_available() {
-        entry(key)?.set_password(password)?;
+        persist_password(key, || entry(key)?.set_password(password))?;
     } else {
         memory_store()
             .lock()
@@ -121,24 +121,75 @@ pub fn get_password(key: &str) -> Option<String> {
 /// written before the keychain appeared lives in the fallback, and leaving it
 /// there would resurrect a password the user just deleted.
 pub fn delete_password(key: &str) -> Result<()> {
-    // A missing entry is the desired end state, so absence is not an error.
     if keychain_available() {
-        if let Ok(e) = entry(key) {
-            let _ = e.delete_credential();
-        }
+        remove_password(key, || entry(key)?.delete_credential())
+    } else {
+        remove_password(key, || Ok(()))
     }
+}
 
+fn persist_password(
+    key: &str,
+    write: impl FnOnce() -> std::result::Result<(), keyring::Error>,
+) -> Result<()> {
+    write()?;
     memory_store()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(key);
+    Ok(())
+}
 
+fn remove_password(
+    key: &str,
+    delete: impl FnOnce() -> std::result::Result<(), keyring::Error>,
+) -> Result<()> {
+    match delete() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => return Err(error.into()),
+    }
+    memory_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(key);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_deletion_reports_error_and_retains_fallback() {
+        let key = uuid::Uuid::new_v4().to_string();
+        memory_store()
+            .lock()
+            .unwrap()
+            .insert(key.clone(), "fallback".into());
+        let outcome = remove_password(&key, || {
+            Err(keyring::Error::Invalid(
+                "test".into(),
+                "access denied".into(),
+            ))
+        });
+        assert!(matches!(outcome, Err(crate::error::FaroError::Keychain(_))));
+        assert_eq!(get_password(&key).as_deref(), Some("fallback"));
+        remove_password(&key, || Err(keyring::Error::NoEntry)).unwrap();
+        assert_eq!(get_password(&key), None);
+    }
+
+    #[test]
+    fn persistent_replacement_removes_obsolete_fallback_only_after_success() {
+        let key = uuid::Uuid::new_v4().to_string();
+        memory_store()
+            .lock()
+            .unwrap()
+            .insert(key.clone(), "old".into());
+        assert!(persist_password(&key, || Err(keyring::Error::NoDefaultStore)).is_err());
+        assert_eq!(get_password(&key).as_deref(), Some("old"));
+        persist_password(&key, || Ok(())).unwrap();
+        assert_eq!(get_password(&key), None);
+    }
 
     #[test]
     fn round_trips_a_password() {

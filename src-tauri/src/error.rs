@@ -63,6 +63,12 @@ pub enum FaroError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("{0}")]
+    Conflict(String),
+
+    #[error("{0}")]
+    ResourceLimit(String),
 }
 
 impl FaroError {
@@ -96,6 +102,8 @@ impl FaroError {
             FaroError::Sql(_) => "sql",
             FaroError::Io(_) => "io",
             FaroError::Other(_) => "other",
+            FaroError::Conflict(_) => "conflict",
+            FaroError::ResourceLimit(_) => "resourceLimit",
         }
     }
 }
@@ -136,19 +144,19 @@ impl Serialize for FaroError {
     }
 }
 
-impl From<sqlx::Error> for FaroError {
-    fn from(e: sqlx::Error) -> Self {
+impl From<crate::sqlx::Error> for FaroError {
+    fn from(e: crate::sqlx::Error) -> Self {
         match &e {
             // Preserve SQLSTATE so the UI can tell "relation does not exist"
             // from "permission denied" without string matching.
-            sqlx::Error::Database(db) => FaroError::Database {
+            crate::sqlx::Error::Database(db) => FaroError::Database {
                 message: db.message().to_string(),
                 code: db.code().map(|c| c.to_string()),
             },
-            sqlx::Error::PoolTimedOut => {
+            crate::sqlx::Error::PoolTimedOut => {
                 FaroError::Connection("timed out waiting for a free connection".into())
             }
-            sqlx::Error::Io(io) => FaroError::Connection(io.to_string()),
+            crate::sqlx::Error::Io(io) => FaroError::Connection(io.to_string()),
             _ => FaroError::Database {
                 message: e.to_string(),
                 code: None,

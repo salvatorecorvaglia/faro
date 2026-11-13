@@ -1,0 +1,52 @@
+{
+  "result": {
+    "type": "rows",
+    "columns": [
+      { "name": "id", "typeName": "fixture" },
+      { "name": "payload", "typeName": "fixture" },
+      { "name": "blob", "typeName": "fixture" },
+      { "name": "items", "typeName": "fixture" },
+      { "name": "missing", "typeName": "fixture" }
+    ],
+    "rows": [
+      [
+        { "kind": "decimal", "value": "9223372036854775807" },
+        { "kind": "bytes", "value": [0, 255] },
+        { "kind": "largeBytes", "value": 257 },
+        {
+          "kind": "array",
+          "value": [{ "kind": "null" }, { "kind": "decimal", "value": "123.4500" }]
+        },
+        { "kind": "null" }
+      ]
+    ],
+    "truncated": true,
+    "elapsedMs": 7
+  },
+  "errors": [
+    { "kind": "conflict", "message": "Row changed" },
+    { "kind": "resourceLimit", "message": "Result too large" },
+    { "kind": "database", "message": "Missing table", "code": "42P01" }
+  ],
+  "changes": [
+    {
+      "type": "update",
+      "key": [
+        {
+          "column": "id",
+          "value": {
+            "kind": "stored",
+            "value": { "kind": "decimal", "value": "9223372036854775807" }
+          }
+        }
+      ],
+      "original": [
+        {
+          "column": "name",
+          "value": { "kind": "stored", "value": { "kind": "text", "value": "old" } }
+        }
+      ],
+      "cells": [{ "column": "name", "value": { "kind": "text", "value": "new" } }]
+    }
+  ]
+}

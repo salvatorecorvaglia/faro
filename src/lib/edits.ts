@@ -162,7 +162,14 @@ export function toPendingChanges(
     });
 
   for (const rowIndex of edits.deletes) {
-    changes.push({ type: 'delete', key: keyFor(rowIndex) });
+    changes.push({
+      type: 'delete',
+      key: keyFor(rowIndex),
+      original: result.columns.map((column, i) => ({
+        column: column.name,
+        value: toOriginalValue(result.rows[rowIndex]?.[i]),
+      })),
+    });
   }
 
   for (const [key, cells] of Object.entries(edits.updates)) {
@@ -176,6 +183,10 @@ export function toPendingChanges(
       type: 'update',
       key: keyFor(rowIndex),
       cells: entries.map(([column, value]) => ({ column, value })),
+      original: entries.map(([column]) => ({
+        column,
+        value: toOriginalValue(result.rows[rowIndex]?.[columnIndex.get(column) ?? -1]),
+      })),
     });
   }
 
@@ -248,4 +259,10 @@ export function unaddressableKeyReason(
 function toKeyValue(cell: Value | undefined): EditValue {
   if (!cell || cell.kind === 'null') return { kind: 'null' };
   return { kind: 'stored', value: cell };
+}
+
+/** Missing or omitted large values must never be mistaken for SQL NULL. */
+function toOriginalValue(cell: Value | undefined): EditValue {
+  if (!cell || cell.kind === 'largeBytes') return { kind: 'default' };
+  return toKeyValue(cell);
 }

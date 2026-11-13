@@ -400,6 +400,7 @@ async fn an_edit_persists() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("name", "Ada Byron")],
         }],
@@ -424,11 +425,13 @@ async fn a_failed_batch_rolls_back_entirely() {
         "authors",
         &[
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "1")],
                 cells: vec![cell("name", "Should Not Persist")],
             },
             // No such row, so the guard trips and the batch must roll back.
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "999999")],
                 cells: vec![cell("name", "Ghost")],
             },

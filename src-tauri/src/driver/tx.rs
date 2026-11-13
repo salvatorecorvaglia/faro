@@ -33,7 +33,7 @@ macro_rules! impl_apply_guarded {
                 // AssertSqlSafe: this SQL comes from `dml`, which quotes every
                 // identifier against the table's real column list and escapes
                 // every literal. No user text is spliced in raw.
-                let result = sqlx::query(sqlx::AssertSqlSafe(stmt.sql.clone()))
+                let result = crate::sqlx::query(crate::sqlx::AssertSqlSafe(stmt.sql.clone()))
                     .execute(&mut *tx)
                     .await?;
 
@@ -58,9 +58,8 @@ macro_rules! impl_apply_guarded {
     };
 }
 
-impl_apply_guarded!(apply_guarded_pg, sqlx::PgPool);
-impl_apply_guarded!(apply_guarded_sqlite, sqlx::SqlitePool);
-impl_apply_guarded!(apply_guarded_mysql, sqlx::MySqlPool);
+impl_apply_guarded!(apply_guarded_pg, crate::sqlx::PgPool);
+impl_apply_guarded!(apply_guarded_mysql, crate::sqlx::MySqlPool);
 
 /// Generate a streaming `apply_guarded` for one sqlx pool type.
 ///
@@ -71,64 +70,64 @@ macro_rules! impl_apply_streaming {
         pub async fn $name(
             pool: &$pool,
             mut chunks: tokio::sync::mpsc::Receiver<$crate::model::ApplyChunk>,
+            cancel: tokio_util::sync::CancellationToken,
         ) -> $crate::error::Result<u64> {
+            use crate::sqlx::Connection;
             use $crate::model::ApplyChunk;
-
-            let mut tx = pool.begin().await?;
-            let mut total = 0u64;
-            let mut index = 0usize;
-            let mut done = false;
-
-            'outer: while let Some(chunk) = chunks.recv().await {
-                let batch = match chunk {
-                    ApplyChunk::Batch(batch) => batch,
-                    ApplyChunk::Done => {
-                        done = true;
-                        break 'outer;
-                    }
-                };
-
-                for stmt in &batch {
-                    // AssertSqlSafe: this SQL comes from `dml`, which quotes
-                    // every identifier against the table's real column list and
-                    // escapes every literal. No user text is spliced in raw.
-                    let result = sqlx::query(sqlx::AssertSqlSafe(stmt.sql.clone()))
-                        .execute(&mut *tx)
-                        .await?;
-
-                    let affected = result.rows_affected();
-                    if let Some(expected) = stmt.expect {
-                        if affected != expected {
-                            tx.rollback().await?;
-                            return Err($crate::driver::tx::guard_error(
-                                index, None, expected, affected,
-                            ));
+            let mut conn = $crate::driver::pool::acquire(pool, &cancel).await?;
+            let mut tx = conn.begin().await?;
+            let work = async {
+                let mut total = 0u64;
+                let mut index = 0usize;
+                while let Some(chunk) = chunks.recv().await {
+                    match chunk {
+                        ApplyChunk::Done => return Ok(total),
+                        ApplyChunk::Batch(batch) => {
+                            for stmt in batch {
+                                let result =
+                                    crate::sqlx::query(crate::sqlx::AssertSqlSafe(stmt.sql))
+                                        .execute(&mut *tx)
+                                        .await?;
+                                let affected = result.rows_affected();
+                                if let Some(expected) = stmt.expect {
+                                    if affected != expected {
+                                        return Err($crate::driver::tx::guard_error(
+                                            index, None, expected, affected,
+                                        ));
+                                    }
+                                }
+                                total += affected;
+                                index += 1;
+                            }
                         }
                     }
-                    total += affected;
-                    index += 1;
+                }
+                Err($crate::error::FaroError::Other(
+                    "the source could not be read to the end, so nothing was applied".into(),
+                ))
+            };
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err($crate::error::FaroError::Cancelled),
+                result = work => result,
+            };
+            match result {
+                Ok(total) if !cancel.is_cancelled() => {
+                    // Never drop an in-flight commit: once issued its outcome must be reported.
+                    tx.commit().await?;
+                    Ok(total)
+                }
+                result => {
+                    tx.rollback().await?;
+                    Err(result.err().unwrap_or($crate::error::FaroError::Cancelled))
                 }
             }
-
-            // Only an explicit `Done` earns a commit. A sender dropped without
-            // one means the producer failed, and committing what it managed to
-            // send would be committing half a file.
-            if !done {
-                tx.rollback().await?;
-                return Err($crate::error::FaroError::Other(
-                    "the source could not be read to the end, so nothing was applied".into(),
-                ));
-            }
-
-            tx.commit().await?;
-            Ok(total)
         }
     };
 }
 
-impl_apply_streaming!(apply_streaming_pg, sqlx::PgPool);
-impl_apply_streaming!(apply_streaming_sqlite, sqlx::SqlitePool);
-impl_apply_streaming!(apply_streaming_mysql, sqlx::MySqlPool);
+impl_apply_streaming!(apply_streaming_pg, crate::sqlx::PgPool);
+impl_apply_streaming!(apply_streaming_mysql, crate::sqlx::MySqlPool);
 
 /// `count` is `None` when the statements are still arriving and the total is
 /// not yet known, as it is while streaming an import.
@@ -138,7 +137,11 @@ pub(crate) fn guard_error(
     expected: u64,
     affected: u64,
 ) -> FaroError {
-    FaroError::Other(guard_message(index, count, expected, affected))
+    if affected == 0 {
+        FaroError::Conflict(guard_message(index, count, expected, affected))
+    } else {
+        FaroError::Other(guard_message(index, count, expected, affected))
+    }
 }
 
 /// Explain a guard failure in terms of what actually went wrong, since

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-
 import { IconBraces, IconClose, IconFilter, IconGrid } from '@/components/icons';
 import { EmptyState, ErrorBanner } from '@/components/ui';
 import type { FaroError, ResultSet, StatementResult, Value } from '@/ipc/types';
-import { applyGridOps, type GridFilter, type SortState } from '@/lib/grid';
+import type { GridFilter, SortState } from '@/lib/grid';
+import { shortcut } from '@/lib/shortcuts';
 import { formatDuration, formatRowCount, formatValue, resultToJson, toJson } from '@/lib/value';
 import { type GridEditing, ResultGrid } from './ResultGrid';
+import { useClientGrid } from './useClientGrid';
 
 type ViewMode = 'grid' | 'json';
 
@@ -125,15 +126,16 @@ export function ResultPanel(props: ResultPanelProps) {
 
   // In client-side mode the grid shows a locally sorted/filtered view. In
   // pushdown mode the server already did the work, so this passes through.
-  const rows = useMemo(() => {
-    if (!rawRows) return null;
-    return clientSideSort ? applyGridOps(rawRows, sort, debouncedFilters) : rawRows;
-  }, [rawRows, clientSideSort, sort, debouncedFilters]);
+  const {
+    rows,
+    pending,
+    error: gridError,
+  } = useClientGrid(rawRows, clientSideSort, sort, debouncedFilters);
 
-  if (error) {
+  if (error || gridError) {
     return (
       <div className="h-full overflow-auto p-3">
-        <ErrorBanner message={error} />
+        <ErrorBanner message={error ?? gridError!} />
       </div>
     );
   }
@@ -143,7 +145,9 @@ export function ResultPanel(props: ResultPanelProps) {
   }
 
   if (!shown) {
-    return <EmptyState title="No results yet" hint="Press ⌘↵ to run the query." />;
+    return (
+      <EmptyState title="No results yet" hint={`Press ${shortcut('Enter')} to run the query.`} />
+    );
   }
 
   const hidden = rawRows && rows ? rawRows.rows.length - rows.rows.length : 0;
@@ -177,6 +181,11 @@ export function ResultPanel(props: ResultPanelProps) {
         )}
 
         <StatusLine result={shown} hidden={hidden} />
+        {pending && (
+          <span role="status" className="text-xs text-muted">
+            Updating rows…
+          </span>
+        )}
 
         <div className="flex-1" />
 

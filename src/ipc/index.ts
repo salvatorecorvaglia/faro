@@ -188,7 +188,15 @@ export const backupDatabase = (
   path: string,
   options: BackupOptions,
   queryId: string,
-) => invoke<BackupResult>('backup_database', { connectionId, path, options, queryId });
+  allowBestEffort = false,
+) =>
+  invoke<BackupResult>('backup_database', {
+    connectionId,
+    path,
+    options,
+    queryId,
+    allowBestEffort,
+  });
 
 /** `queryId` lets `cancelQuery` stop a restore mid-flight, the same as a query. */
 export const restoreDatabase = (
@@ -233,3 +241,9 @@ export const listHistory = (search?: string, limit?: number) =>
 export const clearHistory = () => invoke<void>('clear_history');
 
 export const deleteHistoryEntry = (id: number) => invoke<void>('delete_history_entry', { id });
+
+export const setExitGuard = (ready: boolean) => invoke<void>('set_exit_guard', { ready });
+export const approveExit = () => invoke<void>('approve_exit');
+export const runningOperations = () => invoke<boolean>('running_operations');
+
+export const releaseResult = (queryId: string) => invoke<void>('release_result', { queryId });

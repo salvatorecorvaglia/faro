@@ -31,8 +31,8 @@ use crate::model::{ColumnInfo, ResultSet, Value};
 
 /// Generate a capped `fetch` for one sqlx pool type.
 ///
-/// `$query` builds the statement: `sqlx::query` (the extended protocol, which
-/// returns binary values) or `sqlx::raw_sql` (the simple protocol, which
+/// `$query` builds the statement: `crate::sqlx::query` (the extended protocol, which
+/// returns binary values) or `crate::sqlx::raw_sql` (the simple protocol, which
 /// returns every value as the engine's own text).
 macro_rules! impl_fetch_capped {
     ($name:ident, $pool:ty, $decode:path, $query:path) => {
@@ -46,7 +46,7 @@ macro_rules! impl_fetch_capped {
             limit: u64,
             cancel: CancellationToken,
         ) -> Result<ResultSet> {
-            use sqlx::{Column, Row, TypeInfo};
+            use crate::sqlx::{Column, Row, TypeInfo};
 
             let started = std::time::Instant::now();
 
@@ -58,11 +58,12 @@ macro_rules! impl_fetch_capped {
             // Checked out up front rather than letting `fetch(pool)` do it, so a
             // cancel cannot land mid-checkout — see `pool::acquire`.
             let mut conn = crate::driver::pool::acquire(pool, &cancel).await?;
-            let mut stream = $query(sqlx::AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
+            let mut stream = $query(crate::sqlx::AssertSqlSafe(sql.to_string())).fetch(&mut *conn);
 
             let mut columns: Vec<ColumnInfo> = Vec::new();
             let mut rows: Vec<Vec<Value>> = Vec::new();
             let mut seen = 0u64;
+            let mut budget = crate::budget::RowBudget::default();
 
             loop {
                 let next = tokio::select! {
@@ -83,6 +84,7 @@ macro_rules! impl_fetch_capped {
                             type_name: c.type_info().name().to_string(),
                         })
                         .collect();
+                    budget.columns(&columns)?;
                 }
 
                 seen += 1;
@@ -91,7 +93,9 @@ macro_rules! impl_fetch_capped {
                     break;
                 }
 
-                rows.push((0..columns.len()).map(|i| $decode(&row, i)).collect());
+                let row: Vec<Value> = (0..columns.len()).map(|i| $decode(&row, i)).collect();
+                budget.push(&row)?;
+                rows.push(row);
             }
 
             // A query that matched nothing still has columns worth showing.
@@ -105,8 +109,8 @@ macro_rules! impl_fetch_capped {
             // empty column list is still better than an error.
             drop(stream);
             if columns.is_empty() {
-                use sqlx::{Executor, SqlSafeStr, Statement};
-                let owned = sqlx::AssertSqlSafe(sql.to_string()).into_sql_str();
+                use crate::sqlx::{Executor, SqlSafeStr, Statement};
+                let owned = crate::sqlx::AssertSqlSafe(sql.to_string()).into_sql_str();
                 // On the connection already held: going through the pool here
                 // would wait forever on its only connection.
                 if let Ok(prepared) = (&mut *conn).prepare(owned).await {
@@ -121,6 +125,7 @@ macro_rules! impl_fetch_capped {
                 }
             }
 
+            budget.columns(&columns)?;
             Ok(ResultSet {
                 columns,
                 rows,
@@ -138,19 +143,13 @@ macro_rules! impl_fetch_capped {
 // `postgres::decode_text`.
 impl_fetch_capped!(
     fetch_capped_pg,
-    sqlx::PgPool,
+    crate::sqlx::PgPool,
     crate::driver::postgres::decode_value,
-    sqlx::raw_sql
+    crate::sqlx::raw_sql
 );
 impl_fetch_capped!(
     fetch_capped_mysql,
-    sqlx::MySqlPool,
+    crate::sqlx::MySqlPool,
     crate::driver::mysql::decode_value,
-    sqlx::query
-);
-impl_fetch_capped!(
-    fetch_capped_sqlite,
-    sqlx::SqlitePool,
-    crate::driver::sqlite::decode_value,
-    sqlx::query
+    crate::sqlx::query
 );

@@ -22,7 +22,11 @@ struct Open {
     read_only: bool,
     /// The connection's display name, for error messages that name it.
     name: String,
+    config: Option<crate::model::ConnectionConfig>,
+    credentials_changed: bool,
 }
+
+type SubmissionLock = Arc<tokio::sync::Mutex<()>>;
 
 #[derive(Default)]
 pub struct Registry {
@@ -34,11 +38,53 @@ pub struct Registry {
     /// [`QueryGuard`]'s `Drop` deregister a finished query, which an async lock
     /// could not do from `Drop` at all.
     running: Mutex<HashMap<String, CancellationToken>>,
+    submissions: Mutex<HashMap<(String, bool), SubmissionLock>>,
 }
 
 impl Registry {
+    pub fn has_running_operations(&self) -> bool {
+        !self.lock_running().is_empty()
+    }
+
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Hold for a complete editor submission so scripts cannot interleave.
+    pub async fn submission(
+        &self,
+        connection_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        self.operation(connection_id, cancel, false).await
+    }
+
+    pub async fn managed_submission(
+        &self,
+        connection_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        self.operation(connection_id, cancel, true).await
+    }
+
+    async fn operation(
+        &self,
+        connection_id: &str,
+        cancel: CancellationToken,
+        managed: bool,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = self
+            .submissions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((connection_id.to_string(), managed))
+            .or_default()
+            .clone();
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(FaroError::Cancelled),
+            guard = lock.lock_owned() => Ok(guard),
+        }
     }
 
     pub async fn insert(
@@ -48,10 +94,24 @@ impl Registry {
         read_only: bool,
         name: String,
     ) {
+        self.insert_configured(connection_id, driver, read_only, name, None)
+            .await;
+    }
+
+    pub async fn insert_configured(
+        &self,
+        connection_id: String,
+        driver: Arc<dyn Driver>,
+        read_only: bool,
+        name: String,
+        config: Option<crate::model::ConnectionConfig>,
+    ) {
         let entry = Open {
             driver,
             read_only,
             name,
+            config,
+            credentials_changed: false,
         };
         // Replacing an entry drops the old pool; close it first so its sockets
         // are released rather than left to the Drop impl at an unknown time.
@@ -68,6 +128,44 @@ impl Registry {
         if let Some(old) = replaced {
             old.driver.close().await;
         }
+    }
+
+    pub async fn credentials_changed(&self, connection_id: &str) {
+        if let Some(open) = self.drivers.write().await.get_mut(connection_id) {
+            open.credentials_changed = true;
+        }
+    }
+
+    pub async fn status(
+        &self,
+        connection_id: &str,
+    ) -> (bool, Option<crate::model::ConnectionConfig>, bool) {
+        let drivers = self.drivers.read().await;
+        match drivers.get(connection_id) {
+            Some(open) => (true, open.config.clone(), open.credentials_changed),
+            None => (false, None, false),
+        }
+    }
+
+    pub async fn active_config(
+        &self,
+        connection_id: &str,
+    ) -> Option<crate::model::ConnectionConfig> {
+        self.drivers
+            .read()
+            .await
+            .get(connection_id)
+            .and_then(|open| open.config.clone())
+    }
+
+    /// Driver and safety properties must come from the same registry generation.
+    pub async fn session(&self, connection_id: &str) -> Result<(Arc<dyn Driver>, bool)> {
+        self.drivers
+            .read()
+            .await
+            .get(connection_id)
+            .map(|open| (open.driver.clone(), open.read_only))
+            .ok_or_else(|| FaroError::NotConnected(connection_id.to_string()))
     }
 
     pub async fn get(&self, connection_id: &str) -> Result<Arc<dyn Driver>> {
@@ -148,7 +246,9 @@ impl Registry {
     pub fn begin_query(&self, connection_id: &str, query_id: &str) -> QueryGuard<'_> {
         let token = CancellationToken::new();
         let key = running_key(connection_id, query_id);
-        self.lock_running().insert(key.clone(), token.clone());
+        if let Some(previous) = self.lock_running().insert(key.clone(), token.clone()) {
+            previous.cancel();
+        }
         QueryGuard {
             registry: self,
             key,
@@ -169,7 +269,7 @@ impl Registry {
     pub fn cancel_query(&self, connection_id: &str, query_id: &str) -> bool {
         match self
             .lock_running()
-            .remove(&running_key(connection_id, query_id))
+            .get(&running_key(connection_id, query_id))
         {
             Some(token) => {
                 token.cancel();
@@ -181,14 +281,8 @@ impl Registry {
 
     fn cancel_for_connection(&self, connection_id: &str) {
         let prefix = format!("{connection_id}\u{1}");
-        let mut running = self.lock_running();
-        let keys: Vec<String> = running
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect();
-        for k in keys {
-            if let Some(token) = running.remove(&k) {
+        for (key, token) in self.lock_running().iter() {
+            if key.starts_with(&prefix) {
                 token.cancel();
             }
         }
@@ -214,7 +308,10 @@ impl QueryGuard<'_> {
 
 impl Drop for QueryGuard<'_> {
     fn drop(&mut self) {
-        self.registry.lock_running().remove(&self.key);
+        let mut running = self.registry.lock_running();
+        if running.get(&self.key) == Some(&self.token) {
+            running.remove(&self.key);
+        }
     }
 }
 
@@ -227,6 +324,66 @@ fn running_key(connection_id: &str, query_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_remains_running_until_the_operation_finishes() {
+        let registry = Registry::new();
+        let operation = registry.begin_query("c", "q");
+        registry.cancel_query("c", "q");
+        assert!(operation.token().is_cancelled());
+        assert!(
+            registry.has_running_operations(),
+            "rollback may still be running"
+        );
+        drop(operation);
+        assert!(!registry.has_running_operations());
+    }
+
+    #[test]
+    fn dropping_a_superseded_operation_cannot_remove_its_replacement() {
+        let registry = Registry::new();
+        let first = registry.begin_query("c", "q");
+        let second = registry.begin_query("c", "q");
+        assert!(first.token().is_cancelled());
+        drop(first);
+        assert!(registry.cancel_query("c", "q"));
+        assert!(second.token().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn submissions_serialize_per_connection_and_cancel_while_queued() {
+        let registry = Registry::new();
+        let first = registry
+            .submission("one", CancellationToken::new())
+            .await
+            .unwrap();
+        let _other = registry
+            .submission("two", CancellationToken::new())
+            .await
+            .unwrap();
+        let _managed = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            registry.managed_submission("one", CancellationToken::new()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let queued = registry.submission("one", cancellation.clone());
+        tokio::pin!(queued);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut queued)
+                .await
+                .is_err()
+        );
+        cancellation.cancel();
+        assert!(matches!(queued.await, Err(FaroError::Cancelled)));
+        drop(first);
+        registry
+            .submission("one", CancellationToken::new())
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn get_unknown_connection_is_not_connected_error() {

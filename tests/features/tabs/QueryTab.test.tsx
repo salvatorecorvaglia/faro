@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmHost } from '@/components/ConfirmDialog';
 import { QueryTab } from '@/features/tabs/QueryTab';
@@ -14,6 +14,7 @@ import { callsTo, expectCallCount, faroError, mockInvoke } from '@/test/ipc';
 // exposes the same handle shape.
 const editorMock = vi.hoisted(() => ({
   selection: null as string | null,
+  replaceAll: vi.fn(),
   /** Offset the mock reports through `onCursorChange` once mounted. */
   cursor: 0,
 }));
@@ -37,7 +38,7 @@ vi.mock('@/features/editor/Editor', () => ({
     if (handle) {
       handle.current = {
         selection: () => editorMock.selection,
-        replaceAll: vi.fn(),
+        replaceAll: editorMock.replaceAll,
         // Read live, like the real editor's handle: a test can move the
         // cursor without a render and the next read sees it.
         cursorOffset: () => editorMock.cursor,
@@ -133,6 +134,48 @@ afterEach(() => {
 });
 
 describe('QueryTab', () => {
+  it('does not execute against a connection changed during script inspection', async () => {
+    let resolve!: (value: { statements: number; writes: number }) => void;
+    mockQueryTab({
+      script_summary: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+      run_query: () => runResult(),
+    });
+    const { id } = renderQueryTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    act(() => useTabs.getState().update(id, { connectionId: 'other' }));
+    await act(async () => resolve({ statements: 1, writes: 0 }));
+    expectCallCount('run_query', 0);
+  });
+
+  it('uses the current-statement shortcut outside the editor', async () => {
+    mockQueryTab({ statement_at_cursor: () => 'select 2', run_query: () => runResult() });
+    renderQueryTab('select 1; select 2');
+    fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expectCallCount('run_query', 1));
+    expect(callsTo('run_query')[0]).toMatchObject({ sqlText: 'select 2' });
+  });
+
+  it('formats SQL after loading the formatter on demand', async () => {
+    renderQueryTab('select 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }));
+    await waitFor(() => expect(editorMock.replaceAll).toHaveBeenCalledOnce());
+    expect(editorMock.replaceAll.mock.calls[0]![0]).toContain('SELECT');
+  });
+
+  it('does not overwrite SQL changed while the formatter is loading', async () => {
+    const { id } = renderQueryTab('select 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }));
+    act(() => useTabs.getState().update(id, { sql: 'select 2' }));
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
+    expect(editorMock.replaceAll).not.toHaveBeenCalled();
+  });
+
   it('disables Run without a connection or with blank SQL', () => {
     useConnections.setState({ items: [] });
     const id = useTabs.getState().openQueryTab(null, '', 'Query 1');

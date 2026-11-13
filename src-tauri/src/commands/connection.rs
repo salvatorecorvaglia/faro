@@ -18,6 +18,8 @@ pub struct ConnectionStatus {
     /// show "saved" instead of an empty box. The password itself never crosses
     /// this boundary.
     pub has_password: bool,
+    pub active_config: Option<ConnectionConfig>,
+    pub reconnect_required: bool,
 }
 
 /// Run a synchronous keychain call on the blocking pool.
@@ -64,8 +66,15 @@ pub async fn list_connection_status(state: State<'_, AppState>) -> Result<Vec<Co
 
     let mut out = Vec::with_capacity(configs.len());
     for (index, config) in configs.into_iter().enumerate() {
-        let connected = state.registry.is_connected(&config.id).await;
+        let (connected, active_config, credentials_changed) =
+            state.registry.status(&config.id).await;
+        let reconnect_required = credentials_changed
+            || active_config
+                .as_ref()
+                .is_some_and(|active| !active.same_session(&config));
         out.push(ConnectionStatus {
+            active_config,
+            reconnect_required,
             config,
             connected,
             has_password: stored.get(index).copied().unwrap_or(false),
@@ -104,6 +113,7 @@ pub async fn save_connection(
     // staying silent meant the next connect failed with a bare authentication
     // error that pointed nowhere near the real cause.
     let key = config.secret_key();
+    let password_changed = password.is_some();
     let stored = match password {
         Some(pw) if pw.is_empty() => keychain(move || secrets::delete_password(&key)).await?,
         Some(pw) => keychain(move || secrets::set_password(&key, &pw)).await?,
@@ -118,6 +128,9 @@ pub async fn save_connection(
         )));
     }
 
+    if password_changed {
+        state.registry.credentials_changed(&config.id).await;
+    }
     Ok(config)
 }
 
@@ -163,7 +176,13 @@ pub async fn connect(state: State<'_, AppState>, id: String) -> Result<()> {
 
     state
         .registry
-        .insert(id, Arc::from(driver), config.read_only, config.name.clone())
+        .insert_configured(
+            id,
+            Arc::from(driver),
+            config.read_only,
+            config.name.clone(),
+            Some(config),
+        )
         .await;
     Ok(())
 }

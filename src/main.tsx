@@ -21,3 +21,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>,
 );
+
+// Removed from normal production bundles by Vite.
+if (import.meta.env.MODE === 'desktop-smoke') {
+  void import('./test/desktopBridge').then((bridge) => bridge.start());
+}

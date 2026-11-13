@@ -20,6 +20,7 @@ pub async fn preview_changes(
 ) -> Result<Vec<GuardedStatement>> {
     let driver = state.registry.get(&connection_id).await?;
     let detail = driver.describe_table(&table).await?;
+    dml::validate_snapshots(&detail, &changes)?;
     dml::build_statements(&table, &detail, &changes, driver.dialect())
 }
 
@@ -36,10 +37,19 @@ pub async fn apply_changes(
     changes: Vec<PendingChange>,
 ) -> Result<ApplyResult> {
     let driver = state.registry.get_writable(&connection_id).await?;
+    let query_id = uuid::Uuid::new_v4().to_string();
+    let query = state.registry.begin_query(&connection_id, &query_id);
     let detail = driver.describe_table(&table).await?;
+    dml::validate_snapshots(&detail, &changes)?;
     let statements = dml::build_statements(&table, &detail, &changes, driver.dialect())?;
 
-    let rows_affected = driver.apply_transaction(&statements).await?;
+    let _operation = state
+        .registry
+        .managed_submission(&connection_id, query.token())
+        .await?;
+    let rows_affected = driver
+        .apply_transaction_cancelled(&statements, query.token())
+        .await?;
 
     Ok(ApplyResult {
         statements_run: statements.len(),

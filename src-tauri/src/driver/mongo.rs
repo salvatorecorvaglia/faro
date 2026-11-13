@@ -43,6 +43,49 @@ const SAMPLE_SIZE: i64 = 100;
 /// exhaust the driver's connection pool on a database with many collections.
 const CATALOG_CONCURRENCY: usize = 8;
 
+fn bson_bytes(value: &Bson) -> usize {
+    64 + match value {
+        Bson::Document(doc) => doc
+            .iter()
+            .map(|(key, value)| 2 * key.len() + bson_bytes(value))
+            .sum(),
+        Bson::Array(values) => values.iter().map(bson_bytes).sum(),
+        Bson::String(text) | Bson::JavaScriptCode(text) | Bson::Symbol(text) => 2 * text.len(),
+        Bson::Binary(binary) => binary.bytes.len(),
+        Bson::JavaScriptCodeWithScope(code) => {
+            2 * code.code.len()
+                + code
+                    .scope
+                    .iter()
+                    .map(|(key, value)| 2 * key.len() + bson_bytes(value))
+                    .sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+async fn collect_bounded(
+    mut cursor: mongodb::Cursor<Document>,
+    cancel: CancellationToken,
+) -> Result<Vec<Document>> {
+    let mut documents = Vec::new();
+    let mut bytes = 0usize;
+    loop {
+        let next = tokio::select! { biased; _ = cancel.cancelled() => return Err(FaroError::Cancelled), next = cursor.try_next() => next.map_err(map_err)?, };
+        let Some(document) = next else { break };
+        bytes = bytes.saturating_add(
+            document
+                .iter()
+                .map(|(key, value)| 2 * key.len() + bson_bytes(value))
+                .sum::<usize>(),
+        );
+        if bytes > crate::budget::RESULT_BYTES {
+            return Err(crate::budget::exceeded("This MongoDB result"));
+        }
+        documents.push(document);
+    }
+    Ok(documents)
+}
+
 pub struct MongoDialect;
 
 impl Dialect for MongoDialect {
@@ -193,7 +236,7 @@ impl MongoDriver {
             .limit(limit)
             .await
             .map_err(map_err)?;
-        cursor.try_collect().await.map_err(map_err)
+        collect_bounded(cursor, CancellationToken::new()).await
     }
 
     /// Turn documents into a `ResultSet` whose columns are the union of their
@@ -202,7 +245,11 @@ impl MongoDriver {
     /// `_id` is forced first because it is the one field every document has and
     /// the one a reader looks for. Remaining fields keep first-seen order, so a
     /// collection with consistent documents renders in its natural shape.
-    fn to_result_set(documents: &[Document], elapsed_ms: u64, truncated: bool) -> ResultSet {
+    fn to_result_set(
+        documents: &[Document],
+        elapsed_ms: u64,
+        truncated: bool,
+    ) -> Result<ResultSet> {
         let mut names: Vec<String> = Vec::new();
         if documents.iter().any(|d| d.contains_key("_id")) {
             names.push("_id".to_string());
@@ -229,22 +276,23 @@ impl MongoDriver {
             })
             .collect();
 
-        let rows = documents
-            .iter()
-            .map(|doc| {
-                names
-                    .iter()
-                    .map(|name| doc.get(name).map(decode_bson).unwrap_or(Value::Null))
-                    .collect()
-            })
-            .collect();
-
-        ResultSet {
+        let mut rows = Vec::new();
+        let mut budget = crate::budget::RowBudget::default();
+        budget.columns(&columns)?;
+        for document in documents {
+            let row: Vec<_> = names
+                .iter()
+                .map(|name| document.get(name).map(decode_bson).unwrap_or(Value::Null))
+                .collect();
+            budget.push(&row)?;
+            rows.push(row);
+        }
+        Ok(ResultSet {
             columns,
             rows,
             truncated,
             elapsed_ms,
-        }
+        })
     }
 }
 
@@ -726,7 +774,7 @@ impl Driver for MongoDriver {
                     _ = cancel.cancelled() => return Err(FaroError::Cancelled),
                     res = find.into_future() => res.map_err(map_err)?,
                 };
-                cursor.try_collect().await.map_err(map_err)?
+                collect_bounded(cursor, cancel.clone()).await?
             }
             "aggregate" => {
                 let mut stages: Vec<Document> = match parsed.args.first() {
@@ -773,7 +821,7 @@ impl Driver for MongoDriver {
                     _ = cancel.cancelled() => return Err(FaroError::Cancelled),
                     res = collection.aggregate(stages).into_future() => res.map_err(map_err)?,
                 };
-                cursor.try_collect().await.map_err(map_err)?
+                collect_bounded(cursor, cancel.clone()).await?
             }
             "countDocuments" | "count" => {
                 let filter = parsed
@@ -821,11 +869,7 @@ impl Driver for MongoDriver {
         let truncated = documents.len() as u64 > limit;
         let shown: Vec<Document> = documents.into_iter().take(limit as usize).collect();
 
-        Ok(Self::to_result_set(
-            &shown,
-            started.elapsed().as_millis() as u64,
-            truncated,
-        ))
+        Self::to_result_set(&shown, started.elapsed().as_millis() as u64, truncated)
     }
 
     async fn execute(&self, sql: &str, _cancel: CancellationToken) -> Result<ExecResult> {
@@ -874,16 +918,12 @@ impl Driver for MongoDriver {
             _ = cancel.cancelled() => return Err(FaroError::Cancelled),
             res = find.into_future() => res.map_err(map_err)?,
         };
-        let documents: Vec<Document> = cursor.try_collect().await.map_err(map_err)?;
+        let documents: Vec<Document> = collect_bounded(cursor, cancel.clone()).await?;
 
         let truncated = documents.len() as u64 > limit;
         let shown: Vec<Document> = documents.into_iter().take(limit as usize).collect();
 
-        Ok(Self::to_result_set(
-            &shown,
-            started.elapsed().as_millis() as u64,
-            truncated,
-        ))
+        Self::to_result_set(&shown, started.elapsed().as_millis() as u64, truncated)
     }
 
     async fn apply_transaction(&self, _statements: &[GuardedStatement]) -> Result<u64> {
@@ -1183,7 +1223,7 @@ mod tests {
             bson::doc! { "name": "Ada", "_id": 1 },
             bson::doc! { "_id": 2, "name": "Grace", "extra": true },
         ];
-        let rs = MongoDriver::to_result_set(&docs, 1, false);
+        let rs = MongoDriver::to_result_set(&docs, 1, false).unwrap();
 
         // _id leads regardless of its position in the document.
         assert_eq!(rs.columns[0].name, "_id");

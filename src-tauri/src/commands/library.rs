@@ -95,7 +95,10 @@ pub fn prune(state: &AppState) {
     // `fetch_add` returns the previous value, so this also prunes on the first
     // run of a session — which is when an install that has been closed for a
     // while has the most to clear out.
-    if SINCE_PRUNE.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY != 0 {
+    if !SINCE_PRUNE
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(PRUNE_EVERY)
+    {
         return;
     }
 

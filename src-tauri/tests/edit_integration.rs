@@ -122,6 +122,7 @@ async fn an_update_persists() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("name", "Ada Byron")],
         }],
@@ -167,6 +168,7 @@ async fn an_insert_and_delete_round_trip() {
         &*d,
         "authors",
         &[PendingChange::Delete {
+            original: vec![],
             key: vec![cell("id", &new_id.to_string())],
         }],
     )
@@ -184,6 +186,7 @@ async fn writing_null_clears_the_column() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![CellEdit {
                 column: "bio".into(),
@@ -209,6 +212,7 @@ async fn an_empty_string_is_stored_as_an_empty_string_not_null() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("bio", "")],
         }],
@@ -232,6 +236,7 @@ async fn a_composite_key_addresses_exactly_one_row() {
         &*d,
         "book_stores",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("book_id", "1"), cell("store_id", "1")],
             cells: vec![cell("quantity", "99")],
         }],
@@ -268,6 +273,7 @@ async fn quotes_and_unicode_survive_a_write() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("name", tricky)],
         }],
@@ -295,10 +301,12 @@ async fn a_batch_rolls_back_entirely_when_one_change_fails() {
         "authors",
         &[
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "1")],
                 cells: vec![cell("name", "Should Not Persist")],
             },
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "999999")],
                 cells: vec![cell("name", "Ghost")],
             },
@@ -323,6 +331,7 @@ async fn updating_a_vanished_row_reports_it_clearly() {
         &*d,
         "authors",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "999999")],
             cells: vec![cell("name", "Ghost")],
         }],
@@ -377,6 +386,7 @@ async fn a_table_without_a_primary_key_is_refused() {
         &*d,
         "access_log",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("path", "/page/1")],
             cells: vec![cell("status", "500")],
         }],
@@ -429,6 +439,7 @@ async fn a_type_error_is_reported_by_the_database_not_silently_coerced() {
         &*d,
         "book_stores",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("book_id", "1"), cell("store_id", "1")],
             cells: vec![cell("quantity", "not a number")],
         }],
@@ -467,6 +478,7 @@ async fn deletes_run_before_inserts_so_a_key_can_be_reused() {
                 ],
             },
             PendingChange::Delete {
+                original: vec![],
                 key: vec![cell("book_id", "1"), cell("store_id", "1")],
             },
         ],
@@ -627,6 +639,7 @@ async fn a_row_with_a_binary_primary_key_can_be_edited_through_its_stored_value(
         &*d,
         "devices",
         &[PendingChange::Update {
+            original: vec![],
             key: vec![CellEdit {
                 column: "uid".into(),
                 value: EditValue::Stored(uid),

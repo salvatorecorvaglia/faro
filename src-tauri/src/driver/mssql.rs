@@ -1,6 +1,6 @@
+use super::mssql_pool::ConnectionManager;
 use async_trait::async_trait;
 use bb8::Pool;
-use bb8_tiberius::ConnectionManager;
 use std::time::Instant;
 use tiberius::ColumnData;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +22,27 @@ impl Dialect for SqlServerDialect {
     /// doubling. `\` has no special meaning in a literal.
     fn lex_rules(&self) -> crate::sql::LexRules {
         crate::sql::LexRules::TSQL
+    }
+
+    fn snapshot_eq(&self, column: &str, value: &Value, _type_name: &str) -> String {
+        match value {
+            Value::Float(_) => {
+                let kind = if _type_name.eq_ignore_ascii_case("real") {
+                    "REAL"
+                } else {
+                    "FLOAT"
+                };
+                format!("{column} = CAST({} AS {kind})", self.literal(value))
+            }
+            Value::Text(text) => {
+                let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                format!(
+                    "CONVERT(VARBINARY(MAX), CONVERT(NVARCHAR(MAX), {column})) = {}",
+                    self.quote_bytes(&bytes)
+                )
+            }
+            _ => format!("{column} = {}", self.literal(value)),
+        }
     }
 
     fn quote_ident(&self, ident: &str) -> String {
@@ -101,6 +122,7 @@ pub struct SqlServerDriver {
     pool: Pool<ConnectionManager>,
     /// Catalog reads only, so schema browsing never queues behind a long query.
     meta: Pool<ConnectionManager>,
+    managed: Pool<ConnectionManager>,
     dialect: SqlServerDialect,
     schema: String,
 }
@@ -168,11 +190,13 @@ impl SqlServerDriver {
         };
 
         let pool = build(tds.clone()).await?;
-        let meta = build(tds).await?;
+        let meta = build(tds.clone()).await?;
+        let managed = build(tds).await?;
 
         Ok(Self {
             pool,
             meta,
+            managed,
             dialect: SqlServerDialect,
             // Faro browses the default schema. `dbo` is SQL Server's, and using
             // it explicitly keeps catalog queries scoped.
@@ -207,6 +231,7 @@ impl SqlServerDriver {
 
         let mut columns: Vec<ColumnInfo> = Vec::new();
         let mut data: Vec<Vec<Value>> = Vec::new();
+        let mut budget = crate::budget::RowBudget::default();
         let mut seen = 0u64;
 
         let mut described = false;
@@ -231,6 +256,7 @@ impl SqlServerDriver {
                             type_name: format!("{:?}", c.column_type()).to_lowercase(),
                         })
                         .collect();
+                    budget.columns(&columns)?;
                     continue;
                 }
                 tiberius::QueryItem::Row(row) => row,
@@ -245,13 +271,16 @@ impl SqlServerDriver {
                         type_name: format!("{:?}", c.column_type()).to_lowercase(),
                     })
                     .collect();
+                budget.columns(&columns)?;
             }
 
             seen += 1;
             if seen > limit {
                 break;
             }
-            data.push(row.cells().map(|(_, cell)| decode_value(cell)).collect());
+            let row: Vec<Value> = row.cells().map(|(_, cell)| decode_value(cell)).collect();
+            budget.push(&row)?;
+            data.push(row);
         }
 
         Ok(ResultSet {
@@ -338,22 +367,12 @@ fn has_top_level_order_by(sql: &str) -> bool {
 
 /// Open one connection and throw it away, purely to surface a real error.
 async fn probe(config: &tiberius::Config) -> Result<()> {
-    use tokio_util::compat::TokioAsyncWriteCompatExt;
-
-    let tcp = tokio::net::TcpStream::connect(config.get_addr())
-        .await
-        .map_err(|e| FaroError::Connection(format!("could not reach the server: {e}")))?;
-    tcp.set_nodelay(true).ok();
-
-    let client = tiberius::Client::connect(config.clone(), tcp.compat_write())
-        .await
-        .map_err(|e| match map_err(e) {
-            // A login failure is a connection problem from the user's side, not
-            // a query error, so it is reported as one.
-            FaroError::Database { message, .. } => FaroError::Connection(message),
-            other => other,
-        })?;
-
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        ConnectionManager::open(config.clone()),
+    )
+    .await
+    .map_err(|_| FaroError::Connection("SQL Server connection timed out".into()))??;
     let _ = client.close().await;
     Ok(())
 }
@@ -373,6 +392,55 @@ fn map_err(e: tiberius::error::Error) -> FaroError {
 
 #[async_trait]
 impl Driver for SqlServerDriver {
+    async fn snapshot_session(&self) -> Result<Option<Box<dyn Driver>>> {
+        let state = Self::fetch(
+            &self.meta,
+            "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID()",
+            1,
+        )
+        .await?;
+        if state.rows.first().and_then(|row| row.first()) != Some(&Value::Int(1)) {
+            return Ok(None);
+        }
+        let session = Self {
+            pool: self.managed.clone(),
+            meta: self.managed.clone(),
+            managed: self.managed.clone(),
+            dialect: SqlServerDialect,
+            schema: self.schema.clone(),
+        };
+        session
+            .execute(
+                "SET TRANSACTION ISOLATION LEVEL SNAPSHOT; BEGIN TRANSACTION",
+                CancellationToken::new(),
+            )
+            .await?;
+        Ok(Some(Box::new(session)))
+    }
+
+    async fn end_snapshot(&self) -> Result<()> {
+        let mut client = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| FaroError::Connection(error.to_string()))?;
+        control(
+            &mut client,
+            "IF @@TRANCOUNT > 0 ROLLBACK; SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        )
+        .await
+    }
+
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        Ok(Box::new(Self {
+            pool: self.managed.clone(),
+            meta: self.meta.clone(),
+            managed: self.managed.clone(),
+            dialect: SqlServerDialect,
+            schema: self.schema.clone(),
+        }))
+    }
+
     async fn ping(&self) -> Result<()> {
         Self::fetch(&self.pool, "SELECT 1", 1).await.map(|_| ())
     }
@@ -758,7 +826,7 @@ impl Driver for SqlServerDriver {
         }
 
         let mut client = self
-            .pool
+            .managed
             .get()
             .await
             .map_err(|e| FaroError::Connection(e.to_string()))?;
@@ -804,23 +872,31 @@ impl Driver for SqlServerDriver {
     /// The pool's one connection is held for the duration, as
     /// `apply_transaction` holds it, so nothing else lands inside the open
     /// transaction.
-    async fn apply_streaming(
+    async fn apply_streaming_cancelled(
         &self,
         mut chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+        cancel: CancellationToken,
     ) -> Result<u64> {
         use crate::model::ApplyChunk;
 
-        let mut client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
+        let mut client = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(FaroError::Cancelled),
+            client = self.managed.get() => client.map_err(|e| FaroError::Connection(e.to_string()))?,
+        };
         control(&mut client, "BEGIN TRANSACTION").await?;
 
         let mut total = 0u64;
         let mut index = 0usize;
         let mut done = false;
-        while let Some(chunk) = chunks.recv().await {
+        while let Some(chunk) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(rollback(&mut client, FaroError::Cancelled).await),
+            chunk = chunks.recv() => chunk,
+        } {
             let batch = match chunk {
                 ApplyChunk::Batch(batch) => batch,
                 ApplyChunk::Done => {
@@ -829,6 +905,9 @@ impl Driver for SqlServerDriver {
                 }
             };
             for stmt in &batch {
+                if cancel.is_cancelled() {
+                    return Err(rollback(&mut client, FaroError::Cancelled).await);
+                }
                 let affected: u64 = match client.execute(&stmt.sql, &[]).await {
                     Ok(r) => r.rows_affected().iter().sum(),
                     Err(e) => return Err(rollback(&mut client, map_err(e)).await),
@@ -846,6 +925,9 @@ impl Driver for SqlServerDriver {
 
         // Only an explicit `Done` earns a commit; a sender dropped without one
         // means the reader failed partway through the file.
+        if cancel.is_cancelled() {
+            return Err(rollback(&mut client, FaroError::Cancelled).await);
+        }
         if !done {
             let cause = FaroError::Other(
                 "the source could not be read to the end, so nothing was applied".into(),

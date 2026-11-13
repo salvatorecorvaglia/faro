@@ -27,22 +27,49 @@ pub async fn backup_database(
     path: String,
     options: BackupOptions,
     query_id: String,
+    allow_best_effort: Option<bool>,
 ) -> Result<BackupResult> {
     let driver = state.registry.get(&connection_id).await?;
     let target = PathBuf::from(&path);
     let query = state.registry.begin_query(&connection_id, &query_id);
 
-    backup::write_backup(
-        &*driver,
+    let _operation = state
+        .registry
+        .managed_submission(&connection_id, query.token())
+        .await?;
+    let snapshot = driver.snapshot_session().await?;
+    let consistent = snapshot.is_some();
+    if !consistent && !allow_best_effort.unwrap_or(false) {
+        return Err(crate::error::FaroError::Other(
+            "A consistent snapshot is unavailable for this connection. Enable best-effort backup explicitly to continue; concurrent changes may appear in that backup.".into()
+        ));
+    }
+    let reader: &dyn crate::driver::Driver = snapshot.as_deref().unwrap_or(&*driver);
+    let result = backup::write_backup_with_consistency(
+        reader,
         &target,
         &options,
         query.token(),
+        consistent,
         |progress: BackupProgress| {
-            // A dropped listener must not fail the backup.
-            let _ = app.emit(BACKUP_PROGRESS, &progress);
+            let _ = app.emit(
+                BACKUP_PROGRESS,
+                serde_json::json!({ "queryId": query_id, "progress": progress }),
+            );
         },
     )
-    .await
+    .await;
+    // Close the read transaction even after cancellation or a disk error.
+    if let Some(snapshot) = snapshot {
+        let cleanup = snapshot.end_snapshot().await;
+        if result.is_ok() {
+            cleanup?;
+        }
+    }
+    result.map(|mut result| {
+        result.consistent_snapshot = consistent;
+        result
+    })
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -63,13 +90,21 @@ pub async fn restore_database(
     query_id: String,
 ) -> Result<RestoreResult> {
     let driver = state.registry.get_writable(&connection_id).await?;
+    let query = state.registry.begin_query(&connection_id, &query_id);
     // Read on a blocking thread: a dump is arbitrarily large and this is a
     // synchronous whole-file read that was stalling an async runtime worker.
     let script = read_to_string_blocking(path.clone()).await?;
-    let query = state.registry.begin_query(&connection_id, &query_id);
 
+    let _operation = state
+        .registry
+        .managed_submission(&connection_id, query.token())
+        .await?;
+    let driver = driver.managed_session().await?;
     backup::restore(&*driver, &script, &options, query.token(), |done, total| {
-        let _ = app.emit(RESTORE_PROGRESS, RestoreProgress { done, total });
+        let _ = app.emit(
+            RESTORE_PROGRESS,
+            serde_json::json!({ "queryId": query_id, "progress": RestoreProgress { done, total } }),
+        );
     })
     .await
 }
@@ -80,10 +115,12 @@ pub async fn restore_database(
 /// feature — so the synchronous read is handed to the blocking pool, which is
 /// what `tokio::fs` would do underneath anyway.
 async fn read_to_string_blocking(path: String) -> Result<String> {
-    tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
-        .await
-        .map_err(|e| crate::error::FaroError::Io(format!("could not read the file: {e}")))?
-        .map_err(Into::into)
+    tokio::task::spawn_blocking(move || {
+        let bytes = crate::budget::read_materialized(std::path::Path::new(&path))?;
+        String::from_utf8(bytes).map_err(|e| crate::error::FaroError::Io(e.to_string()))
+    })
+    .await
+    .map_err(|e| crate::error::FaroError::Io(format!("could not read the file: {e}")))?
 }
 
 /// Statement count for a dump file, so the UI can warn before running it.
@@ -106,7 +143,11 @@ pub async fn inspect_backup(path: String) -> Result<BackupFileInfo> {
                 .to_ascii_uppercase()
                 .starts_with("CREATE TABLE")
         }),
-        first_lines: script.lines().take(6).map(String::from).collect(),
+        first_lines: script
+            .lines()
+            .take(6)
+            .map(|line| line.chars().take(512).collect())
+            .collect(),
     })
 }
 

@@ -306,3 +306,22 @@ describe('tab persistence', () => {
     expect(fresh).not.toBe('tab-1');
   });
 });
+
+it('releases an older result when retained tab data exceeds the byte budget', () => {
+  reset();
+  const first = useTabs.getState().openQueryTab('c1');
+  const second = useTabs.getState().openQueryTab('c1');
+  const page = () => ({
+    columns: [{ name: 'text', typeName: 'text' }],
+    rows: [[{ kind: 'text' as const, value: 'x'.repeat(40 * 1024 * 1024) }]],
+    truncated: false,
+    elapsedMs: 0,
+  });
+  useTabs.getState().update(first, { browseResult: page(), resultQueryId: 'old-result' });
+  useTabs.getState().update(second, { browseResult: page(), resultQueryId: 'new-result' });
+  const old = useTabs.getState().tabs.find((tab) => tab.id === first);
+  expect(old?.browseResult).toBeNull();
+  expect(old?.error).toMatch(/memory bounded/);
+  expect(useTabs.getState().tabs.find((tab) => tab.id === second)?.browseResult).not.toBeNull();
+  reset();
+});

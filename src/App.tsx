@@ -1,21 +1,28 @@
-import { useEffect, useState } from 'react';
-
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { ConfirmHost } from '@/components/ConfirmDialog';
 import { IconDatabase, IconLighthouse } from '@/components/icons';
+import { LoadBoundary } from '@/components/LoadBoundary';
 import { SplitGroup, SplitHandle, SplitPanel } from '@/components/panels';
 import { UpdaterToast } from '@/components/UpdaterToast';
 import { EmptyState } from '@/components/ui';
 import { Sidebar } from '@/features/connections/Sidebar';
 import { CommandPalette } from '@/features/palette/CommandPalette';
 import { ShortcutSheet } from '@/features/palette/ShortcutSheet';
-import { QueryTab } from '@/features/tabs/QueryTab';
 import { TabBar } from '@/features/tabs/TabBar';
-import { TableTab } from '@/features/tabs/TableTab';
+import { useQuitGuard } from '@/hooks/useQuitGuard';
 import { useUpdater } from '@/hooks/useUpdater';
 import { starterQuery } from '@/lib/engine';
+import { shortcut } from '@/lib/shortcuts';
 import { useConnections } from '@/state/connections';
 import { useLibrary } from '@/state/library';
 import { useTabs } from '@/state/tabs';
+
+const QueryTab = lazy(() =>
+  import('@/features/tabs/QueryTab').then((module) => ({ default: module.QueryTab })),
+);
+const TableTab = lazy(() =>
+  import('@/features/tabs/TableTab').then((module) => ({ default: module.TableTab })),
+);
 
 /**
  * Whatever fills the main area: the active tab, or the empty state.
@@ -32,10 +39,16 @@ function ActiveTab() {
   const connections = useConnections((s) => s.items);
 
   if (active) {
-    return active.kind === 'query' ? (
-      <QueryTab key={active.id} tab={active} />
-    ) : (
-      <TableTab key={active.id} tab={active} />
+    return (
+      <LoadBoundary key={active.id}>
+        <Suspense fallback={<EmptyState title="Loading tab…" />}>
+          {active.kind === 'query' ? (
+            <QueryTab key={active.id} tab={active} />
+          ) : (
+            <TableTab key={active.id} tab={active} />
+          )}
+        </Suspense>
+      </LoadBoundary>
     );
   }
 
@@ -47,14 +60,19 @@ function ActiveTab() {
       hint={
         connected.length === 0
           ? 'Add a connection in the sidebar to browse tables and run queries.'
-          : 'Press ⌘K to search, ⌘T for a new query tab, or ? for keyboard shortcuts.'
+          : `Press ${shortcut('K')} to search, ${shortcut('T')} for a new query tab, or ? for keyboard shortcuts.`
       }
       action={
         connected.length > 0 ? (
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => openQueryTab(connected[0]!.id, starterQuery(connected[0]!.engine))}
+            onClick={() =>
+              openQueryTab(
+                connected[0]!.id,
+                starterQuery((connected[0]!.activeConfig ?? connected[0]!).engine),
+              )
+            }
           >
             <IconDatabase size={13} /> New query
           </button>
@@ -66,6 +84,7 @@ function ActiveTab() {
 
 export default function App() {
   useUpdater();
+  useQuitGuard();
 
   const openQueryTab = useTabs((s) => s.openQueryTab);
   const closeTab = useTabs((s) => s.closeTab);
@@ -118,7 +137,8 @@ export default function App() {
           // detached and reattached this listener on every keystroke.
           const all = useConnections.getState().items;
           const id = current?.connectionId ?? all.find((c) => c.connected)?.id ?? null;
-          const engine = all.find((c) => c.id === id)?.engine ?? null;
+          const connection = all.find((c) => c.id === id);
+          const engine = (connection?.activeConfig ?? connection)?.engine ?? null;
           openQueryTab(id, starterQuery(engine));
           break;
         }

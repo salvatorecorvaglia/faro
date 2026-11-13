@@ -172,6 +172,7 @@ pub async fn import_file(
     query_id: String,
 ) -> Result<TransferResult> {
     let driver = state.registry.get_writable(&connection_id).await?;
+    let query = state.registry.begin_query(&connection_id, &query_id);
     let detail = driver.describe_table(&table).await?;
     let dialect = driver.dialect();
 
@@ -224,8 +225,11 @@ pub async fn import_file(
         })
         .collect();
 
-    let query = state.registry.begin_query(&connection_id, &query_id);
     let cancel = query.token();
+    let _operation = state
+        .registry
+        .managed_submission(&connection_id, cancel.clone())
+        .await?;
 
     // Parse on a blocking thread and apply on this one, joined by a short
     // channel.
@@ -250,7 +254,7 @@ pub async fn import_file(
     let parse = tokio::task::spawn_blocking(move || -> Result<usize> {
         let dialect = driver_for_build.dialect();
 
-        let (_, total) = import::read_rows_batched(
+        let (_, total) = import::read_rows_batched_cancelled(
             &source,
             format,
             has_header,
@@ -298,8 +302,12 @@ pub async fn import_file(
                     .map_err(|_| FaroError::Other(APPLIER_GONE.into()))?;
                 Ok(true)
             },
+            &cancel_for_build,
         )?;
 
+        if cancel_for_build.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
         // Only this earns a commit; see `Driver::apply_streaming`.
         tx.blocking_send(ApplyChunk::Done)
             .map_err(|_| FaroError::Other(APPLIER_GONE.into()))?;
@@ -309,7 +317,7 @@ pub async fn import_file(
     // Both run at once: the applier drains the channel while the reader fills
     // it. Awaiting the reader first would deadlock on a file larger than the
     // channel.
-    let applied = driver.apply_streaming(rx).await;
+    let applied = driver.apply_streaming_cancelled(rx, cancel.clone()).await;
     let parsed = parse
         .await
         .map_err(|e| FaroError::Io(format!("could not read the file: {e}")))?;

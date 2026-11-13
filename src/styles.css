@@ -70,21 +70,21 @@
   --border: #dfe3ea;
   --border-strong: #c6ccd8;
   --text: #16191f;
-  --text-muted: #646c7a;
-  --text-faint: #99a1b0;
+  --text-muted: #596372;
+  --text-faint: #596372;
   --accent: #2f6feb;
   --accent-soft: #e6efff;
   --danger: #d1373a;
   --warning: #b06a00;
   --success: #1f7a45;
-  --null: #a0a6b4;
+  --null: #596372;
   --row-alt: #fafbfc;
   --selection: #cfe0ff;
 
   --syntax-keyword: #8b3dbd;
   --syntax-string: #1f7a45;
   --syntax-number: #b3541e;
-  --syntax-comment: #8a93a3;
+  --syntax-comment: #596372;
   --syntax-function: #2f6feb;
   --syntax-type: #0d7377;
   --syntax-operator: #646c7a;
@@ -111,24 +111,24 @@
   --border: #262d38;
   --border-strong: #38414f;
   --text: #e6eaf0;
-  --text-muted: #949cab;
-  --text-faint: #656d7b;
+  --text-muted: #a0a8b8;
+  --text-faint: #a0a8b8;
   --accent: #5b9bff;
   --accent-soft: #17263f;
   --danger: #ef6b6e;
   --warning: #e0a34a;
   --success: #56c88a;
-  --null: #5b6373;
+  --null: #a0a8b8;
   --row-alt: #121720;
   --selection: #24385c;
 
   --syntax-keyword: #c792ea;
   --syntax-string: #7ed99a;
   --syntax-number: #f0a86a;
-  --syntax-comment: #5f6979;
+  --syntax-comment: #a0a8b8;
   --syntax-function: #6cb6ff;
   --syntax-type: #4fd1c5;
-  --syntax-operator: #949cab;
+  --syntax-operator: #a0a8b8;
 
   /* Deeper shadows and a heavier scrim: on a dark surface a soft shadow
      disappears, so elevation has to be carried by contrast instead. */

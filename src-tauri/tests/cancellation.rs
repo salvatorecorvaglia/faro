@@ -1,17 +1,9 @@
-//! Does cancelling a query actually free the connection, or just make the UI
-//! stop waiting for it?
+//! Native cancellation, transaction rollback and session reuse regressions.
 //!
-//! `registry::cancel_query` only ever cancels a client-side token — nothing
-//! here or in `driver/fetch.rs` speaks a server-side cancel protocol. For the
-//! pooled sqlx engines (Postgres, MySQL, MariaDB, SQLite), the theory is that
-//! dropping the row stream on cancellation returns the connection to its
-//! pool in a clean state, so a query issued right after does not queue
-//! behind the abandoned one. That theory had no test — this is it.
-//!
-//! Run against SQLite because it needs no Docker fixture: `driver/fetch.rs`'s
-//! `impl_fetch_capped!` macro generates the identical cancellation logic for
-//! Postgres, MySQL and MariaDB too, so this exercises the shared mechanism
-//! all four engines rely on, not something SQLite-specific.
+//! SQLite uses rusqlite's interrupt handle on its dedicated blocking session;
+//! DuckDB uses its native interrupt handle. Network-driver cancellation under
+//! real row locks is checked separately in `live_engines.rs` with the mandatory
+//! live-service gate. These native tests do not stand in for a network server.
 
 use faro_lib::driver::{self, Driver};
 use faro_lib::error::FaroError;
@@ -20,10 +12,14 @@ use faro_lib::transfer::backup::{self, BackupOptions, RestoreOptions};
 use tokio_util::sync::CancellationToken;
 
 async fn open_in_memory() -> Box<dyn Driver> {
+    open_memory(Engine::Sqlite).await
+}
+
+async fn open_memory(engine: Engine) -> Box<dyn Driver> {
     let config = ConnectionConfig {
         id: "test".into(),
         name: "test".into(),
-        engine: Engine::Sqlite,
+        engine,
         host: String::new(),
         port: 0,
         username: String::new(),
@@ -228,4 +224,253 @@ async fn cancelling_before_a_query_starts_never_touches_the_connection() {
         .await
         .expect("a fresh query must still succeed");
     assert_eq!(after.rows.len(), 1);
+}
+
+fn insert_chunk() -> faro_lib::model::ApplyChunk {
+    faro_lib::model::ApplyChunk::Batch(vec![faro_lib::model::GuardedStatement {
+        sql: "INSERT INTO cancellation_items VALUES (1)".into(),
+        expect: Some(1),
+    }])
+}
+
+async fn assert_no_imported_rows(driver: &dyn Driver) {
+    let result = driver
+        .query(
+            "SELECT COUNT(*) FROM cancellation_items",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![faro_lib::model::Value::Int(0)]]);
+}
+
+#[tokio::test]
+async fn cancelling_with_done_already_queued_never_commits() {
+    let driver = open_in_memory().await;
+    driver
+        .execute(
+            "CREATE TABLE cancellation_items(id INTEGER)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    sender.send(insert_chunk()).await.unwrap();
+    sender
+        .send(faro_lib::model::ApplyChunk::Done)
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert!(matches!(
+        driver.apply_streaming_cancelled(receiver, cancel).await,
+        Err(FaroError::Cancelled)
+    ));
+    assert_no_imported_rows(&*driver).await;
+}
+
+#[tokio::test]
+async fn cancelling_an_import_waiting_for_input_rolls_back_and_frees_session() {
+    let driver: std::sync::Arc<dyn Driver> = std::sync::Arc::from(open_in_memory().await);
+    driver
+        .execute(
+            "CREATE TABLE cancellation_items(id INTEGER)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    sender.send(insert_chunk()).await.unwrap();
+    let cancel = CancellationToken::new();
+    let work = tokio::spawn({
+        let driver = driver.clone();
+        let cancel = cancel.clone();
+        async move { driver.apply_streaming_cancelled(receiver, cancel).await }
+    });
+    // Capacity is released only once the applier consumes the queued batch.
+    let permit = tokio::time::timeout(std::time::Duration::from_secs(5), sender.reserve())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(permit);
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), work)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(FaroError::Cancelled)), "{result:?}");
+    assert_no_imported_rows(&*driver).await;
+    driver
+        .apply_transaction(&[faro_lib::model::GuardedStatement {
+            sql: "INSERT INTO cancellation_items VALUES (2)".into(),
+            expect: Some(1),
+        }])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_after_a_completed_commit_does_not_undo_success() {
+    let driver = open_in_memory().await;
+    driver
+        .execute(
+            "CREATE TABLE cancellation_items(id INTEGER)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    sender.send(insert_chunk()).await.unwrap();
+    sender
+        .send(faro_lib::model::ApplyChunk::Done)
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        driver
+            .apply_streaming_cancelled(receiver, cancel.clone())
+            .await
+            .unwrap(),
+        1
+    );
+    cancel.cancel();
+    assert_eq!(
+        driver
+            .query(
+                "SELECT id FROM cancellation_items",
+                10,
+                CancellationToken::new()
+            )
+            .await
+            .unwrap()
+            .rows,
+        vec![vec![faro_lib::model::Value::Int(1)]]
+    );
+}
+
+#[cfg(feature = "duckdb-engine")]
+#[tokio::test]
+async fn cancelling_a_duckdb_import_interrupts_native_work_and_rolls_back() {
+    let driver: std::sync::Arc<dyn Driver> =
+        std::sync::Arc::from(open_memory(Engine::DuckDb).await);
+    driver
+        .execute(
+            "CREATE TABLE cancellation_items(id BIGINT)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    sender.send(faro_lib::model::ApplyChunk::Batch(vec![faro_lib::model::GuardedStatement {
+        sql: "INSERT INTO cancellation_items SELECT CAST(sum(i) AS BIGINT) FROM range(1000000000) t(i)".into(), expect: Some(1),
+    }])).await.unwrap();
+    let cancel = CancellationToken::new();
+    let work = tokio::spawn({
+        let driver = driver.clone();
+        let cancel = cancel.clone();
+        async move { driver.apply_streaming_cancelled(receiver, cancel).await }
+    });
+    let permit = tokio::time::timeout(std::time::Duration::from_secs(5), sender.reserve())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(permit);
+    // Done may already be buffered when cancellation arrives.
+    sender
+        .send(faro_lib::model::ApplyChunk::Done)
+        .await
+        .unwrap();
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), work)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "cancelled native insert committed: {result:?}"
+    );
+    assert_no_imported_rows(&*driver).await;
+}
+
+#[tokio::test]
+async fn cancelling_an_import_queued_for_the_managed_connection_is_prompt() {
+    let driver: std::sync::Arc<dyn Driver> = std::sync::Arc::from(open_in_memory().await);
+    driver
+        .execute(
+            "CREATE TABLE cancellation_items(id INTEGER)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    sender.send(insert_chunk()).await.unwrap();
+    let first_cancel = CancellationToken::new();
+    let first = tokio::spawn({
+        let driver = driver.clone();
+        let token = first_cancel.clone();
+        async move { driver.apply_streaming_cancelled(receiver, token).await }
+    });
+    drop(
+        tokio::time::timeout(std::time::Duration::from_secs(5), sender.reserve())
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    let (_second_sender, second_receiver) = tokio::sync::mpsc::channel(1);
+    let second_cancel = CancellationToken::new();
+    let queued = driver.apply_streaming_cancelled(second_receiver, second_cancel.clone());
+    tokio::pin!(queued);
+    assert!(futures::poll!(&mut queued).is_pending());
+    second_cancel.cancel();
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+            .await
+            .unwrap(),
+        Err(FaroError::Cancelled)
+    ));
+    first_cancel.cancel();
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), first)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(FaroError::Cancelled)
+    ));
+    assert_no_imported_rows(&*driver).await;
+}
+
+#[tokio::test]
+async fn restore_cancelled_after_the_last_statement_rolls_back_before_commit() {
+    let driver = open_in_memory().await;
+    driver
+        .execute(
+            "CREATE TABLE final_restore (id INT)",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let error = backup::restore(
+        &*driver,
+        "INSERT INTO final_restore VALUES (1)",
+        &RestoreOptions {
+            stop_on_error: true,
+        },
+        token,
+        move |_, _| cancel.cancel(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("Restore cancelled"));
+    let result = driver
+        .query(
+            "SELECT COUNT(*) FROM final_restore",
+            10,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.rows[0][0], faro_lib::model::Value::Int(0));
 }

@@ -6,6 +6,7 @@ import { ApplyBar, ReadOnlyNotice } from '@/features/results/ApplyBar';
 import { ResultPanel } from '@/features/results/ResultPanel';
 import { ExportDialog } from '@/features/transfer/ExportDialog';
 import { ImportDialog } from '@/features/transfer/ImportDialog';
+import { useAsyncAction } from '@/hooks/useAsyncAction';
 import * as ipc from '@/ipc';
 import type { EditValue, Engine, TableDetail } from '@/ipc/types';
 import {
@@ -25,9 +26,7 @@ import type { GridFilter, SortState } from '@/lib/grid';
 import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
 import { type Tab, useTabs } from '@/state/tabs';
-
-let browseCounter = 0;
-const PAGE_SIZE = 1000;
+import { PAGE_SIZE, useTableBrowse } from './useTableBrowse';
 
 /** Matches the history search debounce, so filtering feels the same. */
 const FILTER_DEBOUNCE_MS = 200;
@@ -48,7 +47,7 @@ function readOnlyReason(
   // Checked first: it is the user's own choice, so it explains the state better
   // than anything about the table would, and it is the one they can undo.
   if (connectionReadOnly) {
-    return 'This connection is open read-only. Turn off “Open read-only” in the connection settings to make changes.';
+    return 'This connection is open read-only. Turn off “Open read-only” in the connection settings and reconnect to make changes.';
   }
   if (kind !== 'table') return 'Views are read-only.';
   if (engine === 'clickhouse') {
@@ -72,31 +71,25 @@ function readOnlyReason(
 export function TableTab({ tab }: { tab: Tab }) {
   const update = useTabs((s) => s.update);
   const conn = useConnections((s) => s.items.find((c) => c.id === tab.connectionId));
-  const engine = (conn?.engine as Engine | undefined) ?? null;
+  const engine = ((conn?.activeConfig ?? conn)?.engine as Engine | undefined) ?? null;
   /**
    * The backend refuses writes on a read-only connection regardless, but a grid
    * that lets you stage twenty edits and only objects at Apply is a worse way to
    * find out. The button states should tell the truth up front.
    */
-  const connectionReadOnly = conn?.readOnly ?? false;
-  const [detail, setDetail] = useState<TableDetail | null>(null);
-  // Seeded from the tab, which remembers what its page was loaded with across
-  // switches; see `Tab.browseOffset`.
-  const [offset, setOffset] = useState(tab.browseOffset);
-  const [sort, setSort] = useState<SortState | null>(tab.browseSort);
-  const [filters, setFilters] = useState<GridFilter[]>(tab.browseFilters);
-
+  const connectionReadOnly = (conn?.activeConfig ?? conn)?.readOnly ?? false;
   const [edits, setEdits] = useState<EditState>(emptyEdits);
-  const [applying, setApplying] = useState(false);
-  const [applyError, setApplyError] = useState<string | null>(null);
+  const {
+    busy: applying,
+    error: applyError,
+    setError: setApplyError,
+    run: apply,
+  } = useAsyncAction();
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
-
-  /** The filter set the currently displayed page was loaded with. */
-  const appliedFilters = useRef<GridFilter[]>(tab.browseFilters);
+  const { detail, offset, sort, setSort, filters, setFilters, appliedFilters, load } =
+    useTableBrowse(tab, () => setEdits(emptyEdits()));
 
   // A key the grid cannot rebuild exactly (binary, float, …) would never find
   // its row again, so such a table is read-only until it can.
@@ -117,113 +110,6 @@ export function TableTab({ tab }: { tab: Tab }) {
     update(tab.id, { dirty });
   }, [dirty, tab.id, update]);
 
-  const load = useCallback(
-    async (nextOffset: number, nextSort: SortState | null, nextFilters: GridFilter[]) => {
-      const t = tabRef.current;
-      if (!t.connectionId || !t.table) return;
-
-      const queryId = `b-${++browseCounter}`;
-      // A load still in flight is about to be superseded. Its reply would be
-      // ignored anyway (see below), but the query itself kept running on the
-      // connection's single session and every later page queued behind it —
-      // so a quick run of sorts or filters on a large table waited for each
-      // abandoned one in turn. Cancelling frees the session for this one.
-      if (t.queryId) {
-        void ipc.cancelQuery(t.connectionId, t.queryId).catch(() => {});
-      }
-      update(t.id, { running: true, queryId, error: null });
-      try {
-        const result = await ipc.browseTable(
-          t.connectionId,
-          t.table,
-          {
-            limit: PAGE_SIZE,
-            offset: nextOffset,
-            sortColumn: nextSort?.column ?? null,
-            sortDesc: nextSort?.desc ?? false,
-            filters: nextFilters,
-          },
-          queryId,
-        );
-        // A newer load can start (and overwrite `queryId`) while this one is
-        // still in flight — a sort click right after a filter edit, say.
-        // Applying whichever response lands last regardless of order would
-        // silently show the wrong page under a newer sort/filter/offset, so
-        // only the most recently started request's result is ever committed.
-        if (tabRef.current.queryId !== queryId) return;
-        // What the page was loaded with goes into the store beside it, so a
-        // return to this tab shows it as it was left.
-        update(t.id, {
-          running: false,
-          queryId: null,
-          browseResult: result,
-          resultQueryId: queryId,
-          browseOffset: nextOffset,
-          browseSort: nextSort,
-          browseFilters: nextFilters,
-        });
-        setOffset(nextOffset);
-        // Remember what the displayed page was actually loaded with, so a
-        // filter edit the user later declines to apply can be rolled back to it.
-        appliedFilters.current = nextFilters;
-        // Staged edits address rows by their position in the page, so any
-        // reload invalidates them. Discarding is the honest outcome — silently
-        // reapplying them to different rows would be far worse.
-        setEdits(emptyEdits());
-      } catch (e) {
-        if (tabRef.current.queryId !== queryId) return;
-        update(t.id, { running: false, queryId: null, error: ipc.errorMessage(e) });
-      }
-    },
-    [update],
-  );
-
-  /**
-   * Generation counter for `describeTable`.
-   *
-   * `load` already refuses a reply a newer request has superseded; the describe
-   * running beside it had no such guard, so two quick table switches could
-   * leave `detail` belonging to the *previous* table — and `detail.primaryKey`
-   * decides both whether the grid is editable and what `toPendingChanges`
-   * anchors its WHERE clauses on.
-   */
-  const describeSeq = useRef(0);
-
-  // Runs once per table, keyed on its identity rather than on the `tab` object
-  // or on `load`. Sort, filter and paging each re-run `load` explicitly, so
-  // adding them here would reload the page twice for every one of those.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: once per table; see above
-  useEffect(() => {
-    if (!tab.connectionId || !tab.table) return;
-
-    // Start from what this tab's page was last loaded with — its own, never
-    // another table's: a tab is bound to one table, and the boxes must always
-    // describe the data under them.
-    const saved = tabRef.current;
-    setSort(saved.browseSort);
-    setFilters(saved.browseFilters);
-    appliedFilters.current = saved.browseFilters;
-    setOffset(saved.browseOffset);
-    setDetail(null);
-
-    const seq = ++describeSeq.current;
-    ipc
-      .describeTable(tab.connectionId, tab.table)
-      .then((d) => {
-        if (describeSeq.current === seq) setDetail(d);
-      })
-      .catch(() => {
-        if (describeSeq.current === seq) setDetail(null);
-      });
-
-    // A page already in the store is shown as it was left rather than
-    // re-queried on every switch back; Refresh re-reads it. `load` records
-    // its own failures on the tab.
-    if (!saved.browseResult) {
-      void load(saved.browseOffset, saved.browseSort, saved.browseFilters);
-    }
-  }, [tab.connectionId, tab.table?.schema, tab.table?.name]);
-
   /**
    * Confirm before throwing away unsaved work.
    *
@@ -241,16 +127,19 @@ export function TableTab({ tab }: { tab: Tab }) {
     [dirty],
   );
 
+  const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Changing the sort or a filter changes which rows belong on page one, so
   // both reset the offset rather than leaving the user deep in a stale page.
   const onSortChange = useCallback(
     (next: SortState | null) => {
       void guardUnsaved(() => {
+        clearTimeout(filterTimer.current ?? undefined);
         setSort(next);
         void load(0, next, filters);
       });
     },
-    [guardUnsaved, load, filters],
+    [guardUnsaved, load, filters, setSort],
   );
 
   // Filter text arrives a character at a time. Applying it immediately meant
@@ -259,7 +148,6 @@ export function TableTab({ tab }: { tab: Tab }) {
   // because the filter state updates at once; only the query is deferred.
   //
   // The same 200ms the history search uses, so the two feel alike.
-  const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => clearTimeout(filterTimer.current ?? undefined), []);
 
   const onFiltersChange = useCallback(
@@ -276,7 +164,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         });
       }, FILTER_DEBOUNCE_MS);
     },
-    [guardUnsaved, load, sort],
+    [guardUnsaved, load, sort, setFilters, appliedFilters],
   );
 
   const pendingChanges = useMemo(() => {
@@ -286,19 +174,12 @@ export function TableTab({ tab }: { tab: Tab }) {
 
   async function onApply() {
     if (!tab.connectionId || !tab.table) return;
-    setApplying(true);
-    setApplyError(null);
-    try {
-      await ipc.applyChanges(tab.connectionId, tab.table, pendingChanges);
+    await apply(async () => {
+      await ipc.applyChanges(tab.connectionId!, tab.table!, pendingChanges);
       setEdits(emptyEdits());
-      // Re-read so the grid shows what the database actually stored, including
-      // defaults and triggers that changed values on the way in.
+      // Re-read defaults and trigger changes after the transaction commits.
       await load(offset, sort, filters);
-    } catch (e) {
-      setApplyError(ipc.errorMessage(e));
-    } finally {
-      setApplying(false);
-    }
+    });
   }
 
   // Memoized: a fresh object literal on every render would change identity each

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-
 import { IconChevron, IconClose, IconEdit, IconTrash, IconWarning } from '@/components/icons';
 import { ErrorBanner, FilterInput, rowActivation, Spinner } from '@/components/ui';
 import type { HistoryEntry, SavedQuery } from '@/ipc/types';
 import { fuzzyRank, oneLine, relativeTime } from '@/lib/search';
+import { shortcut } from '@/lib/shortcuts';
 import { formatDuration, formatRowCount } from '@/lib/value';
 import { confirmDialog } from '@/state/confirm';
 import { useConnections } from '@/state/connections';
@@ -128,7 +128,7 @@ function SavedList() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {saved.length === 0 ? (
-          <Hint text="No saved queries yet. Save one with ⌘S from a query tab." />
+          <Hint text={`No saved queries yet. Save one with ${shortcut('S')} from a query tab.`} />
         ) : shown.length === 0 ? (
           <Hint text="Nothing matches." />
         ) : (

@@ -129,6 +129,7 @@ describe('toPendingChanges', () => {
       // The key travels as the value it was read as, not its display text.
       key: [{ column: 'id', value: { kind: 'stored', value: int(1) } }],
       cells: [{ column: 'name', value: { kind: 'text', value: 'Ada L' } }],
+      original: [{ column: 'name', value: { kind: 'stored', value: text('Ada') } }],
     });
   });
 
@@ -208,6 +209,13 @@ describe('toPendingChanges', () => {
     expect(toPendingChanges(binary, ['uid'], e)).toEqual([
       {
         type: 'delete',
+        original: [
+          {
+            column: 'uid',
+            value: { kind: 'stored', value: { kind: 'bytes', value: [0xde, 0xad] } },
+          },
+          { column: 'v', value: { kind: 'stored', value: text('x') } },
+        ],
         key: [
           {
             column: 'uid',

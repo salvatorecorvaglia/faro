@@ -181,7 +181,7 @@ async fn walk_table_pages<F>(
     on_page: F,
 ) -> Result<()>
 where
-    F: FnMut(ResultSet) -> Result<()>,
+    F: FnMut(ResultSet) -> Result<()> + Send,
 {
     let detail = driver.describe_table(table).await?;
     walk_pages(driver, &detail, "*", READ_BATCH, cancel, on_page).await
@@ -212,7 +212,33 @@ pub(crate) async fn walk_pages<F>(
     mut on_page: F,
 ) -> Result<()>
 where
-    F: FnMut(ResultSet) -> Result<()>,
+    F: FnMut(ResultSet) -> Result<()> + Send,
+{
+    walk_pages_fold(
+        driver,
+        detail,
+        select_list,
+        batch,
+        cancel,
+        (),
+        |(), page| std::future::ready(on_page(page)),
+    )
+    .await
+}
+
+pub(crate) async fn walk_pages_fold<S, F, Fut>(
+    driver: &dyn crate::driver::Driver,
+    detail: &crate::model::TableDetail,
+    select_list: &str,
+    mut batch: u64,
+    cancel: tokio_util::sync::CancellationToken,
+    mut state: S,
+    mut on_page: F,
+) -> Result<S>
+where
+    S: Send,
+    F: FnMut(S, ResultSet) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<S>> + Send,
 {
     let dialect = driver.dialect();
     let qualified = dialect.qualify(detail.table.schema.as_deref(), &detail.table.name);
@@ -228,7 +254,14 @@ where
         let sql = format!("SELECT {select_list} FROM {qualified}{filter}{order}");
         let skip = if after.is_some() { 0 } else { offset };
         let paged = dialect.paginate(&sql, batch + 1, skip);
-        let page = driver.query(&paged, batch, cancel.clone()).await?;
+        let page = match driver.query(&paged, batch, cancel.clone()).await {
+            Ok(page) => page,
+            Err(FaroError::ResourceLimit(_)) if batch > 1 => {
+                batch = (batch / 2).max(1);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         let more = page.truncated;
         let count = page.rows.len() as u64;
@@ -237,14 +270,14 @@ where
         } else {
             None
         };
-        on_page(page)?;
+        state = on_page(state, page).await?;
 
         if !more || count == 0 {
             break;
         }
         offset += count;
     }
-    Ok(())
+    Ok(state)
 }
 
 /// The keyset condition continuing after a page's last row, when it has one.
@@ -287,7 +320,12 @@ pub async fn read_table_paged_capped(
     max_rows: Option<usize>,
 ) -> Result<ResultSet> {
     let mut combined: Option<ResultSet> = None;
+    let mut bytes = 0usize;
     walk_table_pages(driver, table, cancel, |page| {
+        bytes = bytes.saturating_add(crate::budget::result_bytes(&page));
+        if bytes > crate::budget::MATERIALIZED_BYTES {
+            return Err(crate::budget::exceeded("This materialized export"));
+        }
         match &mut combined {
             None => combined = Some(page),
             Some(acc) => acc.rows.extend(page.rows),
@@ -328,37 +366,51 @@ pub async fn export_table_streaming(
 ) -> Result<u64> {
     // A full-table export takes long enough to be cancelled or to fail
     // partway, so it is written aside and moved into place only when done.
-    let output = super::PartialFile::new(path);
-    let path = output.path();
-    let mut sink: Option<TableSink> = None;
-    let mut total_rows = 0u64;
-
-    walk_table_pages(driver, table, cancel, |page| {
-        for row in &page.rows {
-            reject_unsupported(&page.columns, row)?;
-        }
-        // `get_or_insert` rather than an `is_none` check followed by an
-        // `expect`: the compiler then carries the invariant instead of a
-        // comment, and there is no panic to reason about.
-        let s = match sink {
-            Some(ref mut s) => s,
-            None => sink.insert(TableSink::open(path, &page.columns, options, dialect)?),
-        };
-        for row in &page.rows {
-            s.write_row(row)?;
-        }
-        total_rows += page.rows.len() as u64;
-        Ok(())
-    })
+    let writer = super::writer::DiskWriter::new(path.to_path_buf(), cancel.clone());
+    let buffer = super::writer::Buffer::default();
+    let buffer_ref = &buffer;
+    let detail = driver.describe_table(table).await?;
+    let initial: (_, Option<TableSink>, u64) = (writer, None, 0);
+    let (mut writer, sink, total) = walk_pages_fold(
+        driver,
+        &detail,
+        "*",
+        READ_BATCH,
+        cancel,
+        initial,
+        move |(mut writer, mut sink, total), page| async move {
+            for row in &page.rows {
+                reject_unsupported(&page.columns, row)?;
+            }
+            let output = match sink {
+                Some(ref mut output) => output,
+                None => sink.insert(TableSink::with_writer(
+                    Box::new(buffer_ref.clone()),
+                    &page.columns,
+                    options,
+                    dialect,
+                )?),
+            };
+            for row in &page.rows {
+                output.write_row(row)?;
+                if buffer_ref.len() >= 64 * 1024 {
+                    output.flush()?;
+                    writer.write(buffer_ref.take()).await?;
+                }
+            }
+            output.flush()?;
+            let total = total + page.rows.len() as u64;
+            writer.write(buffer_ref.take()).await?;
+            Ok((writer, sink, total))
+        },
+    )
     .await?;
-
-    // The loop always runs at least once (even a 0-row table gets one query,
-    // for its column list), so the sink was always opened.
-    if let Some(s) = sink {
-        s.finish()?;
-        output.commit()?;
+    if let Some(output) = sink {
+        output.finish()?;
     }
-    Ok(total_rows)
+    writer.write(buffer.take()).await?;
+    writer.finish().await?;
+    Ok(total)
 }
 
 pub fn write_file(
@@ -373,7 +425,7 @@ pub fn write_file(
         reject_unsupported(&result.columns, row)?;
     }
     // Written aside and moved into place once complete; see `PartialFile`.
-    let output = super::PartialFile::new(path);
+    let output = super::PartialFile::new(path)?;
     let written = match options.format {
         ExportFormat::Csv => write_delimited(output.path(), result, options, b','),
         ExportFormat::Tsv => write_delimited(output.path(), result, options, b'\t'),
@@ -391,7 +443,7 @@ pub fn write_file(
 /// `export_table_streaming` (one page at a time, never accumulated) so the
 /// formula-sanitizing and cell-rendering logic exists in exactly one place.
 struct DelimitedSink {
-    writer: csv::Writer<std::fs::File>,
+    writer: csv::Writer<Box<dyn Write + Send>>,
     sanitize: bool,
 }
 
@@ -403,10 +455,24 @@ impl DelimitedSink {
         include_header: bool,
         sanitize: bool,
     ) -> Result<Self> {
+        Self::with_writer(
+            Box::new(super::create_output(path)?),
+            delimiter,
+            columns,
+            include_header,
+            sanitize,
+        )
+    }
+    fn with_writer(
+        output: Box<dyn Write + Send>,
+        delimiter: u8,
+        columns: &[crate::model::ColumnInfo],
+        include_header: bool,
+        sanitize: bool,
+    ) -> Result<Self> {
         let mut writer = csv::WriterBuilder::new()
             .delimiter(delimiter)
-            .from_path(path)
-            .map_err(|e| FaroError::Io(e.to_string()))?;
+            .from_writer(output);
 
         if include_header {
             // Column names are database-supplied too, so they get the same
@@ -481,7 +547,7 @@ fn write_json(path: &Path, result: &ResultSet) -> Result<u64> {
 /// object in memory beside the rows it came from before writing a byte. A
 /// full-table JSON export held the table twice over; now it streams like CSV.
 struct JsonSink {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Box<dyn Write + Send>>,
     /// Object keys, one per column, with duplicate column names made unique
     /// once rather than per row.
     keys: Vec<String>,
@@ -490,7 +556,13 @@ struct JsonSink {
 
 impl JsonSink {
     fn open(path: &Path, columns: &[crate::model::ColumnInfo]) -> Result<Self> {
-        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        Self::with_writer(Box::new(super::create_output(path)?), columns)
+    }
+    fn with_writer(
+        output: Box<dyn Write + Send>,
+        columns: &[crate::model::ColumnInfo],
+    ) -> Result<Self> {
+        let mut file = std::io::BufWriter::new(output);
         file.write_all(b"[")?;
 
         let mut seen = serde_json::Map::new();
@@ -569,7 +641,7 @@ fn unique_key(obj: &serde_json::Map<String, serde_json::Value>, name: &str) -> S
 ///
 /// Shared for the same reason as `DelimitedSink`.
 struct SqlSink<'a> {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Box<dyn Write + Send>>,
     prefix: String,
     dialect: Option<&'a dyn Dialect>,
 }
@@ -577,6 +649,19 @@ struct SqlSink<'a> {
 impl<'a> SqlSink<'a> {
     fn open(
         path: &Path,
+        columns: &[crate::model::ColumnInfo],
+        options: &ExportOptions,
+        dialect: Option<&'a dyn Dialect>,
+    ) -> Result<Self> {
+        Self::with_writer(
+            Box::new(super::create_output(path)?),
+            columns,
+            options,
+            dialect,
+        )
+    }
+    fn with_writer(
+        output: Box<dyn Write + Send>,
         columns: &[crate::model::ColumnInfo],
         options: &ExportOptions,
         dialect: Option<&'a dyn Dialect>,
@@ -592,7 +677,7 @@ impl<'a> SqlSink<'a> {
             quote_ident(table),
             column_list.join(", ")
         );
-        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let file = std::io::BufWriter::new(output);
         Ok(Self {
             file,
             prefix,
@@ -651,29 +736,31 @@ enum TableSink<'a> {
 }
 
 impl<'a> TableSink<'a> {
-    fn open(
-        path: &Path,
+    fn with_writer(
+        output: Box<dyn Write + Send>,
         columns: &[crate::model::ColumnInfo],
         options: &ExportOptions,
         dialect: Option<&'a dyn Dialect>,
     ) -> Result<Self> {
         match options.format {
-            ExportFormat::Csv => Ok(Self::Delimited(Box::new(DelimitedSink::open(
-                path,
+            ExportFormat::Csv => Ok(Self::Delimited(Box::new(DelimitedSink::with_writer(
+                output,
                 b',',
                 columns,
                 options.include_header,
                 options.sanitize_formulas,
             )?))),
-            ExportFormat::Tsv => Ok(Self::Delimited(Box::new(DelimitedSink::open(
-                path,
+            ExportFormat::Tsv => Ok(Self::Delimited(Box::new(DelimitedSink::with_writer(
+                output,
                 b'\t',
                 columns,
                 options.include_header,
                 options.sanitize_formulas,
             )?))),
-            ExportFormat::Sql => Ok(Self::Sql(SqlSink::open(path, columns, options, dialect)?)),
-            ExportFormat::Json => Ok(Self::Json(JsonSink::open(path, columns)?)),
+            ExportFormat::Sql => Ok(Self::Sql(SqlSink::with_writer(
+                output, columns, options, dialect,
+            )?)),
+            ExportFormat::Json => Ok(Self::Json(JsonSink::with_writer(output, columns)?)),
             // An error rather than `unreachable!`. The invariant is real — see
             // `export_table` — but it is enforced by a `match` in another module,
             // and with `panic = "abort"` in release getting it wrong would take
@@ -684,6 +771,15 @@ impl<'a> TableSink<'a> {
                     .into(),
             )),
         }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match self {
+            Self::Delimited(sink) => sink.writer.flush()?,
+            Self::Sql(sink) => sink.file.flush()?,
+            Self::Json(sink) => sink.file.flush()?,
+        }
+        Ok(())
     }
 
     fn write_row(&mut self, row: &[Value]) -> Result<()> {
@@ -771,7 +867,7 @@ fn write_xlsx(path: &Path, result: &ResultSet, options: &ExportOptions) -> Resul
     }
 
     workbook
-        .save(path)
+        .save_to_writer(super::create_output(path)?)
         .map_err(|e| FaroError::Io(e.to_string()))?;
     Ok(result.rows.len() as u64)
 }

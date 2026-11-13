@@ -75,6 +75,19 @@ describe('BackupDialog', () => {
     expect(screen.getByText('Tables — 0 of 2')).toBeInTheDocument();
   });
 
+  it('selects same-named tables in different schemas independently', async () => {
+    renderDialog([
+      { ...table('events'), schema: 'public' },
+      { ...table('events'), schema: 'audit' },
+    ]);
+    const publicTable = screen.getByRole('checkbox', { name: 'public.events' });
+    const auditTable = screen.getByRole('checkbox', { name: 'audit.events' });
+    await userEvent.click(publicTable);
+    expect(publicTable).not.toBeChecked();
+    expect(auditTable).toBeChecked();
+    expect(screen.getByText('Tables — 1 of 2')).toBeInTheDocument();
+  });
+
   it('ignores views, which hold no data of their own', () => {
     renderDialog([table('authors'), { ...table('v_recent'), kind: 'view' }]);
     expect(screen.getByText('Tables — 1 of 1')).toBeInTheDocument();

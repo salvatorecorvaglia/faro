@@ -14,6 +14,25 @@ describe('Modal', () => {
     expect(screen.queryByText('Export')).not.toBeInTheDocument();
   });
 
+  it('restores focus to the trigger after closing', () => {
+    const trigger = document.createElement('button');
+    document.body.append(trigger);
+    trigger.focus();
+    const view = render(
+      <Modal open onClose={() => {}} title="Export">
+        <input aria-label="Destination" />
+      </Modal>,
+    );
+    screen.getByRole('textbox').focus();
+    view.rerender(
+      <Modal open={false} onClose={() => {}} title="Export">
+        <input />
+      </Modal>,
+    );
+    expect(trigger).toHaveFocus();
+    trigger.remove();
+  });
+
   it('shows its title and children when open', () => {
     render(
       <Modal open onClose={() => {}} title="Export">

@@ -49,11 +49,15 @@ pub fn build_statements(
 
     for change in changes {
         match change {
-            PendingChange::Delete { key } => {
-                deletes.push(build_delete(table, detail, key, dialect)?);
+            PendingChange::Delete { key, original } => {
+                deletes.push(build_delete(table, detail, key, original, dialect)?);
             }
-            PendingChange::Update { key, cells } => {
-                if let Some(stmt) = build_update(table, detail, key, cells, dialect)? {
+            PendingChange::Update {
+                key,
+                cells,
+                original,
+            } => {
+                if let Some(stmt) = build_update(table, detail, key, cells, original, dialect)? {
                     updates.push(stmt);
                 }
             }
@@ -74,6 +78,7 @@ fn build_update(
     detail: &TableDetail,
     key: &[CellEdit],
     cells: &[CellEdit],
+    original: &[CellEdit],
     dialect: &dyn Dialect,
 ) -> Result<Option<GuardedStatement>> {
     // An update with nothing to set is not an error — the user may have typed
@@ -100,7 +105,7 @@ fn build_update(
             "UPDATE {} SET {} WHERE {}",
             dialect.qualify(table.schema.as_deref(), &table.name),
             assignments.join(", "),
-            where_key(detail, key, dialect)?
+            where_original(detail, key, original, dialect)?
         ),
         expect: Some(1),
     }))
@@ -110,13 +115,14 @@ fn build_delete(
     table: &TableRef,
     detail: &TableDetail,
     key: &[CellEdit],
+    original: &[CellEdit],
     dialect: &dyn Dialect,
 ) -> Result<GuardedStatement> {
     Ok(GuardedStatement {
         sql: format!(
             "DELETE FROM {} WHERE {}",
             dialect.qualify(table.schema.as_deref(), &table.name),
-            where_key(detail, key, dialect)?
+            where_original(detail, key, original, dialect)?
         ),
         expect: Some(1),
     })
@@ -170,6 +176,82 @@ fn build_insert(
 /// Every primary key column must be present. A partial key would match a range
 /// of rows, and the row-count guard would catch it only after the statement had
 /// already run against them.
+fn where_original(
+    detail: &TableDetail,
+    key: &[CellEdit],
+    original: &[CellEdit],
+    dialect: &dyn Dialect,
+) -> Result<String> {
+    let key_sql = where_key(detail, key, dialect)?;
+    if original.is_empty() {
+        return Ok(key_sql);
+    }
+    if original
+        .iter()
+        .any(|cell| !matches!(cell.value, EditValue::Stored(_) | EditValue::Null))
+    {
+        return Err(FaroError::Other(
+            "One or more original values are unavailable for exact comparison (for example, large binary data). This change cannot be applied safely."
+                .into(),
+        ));
+    }
+    for cell in original {
+        if let EditValue::Stored(value) = &cell.value {
+            if !matches_exactly(value)
+                && !matches!(value, Value::Float(number) if number.is_finite())
+            {
+                return Err(FaroError::Other(format!("The original value of column \"{}\" cannot be compared safely. This change cannot be applied with conflict protection.", cell.column)));
+            }
+        }
+    }
+    let clauses = original
+        .iter()
+        .map(|cell| {
+            let column = column_or_err(detail, &cell.column)?;
+            let quoted = dialect.quote_ident(&cell.column);
+            match &cell.value {
+                EditValue::Null | EditValue::Stored(Value::Null) => Ok(format!("{quoted} IS NULL")),
+                EditValue::Stored(value) => {
+                    Ok(dialect.snapshot_eq(&quoted, value, &column.type_name))
+                }
+                _ => unreachable!("snapshot values validated above"),
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("{key_sql} AND {}", clauses.join(" AND ")))
+}
+
+/// Require a snapshot at the IPC boundary. Low-level builders retain support
+/// for key-only statements used by internal callers and existing integrations.
+pub fn validate_snapshots(detail: &TableDetail, changes: &[PendingChange]) -> Result<()> {
+    for change in changes {
+        let (original, columns): (&[CellEdit], Vec<&str>) = match change {
+            PendingChange::Update {
+                original, cells, ..
+            } => (
+                original,
+                cells.iter().map(|cell| cell.column.as_str()).collect(),
+            ),
+            PendingChange::Delete { original, .. } => (
+                original,
+                detail
+                    .columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect(),
+            ),
+            PendingChange::Insert { .. } => continue,
+        };
+        if columns
+            .iter()
+            .any(|name| original.iter().filter(|cell| cell.column == *name).count() != 1)
+        {
+            return Err(FaroError::Other("The original row snapshot is incomplete. Refresh the table before applying changes.".into()));
+        }
+    }
+    Ok(())
+}
+
 fn where_key(detail: &TableDetail, key: &[CellEdit], dialect: &dyn Dialect) -> Result<String> {
     let mut clauses = Vec::with_capacity(detail.primary_key.len());
 
@@ -459,9 +541,55 @@ mod tests {
     // -- The central safety property -------------------------------------
 
     #[test]
+    fn ipc_updates_require_original_values_for_every_edited_column() {
+        let detail = standard();
+        let change = PendingChange::Update {
+            key: vec![cell("id", "1")],
+            cells: vec![cell("title", "new")],
+            original: vec![],
+        };
+        assert!(validate_snapshots(&detail, &[change]).is_err());
+        let change = PendingChange::Update {
+            key: vec![cell("id", "1")],
+            cells: vec![cell("title", "new")],
+            original: vec![CellEdit {
+                column: "title".into(),
+                value: EditValue::Null,
+            }],
+        };
+        assert!(validate_snapshots(&detail, &[change]).is_ok());
+    }
+
+    #[test]
+    fn ipc_deletes_require_the_full_row_and_reject_duplicate_snapshot_columns() {
+        let detail = standard();
+        let incomplete = PendingChange::Delete {
+            key: vec![cell("id", "1")],
+            original: vec![cell("id", "1")],
+        };
+        assert!(validate_snapshots(&detail, &[incomplete]).is_err());
+        let duplicate = PendingChange::Update {
+            key: vec![cell("id", "1")],
+            cells: vec![cell("title", "new")],
+            original: vec![
+                CellEdit {
+                    column: "title".into(),
+                    value: EditValue::Null,
+                },
+                CellEdit {
+                    column: "title".into(),
+                    value: EditValue::Null,
+                },
+            ],
+        };
+        assert!(validate_snapshots(&detail, &[duplicate]).is_err());
+    }
+
+    #[test]
     fn a_table_without_a_primary_key_produces_no_statements() {
         let d = detail(vec![], vec![col("a", "int4", false)]);
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("a", "1")],
             cells: vec![cell("a", "2")],
         }];
@@ -475,6 +603,7 @@ mod tests {
         let mut d = standard();
         d.kind = TableKind::View;
         let changes = vec![PendingChange::Delete {
+            original: vec![],
             key: vec![cell("id", "1")],
         }];
         assert!(build_statements(&table(), &d, &changes, &TestDialect).is_err());
@@ -485,10 +614,12 @@ mod tests {
         let d = standard();
         let changes = vec![
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "1")],
                 cells: vec![cell("title", "x")],
             },
             PendingChange::Delete {
+                original: vec![],
                 key: vec![cell("id", "2")],
             },
         ];
@@ -511,6 +642,7 @@ mod tests {
             ],
         );
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("book_id", "1")],
             cells: vec![cell("qty", "5")],
         }];
@@ -525,6 +657,7 @@ mod tests {
         // bound as parameters.
         let d = standard();
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("title\" = '', evil", "x")],
         }];
@@ -538,6 +671,7 @@ mod tests {
     #[test]
     fn builds_an_update_anchored_on_the_key() {
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "7")],
             cells: vec![cell("title", "New"), cell("price", "9.99")],
         }];
@@ -554,6 +688,7 @@ mod tests {
         // Editing the primary key itself must still find the row by its old
         // value, or the update silently matches nothing.
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "7")],
             cells: vec![cell("id", "8")],
         }];
@@ -575,6 +710,7 @@ mod tests {
             ],
         );
         let changes = vec![PendingChange::Delete {
+            original: vec![],
             key: vec![cell("book_id", "1"), cell("store_id", "2")],
         }];
         let stmts = build_statements(&table(), &d, &changes, &TestDialect).unwrap();
@@ -590,6 +726,7 @@ mod tests {
         // `SET` with no assignments is a syntax error; typing a value and
         // undoing it should simply produce nothing.
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![],
         }];
@@ -637,6 +774,7 @@ mod tests {
                 cells: vec![cell("title", "new")],
             },
             PendingChange::Delete {
+                original: vec![],
                 key: vec![cell("id", "1")],
             },
         ];
@@ -657,6 +795,7 @@ mod tests {
     #[test]
     fn null_is_written_as_the_keyword_not_the_string() {
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![null_cell("title")],
         }];
@@ -672,6 +811,7 @@ mod tests {
     fn an_empty_string_is_not_null() {
         // The distinction the UI forces the user to make must survive to here.
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("title", "")],
         }];
@@ -695,6 +835,7 @@ mod tests {
             vec![col("uid", "binary(16)", true), col("name", "text", false)],
         );
         let changes = vec![PendingChange::Update {
+            original: vec![],
             key: vec![stored("uid", Value::Bytes(vec![0xde, 0xad]))],
             cells: vec![cell("name", "Ada")],
         }];
@@ -711,12 +852,15 @@ mod tests {
         // NULL still matches with IS NULL.
         let changes = vec![
             PendingChange::Delete {
+                original: vec![],
                 key: vec![stored("id", Value::Int(7))],
             },
             PendingChange::Delete {
+                original: vec![],
                 key: vec![stored("id", Value::Decimal("9007199254740993".into()))],
             },
             PendingChange::Delete {
+                original: vec![],
                 key: vec![stored("id", Value::Null)],
             },
         ];
@@ -738,6 +882,7 @@ mod tests {
             Value::Unsupported("INTERVAL".into()),
         ] {
             let changes = vec![PendingChange::Delete {
+                original: vec![],
                 key: vec![stored("id", value.clone())],
             }];
             let err = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap_err();
@@ -753,6 +898,7 @@ mod tests {
         // `= NULL` is never true; IS NULL at least matches zero rows honestly
         // and trips the row-count guard.
         let changes = vec![PendingChange::Delete {
+            original: vec![],
             key: vec![null_cell("id")],
         }];
         let stmts = build_statements(&table(), &standard(), &changes, &TestDialect).unwrap();

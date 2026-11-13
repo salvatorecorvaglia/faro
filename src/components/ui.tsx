@@ -45,6 +45,19 @@ export function Modal({
   width?: number;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const pointerTrigger = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    // WebKit does not focus buttons on mouse click; retain the actual opener.
+    const remember = (event: PointerEvent) => {
+      if (ref.current?.open || !(event.target instanceof Element)) return;
+      const target = event.target.closest<HTMLElement>(
+        'button, a[href], input, select, textarea, [tabindex]',
+      );
+      if (target) pointerTrigger.current = target;
+    };
+    document.addEventListener('pointerdown', remember, true);
+    return () => document.removeEventListener('pointerdown', remember, true);
+  }, []);
   // The dialog had no accessible name: the title was rendered as an <h2> but
   // never associated with it, so every modal in the app announced as an
   // unnamed dialog. `CommandPalette` names itself with `aria-label`; this is
@@ -54,8 +67,14 @@ export function Modal({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const trigger =
+      document.activeElement === document.body ? pointerTrigger.current : document.activeElement;
     if (open && !el.open) el.showModal();
     if (!open && el.open) el.close();
+    return () => {
+      if (el.open) el.close();
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+    };
   }, [open]);
 
   if (!open) return null;
@@ -78,10 +97,10 @@ export function Modal({
       }}
       // Backdrop comes from the shared `dialog::backdrop` rule so every
       // overlay in the app uses the same scrim.
-      className="m-auto rounded-xl p-0"
+      className="m-auto max-h-[90dvh] rounded-xl p-0 open:flex open:flex-col"
       style={{ background: 'var(--bg)', color: 'var(--text)', width, maxWidth: '92vw' }}
     >
-      <div className="flex items-center justify-between border-b px-4 py-2.5 border-line">
+      <div className="flex shrink-0 items-center justify-between border-b px-4 py-2.5 border-line">
         <h2 id={titleId} className="text-base font-semibold">
           {title}
         </h2>
@@ -94,7 +113,7 @@ export function Modal({
           <IconClose />
         </button>
       </div>
-      <div className="p-4">{children}</div>
+      <div className="min-h-0 overflow-y-auto p-4">{children}</div>
     </dialog>
   );
 }

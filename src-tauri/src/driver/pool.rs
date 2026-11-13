@@ -4,11 +4,11 @@
 //! Repeated identically in the Postgres, MySQL and SQLite drivers before this
 //! existed — same reasoning, same five lines, three copies. A generic
 //! function rather than a macro (unlike `fetch.rs`/`tx.rs`) because building a
-//! pool genuinely is generic over `sqlx::Database`; nothing here needs a
+//! pool genuinely is generic over `crate::sqlx::Database`; nothing here needs a
 //! per-engine row-decode function the way reading a result set does.
 
-use sqlx::pool::PoolConnection;
-use sqlx::{Connection, Database, Pool};
+use crate::sqlx::pool::PoolConnection;
+use crate::sqlx::{Connection, Database, Pool};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{FaroError, Result};
@@ -42,11 +42,23 @@ pub(crate) async fn dual_pool<DB>(
 where
     DB: Database,
     ConnectOptions<DB>: Clone,
-    for<'c> &'c mut DB::Connection: sqlx::Executor<'c, Database = DB>,
+    for<'c> &'c mut DB::Connection: crate::sqlx::Executor<'c, Database = DB>,
 {
     let pool = one::<DB>(options.clone(), acquire_timeout, session_init).await?;
     let meta = one::<DB>(options, acquire_timeout, None).await?;
     Ok((pool, meta))
+}
+
+/// Isolated session for application-owned transactions.
+pub(crate) async fn managed_pool<DB>(
+    options: ConnectOptions<DB>,
+    init: Option<&'static str>,
+) -> Result<Pool<DB>>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: crate::sqlx::Executor<'c, Database = DB>,
+{
+    one::<DB>(options, Some(std::time::Duration::from_secs(15)), init).await
 }
 
 async fn one<DB>(
@@ -56,9 +68,9 @@ async fn one<DB>(
 ) -> Result<Pool<DB>>
 where
     DB: Database,
-    for<'c> &'c mut DB::Connection: sqlx::Executor<'c, Database = DB>,
+    for<'c> &'c mut DB::Connection: crate::sqlx::Executor<'c, Database = DB>,
 {
-    let mut builder = sqlx::pool::PoolOptions::<DB>::new()
+    let mut builder = crate::sqlx::pool::PoolOptions::<DB>::new()
         .max_connections(1)
         // Never retire the connection on a timer.
         //
@@ -77,7 +89,7 @@ where
     if let Some(sql) = init {
         builder = builder.after_connect(move |conn, _meta| {
             Box::pin(async move {
-                sqlx::raw_sql(sql).execute(&mut *conn).await?;
+                crate::sqlx::raw_sql(sql).execute(&mut *conn).await?;
                 Ok(())
             })
         });

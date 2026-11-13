@@ -195,3 +195,18 @@ describe('dismiss', () => {
     expect(s.updateRef).toBe(update);
   });
 });
+
+it('does not restart when discarding staged edits is declined', async () => {
+  const { useTabs } = await import('@/state/tabs');
+  const { useConfirmStore } = await import('@/state/confirm');
+  const id = useTabs.getState().openTableTab('quit-test', { schema: null, name: 'items' });
+  useTabs.getState().update(id, { dirty: true });
+  const restart = useUpdaterStore.getState().restartApp();
+  await vi.waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+  useConfirmStore.getState().request?.resolve(false);
+  await restart;
+  expect(relaunch).not.toHaveBeenCalled();
+  expect(useTabs.getState().tabs.find((tab) => tab.id === id)?.dirty).toBe(true);
+  useTabs.setState({ tabs: [], activeId: null });
+  useConfirmStore.setState({ request: null });
+});

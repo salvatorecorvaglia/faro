@@ -6,6 +6,7 @@ export function useUpdater(): void {
   const checkedRef = useRef(false);
 
   useEffect(() => {
+    if (import.meta.env.MODE === 'desktop-smoke') return;
     if (checkedRef.current) return;
     checkedRef.current = true;
 

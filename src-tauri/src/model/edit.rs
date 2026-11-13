@@ -43,6 +43,8 @@ pub enum PendingChange {
         /// Primary key columns and their *original* values, so the row is
         /// found even when the edit changes the key itself.
         key: Vec<CellEdit>,
+        #[serde(default)]
+        original: Vec<CellEdit>,
         cells: Vec<CellEdit>,
     },
     Insert {
@@ -50,6 +52,8 @@ pub enum PendingChange {
     },
     Delete {
         key: Vec<CellEdit>,
+        #[serde(default)]
+        original: Vec<CellEdit>,
     },
 }
 

@@ -45,6 +45,11 @@ describe('compareValues', () => {
     expect(compareValues(f, t)).toBeLessThan(0);
   });
 
+  it('retains natural numeric ordering inside text', () => {
+    expect(compareValues(text('Item 9'), text('Item 10'))).toBeLessThan(0);
+    expect(compareValues(text('ITEM 10'), text('item 10'))).toBe(0);
+  });
+
   it('sorts text case-insensitively and near accented forms', () => {
     expect(compareValues(text('apple'), text('Banana'))).toBeLessThan(0);
     expect(compareValues(text('Ölafur'), text('Zed'))).toBeLessThan(0);

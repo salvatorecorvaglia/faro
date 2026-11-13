@@ -83,6 +83,11 @@ ehthumbs.db
 .Spotlight-V100
 .Trashes
 
+# Browser validation artifacts
+playwright-report/
+test-results/
+test-results-startup/
+
 # AI Tools & Agents
 .openai/
 .chatgpt/

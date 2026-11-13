@@ -190,17 +190,17 @@ async fn opening_a_database_does_not_rewrite_its_journal_mode() {
 }
 
 async fn journal_mode(path: &str) -> String {
-    use sqlx::Row;
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{path}"))
-        .await
-        .expect("probe connect failed");
-    let row = sqlx::query("PRAGMA journal_mode")
-        .fetch_one(&pool)
-        .await
-        .expect("pragma failed");
-    let mode: String = row.get(0);
-    pool.close().await;
-    mode
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let connection =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect("probe connect failed");
+        connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("pragma failed")
+    })
+    .await
+    .expect("probe task failed")
 }
 
 #[tokio::test]

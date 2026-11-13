@@ -14,6 +14,7 @@ export default defineConfig({
     // could not even be collected — so there were no component tests at all.
     environment: 'jsdom',
     include: ['tests/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
+    exclude: ['tests/browser/**'],
     setupFiles: ['src/test/setup.ts'],
     // Each file gets a fresh module registry so a zustand store mutated by one
     // test cannot leak into the next. The stores are module-level singletons,

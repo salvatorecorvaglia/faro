@@ -133,7 +133,7 @@ impl ClickHouseDriver {
     }
 
     /// POST a statement and return the raw response body.
-    async fn post(&self, sql: &str) -> Result<String> {
+    async fn request(&self, sql: &str) -> Result<reqwest::Response> {
         // ClickHouse's own read-only mode, alongside Faro's guard. Level 2 rather
         // than 1: level 1 also forbids the settings sent on every request below,
         // which would make a read-only connection unable to run anything at all.
@@ -146,6 +146,9 @@ impl ClickHouseDriver {
             .query(&[
                 ("database", self.database.as_str()),
                 ("readonly", readonly),
+                // Read queries should stop server-side when their HTTP stream is
+                // abandoned. This setting does not promise cancellation of writes.
+                ("cancel_http_readonly_queries_on_client_close", "1"),
                 // Both keep exact values out of JSON's float representation:
                 // a Decimal or an Int64 near its limit would otherwise be
                 // rounded on the way through.
@@ -157,76 +160,43 @@ impl ClickHouseDriver {
             .await
             .map_err(|e| FaroError::Connection(e.to_string()))?;
 
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| FaroError::Connection(e.to_string()))?;
+        Ok(response)
+    }
 
+    async fn post(&self, sql: &str) -> Result<String> {
+        let response = self.request(sql).await?;
+        let status = response.status();
+        let body = read_response_limited(response, 1024 * 1024).await?;
         if !status.is_success() {
             return Err(parse_error(&body));
         }
         Ok(body)
     }
 
-    /// Run a statement and decode a result set from it.
+    /// Decode complete lines as chunks arrive. Never retain the whole body.
     async fn fetch(&self, sql: &str, limit: u64) -> Result<ResultSet> {
         let started = Instant::now();
-        // The WithNamesAndTypes variant gives a header row of names, then one of
-        // types, then the data — everything a generic client needs and nothing
-        // the typed `clickhouse` crate can express.
-        let body = self
-            .post(&format!(
+        let mut response = self
+            .request(&format!(
                 "{sql}\nFORMAT JSONCompactEachRowWithNamesAndTypes"
             ))
             .await?;
-
-        let mut lines = body.lines().filter(|l| !l.trim().is_empty());
-
-        let names: Vec<String> = match lines.next() {
-            Some(line) => serde_json::from_str(line)
-                .map_err(|e| FaroError::Other(format!("could not read the column names: {e}")))?,
-            None => Vec::new(),
-        };
-        let types: Vec<String> = match lines.next() {
-            Some(line) => serde_json::from_str(line).unwrap_or_default(),
-            None => Vec::new(),
-        };
-
-        let columns: Vec<ColumnInfo> = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| ColumnInfo {
-                name: name.clone(),
-                type_name: types.get(i).cloned().unwrap_or_default(),
-            })
-            .collect();
-
-        let mut rows: Vec<Vec<Value>> = Vec::new();
-        let mut seen = 0u64;
-        for line in lines {
-            seen += 1;
-            if seen > limit {
-                // The extra row proves truncation; it is not returned.
+        if !response.status().is_success() {
+            return Err(parse_error(
+                &read_response_limited(response, 1024 * 1024).await?,
+            ));
+        }
+        let mut decoder = RowDecoder::new(limit);
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| FaroError::Connection(e.to_string()))?
+        {
+            if decoder.feed(&chunk)? {
                 break;
             }
-            let cells: Vec<serde_json::Value> = serde_json::from_str(line)
-                .map_err(|e| FaroError::Other(format!("could not read a result row: {e}")))?;
-            rows.push(
-                columns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, col)| decode_value(cells.get(i), &col.type_name))
-                    .collect(),
-            );
         }
-
-        Ok(ResultSet {
-            columns,
-            rows,
-            truncated: seen > limit,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        })
+        decoder.finish(started.elapsed().as_millis() as u64)
     }
 
     /// Catalog helper: run SQL and return rows, unlimited.
@@ -236,6 +206,129 @@ impl ClickHouseDriver {
 
     fn literal(&self, text: &str) -> String {
         self.dialect.literal(&Value::Text(text.to_string()))
+    }
+}
+
+async fn read_response_limited(mut response: reqwest::Response, max: usize) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| FaroError::Connection(e.to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > max {
+            return Err(crate::budget::exceeded("The HTTP response"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|e| FaroError::Other(e.to_string()))
+}
+
+struct RowDecoder {
+    pending: Vec<u8>,
+    names: Option<Vec<String>>,
+    columns: Option<Vec<ColumnInfo>>,
+    rows: Vec<Vec<Value>>,
+    limit: u64,
+    truncated: bool,
+    budget: crate::budget::RowBudget,
+}
+impl RowDecoder {
+    fn new(limit: u64) -> Self {
+        Self {
+            pending: Vec::new(),
+            names: None,
+            columns: None,
+            rows: Vec::new(),
+            limit,
+            truncated: false,
+            budget: Default::default(),
+        }
+    }
+    fn line(&mut self, line: &[u8]) -> Result<bool> {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return Ok(false);
+        }
+        if self.names.is_none() {
+            self.names = Some(serde_json::from_slice(line)?);
+            return Ok(false);
+        }
+        if self.columns.is_none() {
+            let types: Vec<String> = serde_json::from_slice(line)?;
+            let names = self.names.as_ref().unwrap();
+            if names.len() != types.len() {
+                return Err(FaroError::Other(
+                    "ClickHouse returned mismatched column metadata".into(),
+                ));
+            }
+            self.columns = Some(
+                names
+                    .iter()
+                    .zip(types)
+                    .map(|(name, type_name)| ColumnInfo {
+                        name: name.clone(),
+                        type_name,
+                    })
+                    .collect(),
+            );
+            self.budget.columns(self.columns.as_ref().unwrap())?;
+            return Ok(false);
+        }
+        if self.rows.len() as u64 >= self.limit {
+            self.truncated = true;
+            return Ok(true);
+        }
+        let cells: Vec<serde_json::Value> = serde_json::from_slice(line)?;
+        let row = self
+            .columns
+            .as_ref()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, column)| decode_value(cells.get(index), &column.type_name))
+            .collect::<Vec<_>>();
+        self.budget.push(&row)?;
+        self.rows.push(row);
+        Ok(false)
+    }
+    fn feed(&mut self, bytes: &[u8]) -> Result<bool> {
+        for part in bytes.split_inclusive(|byte| *byte == b'\n') {
+            if self.columns.is_some()
+                && self.rows.len() as u64 >= self.limit
+                && part.iter().any(|byte| !byte.is_ascii_whitespace())
+            {
+                self.truncated = true;
+                return Ok(true);
+            }
+            if self.pending.len().saturating_add(part.len()) > crate::budget::RESULT_BYTES {
+                return Err(crate::budget::exceeded("A ClickHouse row"));
+            }
+            self.pending.extend_from_slice(part);
+            if part.last() == Some(&b'\n') {
+                let line = std::mem::take(&mut self.pending);
+                if self.line(&line)? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+    fn finish(mut self, elapsed_ms: u64) -> Result<ResultSet> {
+        if !self.pending.is_empty() && !self.truncated {
+            let line = std::mem::take(&mut self.pending);
+            self.line(&line)?;
+        }
+        if self.columns.is_none() {
+            return Err(FaroError::Other(
+                "ClickHouse ended the response before returning column metadata".into(),
+            ));
+        }
+        Ok(ResultSet {
+            columns: self.columns.unwrap_or_default(),
+            rows: self.rows,
+            truncated: self.truncated,
+            elapsed_ms,
+        })
     }
 }
 
@@ -267,6 +360,19 @@ fn parse_error(body: &str) -> FaroError {
 
 #[async_trait]
 impl Driver for ClickHouseDriver {
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        // HTTP requests have no persistent editor transaction to share.
+        Ok(Box::new(Self {
+            http: self.http.clone(),
+            url: self.url.clone(),
+            user: self.user.clone(),
+            password: self.password.clone(),
+            database: self.database.clone(),
+            read_only: self.read_only,
+            dialect: ClickHouseDialect,
+        }))
+    }
+
     async fn ping(&self) -> Result<()> {
         self.post("SELECT 1").await.map(|_| ())
     }
@@ -615,6 +721,37 @@ fn decode_string(s: &str, inner: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_rows_survive_chunk_boundaries_inside_utf8() {
+        let bytes = "[\"name\"]\n[\"String\"]\n[\"café\"]\n".as_bytes();
+        let mut decoder = RowDecoder::new(10);
+        for byte in bytes {
+            assert!(!decoder.feed(&[*byte]).unwrap());
+        }
+        let result = decoder.finish(1).unwrap();
+        assert_eq!(result.rows, vec![vec![Value::Text("café".into())]]);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn capped_stream_does_not_decode_or_buffer_the_remaining_body() {
+        let mut decoder = RowDecoder::new(1);
+        assert!(!decoder.feed(b"[\"id\"]\n[\"Int32\"]\n[1]\n").unwrap());
+        assert!(decoder
+            .feed(b"the rest does not need to be valid JSON")
+            .unwrap());
+        let result = decoder.finish(0).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
+    }
+
+    #[test]
+    fn incomplete_stream_metadata_is_an_error() {
+        let mut decoder = RowDecoder::new(10);
+        decoder.feed(b"[\"id\"]\n").unwrap();
+        assert!(decoder.finish(0).is_err());
+    }
 
     #[test]
     fn only_explicit_disable_uses_plain_http() {

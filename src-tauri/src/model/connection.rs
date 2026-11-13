@@ -130,7 +130,7 @@ impl SslMode {
 /// The password never appears in this struct: it lives in the OS keychain and
 /// is fetched only at the moment a pool is opened. That keeps it out of the
 /// app-state database, out of IPC payloads, and out of any log line.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionConfig {
     pub id: String,
@@ -163,6 +163,18 @@ pub struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
+    /// Cosmetic edits do not require replacing an established session.
+    pub fn same_session(&self, other: &Self) -> bool {
+        self.engine == other.engine
+            && self.host == other.host
+            && self.port == other.port
+            && self.username == other.username
+            && self.database == other.database
+            && self.file_path == other.file_path
+            && self.ssl_mode == other.ssl_mode
+            && self.read_only == other.read_only
+    }
+
     /// Keychain entry key. Stable across renames because it uses the id.
     pub fn secret_key(&self) -> String {
         format!("faro:{}", self.id)

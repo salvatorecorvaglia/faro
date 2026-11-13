@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConfirmHost } from '@/components/ConfirmDialog';
@@ -124,6 +124,52 @@ describe('TableTab', () => {
       connectionId: 'c1',
       table: { schema: 'public', name: 'users' },
     });
+  });
+
+  it('ignores an old load after the tab unmounts and remounts', async () => {
+    let finishOld!: (result: ResultSet) => void;
+    let requests = 0;
+    mockInvoke({
+      describe_table: () => detail(),
+      cancel_query: () => true,
+      browse_table: () => {
+        requests += 1;
+        if (requests === 1)
+          return new Promise<ResultSet>((resolve) => {
+            finishOld = resolve;
+          });
+        return browseResult([[int(2), text('New page')]]);
+      },
+    });
+    const { id, unmount } = renderTableTab();
+    await waitFor(() => expectCallCount('browse_table', 1));
+    unmount();
+    render(<Harness id={id} />);
+    await screen.findByText('New page');
+    await act(async () => finishOld(browseResult([[int(1), text('Old page')]])));
+    expect(screen.getByText('New page')).toBeInTheDocument();
+    expect(screen.queryByText('Old page')).not.toBeInTheDocument();
+  });
+
+  it('does not let a pending filter reload undo a newer sort', async () => {
+    mockInvoke({
+      describe_table: () => detail(),
+      browse_table: () => browseResult([[int(1), text('Alice')]]),
+    });
+    renderTableTab();
+    await screen.findByText('Alice');
+    fireEvent.click(screen.getByRole('button', { name: /Column filters/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter name' }), {
+      target: { value: 'Ali' },
+    });
+    fireEvent.click(screen.getByRole('columnheader', { name: /name/ }));
+    await waitFor(() => expectCallCount('browse_table', 2));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+    expectCallCount('browse_table', 2);
+    expect(currentTab().browseSort).toEqual({ column: 'name', desc: false });
+    expect(currentTab().browseFilters).toEqual([{ column: 'name', op: 'contains', value: 'Ali' }]);
   });
 
   it('comes back to the page and sort it was left on, without re-querying', async () => {
@@ -260,6 +306,21 @@ describe('TableTab', () => {
       expect(screen.getByText(/no primary key/)).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Row' })).not.toBeInTheDocument();
       expect(screen.queryByTitle('Import a file into this table')).not.toBeInTheDocument();
+    });
+
+    it('uses the active read-only setting while a writable setting awaits reconnect', async () => {
+      mockInvoke({
+        describe_table: () => detail(),
+        browse_table: () => browseResult([[int(1), text('Alice')]]),
+      });
+      renderTableTab({
+        readOnly: false,
+        activeConfig: connection({ readOnly: true }),
+        reconnectRequired: true,
+      });
+      await screen.findByText('Alice');
+      expect(screen.getByText(/connection is open read-only/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Row' })).not.toBeInTheDocument();
     });
 
     it('explains a read-only connection even when the table has a primary key', async () => {
@@ -405,6 +466,7 @@ describe('TableTab', () => {
     expect(call?.changes).toEqual([
       {
         type: 'update',
+        original: [{ column: 'name', value: { kind: 'stored', value: text('Alice') } }],
         // The *original* key, taken from the result set — editing a key must
         // still find the row it started from.
         key: [{ column: 'id', value: { kind: 'stored', value: { kind: 'int', value: 1 } } }],
@@ -435,7 +497,7 @@ describe('TableTab', () => {
       describe_table: () => detail(),
       browse_table: () => browseResult([[int(1), text('Alice')]]),
       apply_changes: () => {
-        throw { kind: 'other', message: 'Nothing was changed: the row no longer matches.' };
+        throw { kind: 'conflict', message: 'Nothing was changed: the row no longer matches.' };
       },
     });
     renderTableTab();

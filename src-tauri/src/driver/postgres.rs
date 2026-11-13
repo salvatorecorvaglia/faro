@@ -1,6 +1,6 @@
+use crate::sqlx::postgres::{PgConnectOptions, PgPool, PgRow, PgSslMode};
+use crate::sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgRow, PgSslMode};
-use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -15,6 +15,25 @@ use crate::model::{
 pub struct PostgresDialect;
 
 impl Dialect for PostgresDialect {
+    fn snapshot_eq(&self, column: &str, value: &Value, _type_name: &str) -> String {
+        match value {
+            Value::Float(_) => {
+                let kind = if matches!(_type_name.to_ascii_lowercase().as_str(), "real" | "float4")
+                {
+                    "REAL"
+                } else {
+                    "DOUBLE PRECISION"
+                };
+                format!("{column} = CAST({} AS {kind})", self.literal(value))
+            }
+            Value::Text(text) => format!(
+                "CAST({column} AS TEXT) COLLATE \"C\" = {} COLLATE \"C\"",
+                self.quote_string(text)
+            ),
+            _ => format!("{column} = {}", self.literal(value)),
+        }
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         dialect::quote_double(ident)
     }
@@ -78,6 +97,7 @@ pub struct PostgresDriver {
     pool: PgPool,
     /// Catalog reads only, so schema browsing never queues behind a long query.
     meta: PgPool,
+    managed: PgPool,
     dialect: PostgresDialect,
 }
 
@@ -114,16 +134,19 @@ impl PostgresDriver {
         // pools rather than one larger one. Worth knowing here specifically:
         // temp tables created on the query connection are invisible on the
         // catalog one, so they do not appear in the schema tree.
-        let (pool, meta) = super::pool::dual_pool::<sqlx::Postgres>(
-            opts,
+        let (pool, meta) = super::pool::dual_pool::<crate::sqlx::Postgres>(
+            opts.clone(),
             Some(std::time::Duration::from_secs(15)),
             None,
         )
         .await?;
 
+        let managed = super::pool::managed_pool::<crate::sqlx::Postgres>(opts, None).await?;
+
         Ok(Self {
             pool,
             meta,
+            managed,
             dialect: PostgresDialect,
         })
     }
@@ -132,7 +155,7 @@ impl PostgresDriver {
 impl PostgresDriver {
     /// The table's oid, if it is a plain or partitioned table.
     async fn table_oid(&self, schema: &str, name: &str) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar(
+        Ok(crate::sqlx::query_scalar(
             "SELECT c.oid::int8 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p')",
         )
@@ -145,7 +168,7 @@ impl PostgresDriver {
     /// The columns of table `oid`, with their identity, generated and
     /// sequence details.
     async fn ddl_columns(&self, oid: i64) -> Result<Vec<DdlColumn>> {
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT a.attname AS name,
                    format_type(a.atttypid, a.atttypmod) AS type_name,
@@ -199,13 +222,38 @@ impl PostgresDriver {
 
 #[async_trait]
 impl Driver for PostgresDriver {
+    async fn snapshot_session(&self) -> Result<Option<Box<dyn Driver>>> {
+        let session = Self {
+            pool: self.managed.clone(),
+            meta: self.managed.clone(),
+            managed: self.managed.clone(),
+            dialect: PostgresDialect,
+        };
+        session
+            .execute(
+                "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                CancellationToken::new(),
+            )
+            .await?;
+        Ok(Some(Box::new(session)))
+    }
+
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        Ok(Box::new(Self {
+            pool: self.managed.clone(),
+            meta: self.meta.clone(),
+            managed: self.managed.clone(),
+            dialect: PostgresDialect,
+        }))
+    }
+
     async fn ping(&self) -> Result<()> {
-        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        crate::sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
 
     async fn list_schemas(&self) -> Result<Vec<SchemaInfo>> {
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT nspname AS name
             FROM pg_namespace
@@ -231,7 +279,7 @@ impl Driver for PostgresDriver {
 
         // reltuples is the planner's estimate. An exact COUNT(*) per table would
         // make the schema tree unusable on a large database.
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT c.relname AS name,
                    c.relkind::text AS kind,
@@ -268,7 +316,7 @@ impl Driver for PostgresDriver {
     async fn describe_table(&self, table: &TableRef) -> Result<TableDetail> {
         let schema = table.schema.as_deref().unwrap_or("public");
 
-        let col_rows = sqlx::query(
+        let col_rows = crate::sqlx::query(
             r#"
             SELECT a.attname AS name,
                    format_type(a.atttypid, a.atttypmod) AS type_name,
@@ -297,7 +345,7 @@ impl Driver for PostgresDriver {
         }
 
         // Index metadata carries the PK, uniqueness and column order in one query.
-        let idx_rows = sqlx::query(
+        let idx_rows = crate::sqlx::query(
             r#"
             SELECT i.relname AS name,
                    ix.indisunique AS is_unique,
@@ -345,7 +393,7 @@ impl Driver for PostgresDriver {
             .map(|i| i.columns.clone())
             .unwrap_or_default();
 
-        let fk_rows = sqlx::query(
+        let fk_rows = crate::sqlx::query(
             r#"
             SELECT con.conname AS name,
                    ARRAY(
@@ -374,7 +422,7 @@ impl Driver for PostgresDriver {
         .fetch_all(&self.meta)
         .await?;
 
-        let kind_row = sqlx::query(
+        let kind_row = crate::sqlx::query(
             r#"SELECT c.relkind::text AS kind FROM pg_class c
                JOIN pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = $1 AND c.relname = $2"#,
@@ -446,7 +494,7 @@ impl Driver for PostgresDriver {
         let mut out: Vec<String> = Vec::new();
 
         // Enum types the columns use, created only when absent.
-        let enums = sqlx::query(
+        let enums = crate::sqlx::query(
             r#"
             SELECT format_type(t.oid, NULL) AS name,
                    ARRAY(SELECT e.enumlabel FROM pg_enum e
@@ -505,7 +553,7 @@ impl Driver for PostgresDriver {
             })
             .collect();
 
-        let constraints = sqlx::query(
+        let constraints = crate::sqlx::query(
             r#"
             SELECT conname AS name, pg_get_constraintdef(oid) AS def
             FROM pg_constraint
@@ -605,7 +653,7 @@ impl Driver for PostgresDriver {
     async fn schema_snapshot(&self, schema: Option<&str>) -> Result<Vec<TableColumns>> {
         let schema = schema.unwrap_or("public");
 
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT c.relname AS name,
                    ARRAY(
@@ -649,7 +697,7 @@ impl Driver for PostgresDriver {
         let res = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(FaroError::Cancelled),
-            res = sqlx::query(AssertSqlSafe(owned)).execute(&mut *conn) => res?,
+            res = crate::sqlx::query(AssertSqlSafe(owned)).execute(&mut *conn) => res?,
         };
         Ok(ExecResult {
             rows_affected: res.rows_affected(),
@@ -658,14 +706,15 @@ impl Driver for PostgresDriver {
     }
 
     async fn apply_transaction(&self, statements: &[GuardedStatement]) -> Result<u64> {
-        super::tx::apply_guarded_pg(&self.pool, statements).await
+        super::tx::apply_guarded_pg(&self.managed, statements).await
     }
 
-    async fn apply_streaming(
+    async fn apply_streaming_cancelled(
         &self,
         chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+        cancel: CancellationToken,
     ) -> Result<u64> {
-        super::tx::apply_streaming_pg(&self.pool, chunks).await
+        super::tx::apply_streaming_pg(&self.managed, chunks, cancel).await
     }
 
     fn dialect(&self) -> &dyn Dialect {
@@ -676,6 +725,7 @@ impl Driver for PostgresDriver {
         // Both pools, or the metadata connection lingers after "Disconnect".
         self.pool.close().await;
         self.meta.close().await;
+        self.managed.close().await;
     }
 }
 
@@ -698,7 +748,7 @@ pub(super) fn decode_value(row: &PgRow, idx: usize) -> Value {
     // User queries run over the simple protocol and arrive as text; see
     // `fetch_capped_pg`. The binary arms below remain for anything that still
     // reads with the extended protocol.
-    if raw.format() == sqlx::postgres::PgValueFormat::Text {
+    if raw.format() == crate::sqlx::postgres::PgValueFormat::Text {
         return match row.try_get_unchecked::<&str, _>(idx) {
             Ok(text) => decode_text(&type_name, text),
             Err(_) => Value::Unsupported(type_name),
@@ -833,7 +883,7 @@ pub(super) fn decode_text(type_name: &str, text: &str) -> Value {
 
 /// `\x0a1b`'s digits as bytes.
 fn decode_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     (0..hex.len())

@@ -1,4 +1,4 @@
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { IconFilter, IconKey, IconSortAsc, IconSortDesc, IconTrash } from '@/components/icons';
@@ -118,6 +118,45 @@ export function ResultGrid({
     overscan: 12,
   });
 
+  const columnVirtualizer = useVirtualizer({
+    horizontal: true,
+    count: visible.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: (index) => widthOf(visible[index]!),
+    scrollMargin: ROW_NUM_WIDTH,
+    overscan: 3,
+    enabled: visible.length > 40,
+    rangeExtractor: (range) => {
+      const indices = defaultRangeExtractor(range);
+      const editingIndex = editingCell ? visible.indexOf(editingCell.col) : -1;
+      return editingIndex < 0
+        ? indices
+        : [...new Set([...indices, editingIndex])].sort((a, b) => a - b);
+    },
+  });
+  // Width and order changes invalidate the virtualizer's cached geometry.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: geometry triggers
+  useEffect(() => {
+    columnVirtualizer.measure();
+  }, [columnVirtualizer, widthOf, visible]);
+  const virtualColumns = columnVirtualizer.getVirtualItems();
+  const renderedColumns =
+    visible.length > 40 ? virtualColumns.map((column) => visible[column.index]!) : visible;
+  const columnOffsets = useMemo(() => {
+    let offset = ROW_NUM_WIDTH;
+    return visible.map((index) => {
+      const start = offset;
+      offset += widthOf(index);
+      return start;
+    });
+  }, [visible, widthOf]);
+  const columnStyle = (index: number) => ({
+    width: widthOf(index),
+    ...(visible.length > 40
+      ? { position: 'absolute' as const, left: columnOffsets[visible.indexOf(index)] }
+      : {}),
+  });
+
   // Holds the active drag's teardown so it can be run from the unmount effect
   // below too, not just from `pointerup` — otherwise a resize that is still in
   // progress when the grid unmounts (switching tabs, the result reloading)
@@ -190,12 +229,21 @@ export function ResultGrid({
   function onGridKeyDown(e: React.KeyboardEvent) {
     // Let the cell editor keep its own keys.
     if (editingCell) return;
+    if (
+      e.target instanceof Element &&
+      e.target.closest(
+        'input, textarea, select, button, [role="columnheader"], [contenteditable="true"]',
+      )
+    )
+      return;
 
     const rowCount = result.rows.length;
     const colCount = visible.length;
     if (rowCount === 0 || colCount === 0) return;
 
-    const current = selected ?? { row: 0, col: 0 };
+    const current = selected
+      ? { row: selected.row, col: Math.max(0, visible.indexOf(selected.col)) }
+      : { row: 0, col: 0 };
     const clamp = (n: number, max: number) => Math.max(0, Math.min(n, max));
 
     let next: { row: number; col: number } | null = null;
@@ -249,10 +297,18 @@ export function ResultGrid({
     }
 
     e.preventDefault();
-    setSelected(next);
+    setSelected({ row: next.row, col: visible[next.col]! });
     // Keep the newly selected row on screen; the rows are virtualized, so an
     // off-screen row has no element to scroll into view.
     rowVirtualizer.scrollToIndex(next.row, { align: 'auto' });
+    const viewport = parentRef.current;
+    if (viewport && viewport.clientWidth > ROW_NUM_WIDTH) {
+      const left = visible.slice(0, next.col).reduce((sum, i) => sum + widthOf(i), ROW_NUM_WIDTH);
+      const right = left + widthOf(visible[next.col]!);
+      if (left < viewport.scrollLeft + ROW_NUM_WIDTH) viewport.scrollLeft = left - ROW_NUM_WIDTH;
+      else if (right > viewport.scrollLeft + viewport.clientWidth)
+        viewport.scrollLeft = right - viewport.clientWidth;
+    }
   }
 
   return (
@@ -271,12 +327,12 @@ export function ResultGrid({
       <div style={{ width: totalWidth, minWidth: '100%' }}>
         {/* Header. Sticky so column names stay visible while scrolling. */}
         <div className="sticky top-0 z-10 bg-inset">
-          <div className="flex" style={{ height: HEADER_HEIGHT }}>
+          <div className="relative flex" style={{ height: HEADER_HEIGHT }}>
             <div
               className="shrink-0 border-r border-b"
               style={{ width: ROW_NUM_WIDTH, borderColor: 'var(--border)' }}
             />
-            {visible.map((ci) => {
+            {renderedColumns.map((ci) => {
               const col = result.columns[ci]!;
               const sorted = sort?.column === col.name;
               return (
@@ -290,7 +346,7 @@ export function ResultGrid({
                   tabIndex={0}
                   className="group relative flex shrink-0 cursor-pointer select-none items-center gap-1 border-r border-b px-2"
                   style={{
-                    width: widthOf(ci),
+                    ...columnStyle(ci),
                     borderColor: 'var(--border)',
                     opacity: dragCol === ci ? 0.4 : 1,
                   }}
@@ -337,21 +393,21 @@ export function ResultGrid({
           </div>
 
           {showFilters && (
-            <div className="flex" style={{ height: FILTER_HEIGHT }}>
+            <div className="relative flex" style={{ height: FILTER_HEIGHT }}>
               <div
                 className="flex shrink-0 items-center justify-center border-r border-b"
                 style={{ width: ROW_NUM_WIDTH, borderColor: 'var(--border)' }}
               >
                 <IconFilter size={11} className="text-faint" />
               </div>
-              {visible.map((ci) => {
+              {renderedColumns.map((ci) => {
                 const col = result.columns[ci]!;
                 const f = filters.find((x) => x.column === col.name);
                 return (
                   <div
                     key={columnKeys[ci]}
                     className="flex shrink-0 items-center gap-0.5 border-r border-b px-1"
-                    style={{ width: widthOf(ci), borderColor: 'var(--border)' }}
+                    style={{ ...columnStyle(ci), borderColor: 'var(--border)' }}
                   >
                     <select
                       className="shrink-0 bg-transparent text-2xs outline-none"
@@ -433,7 +489,7 @@ export function ResultGrid({
                     {v.index + 1}
                   </span>
                 </div>
-                {visible.map((ci) => {
+                {renderedColumns.map((ci) => {
                   const cell = row[ci];
                   const name = result.columns[ci]!.name;
                   const staged = editing ? stagedValue(editing.edits, v.index, name) : undefined;
@@ -443,6 +499,8 @@ export function ResultGrid({
                       value={cell}
                       staged={staged}
                       width={widthOf(ci)}
+                      position={columnStyle(ci)}
+                      columnIndex={visible.indexOf(ci) + 1}
                       selected={selected?.row === v.index && selected?.col === ci}
                       editing={editingCell?.row === v.index && editingCell?.col === ci}
                       editable={!!editing && !deleted}
@@ -473,7 +531,7 @@ export function ResultGrid({
             // Continues the numbering from the fetched page, which is where
             // these sit visually.
             aria-rowindex={result.rows.length + insertIndex + 1}
-            className="flex"
+            className="relative flex"
             style={{
               height: ROW_HEIGHT,
               width: totalWidth,
@@ -500,7 +558,7 @@ export function ResultGrid({
                 <IconTrash size={10} />
               </button>
             </div>
-            {visible.map((ci) => {
+            {renderedColumns.map((ci) => {
               const name = result.columns[ci]!.name;
               return (
                 <Cell
@@ -508,6 +566,8 @@ export function ResultGrid({
                   value={undefined}
                   staged={row.cells[name]}
                   width={widthOf(ci)}
+                  position={columnStyle(ci)}
+                  columnIndex={visible.indexOf(ci) + 1}
                   selected={false}
                   editing={editingCell?.row === -1 - insertIndex && editingCell?.col === ci}
                   editable

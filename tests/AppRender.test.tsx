@@ -35,6 +35,7 @@ beforeEach(() => {
   useTabs.setState({ tabs: [], activeId: null });
   useConnections.setState({ items: [], loading: false, connecting: new Set(), error: null });
   mockInvoke({
+    set_exit_guard: () => {},
     list_history: () => [],
     list_saved_queries: () => [],
     schema_snapshot: () => [],

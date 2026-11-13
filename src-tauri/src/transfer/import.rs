@@ -156,8 +156,8 @@ pub fn preview(path: &Path, format: ImportFormat, has_header: bool) -> Result<Im
 /// failure takes the app down rather than surfacing as an error.
 ///
 /// Delimited files stream: `csv::Reader` yields records one at a time, so only
-/// `batch` rows are ever live. JSON and XLSX cannot — both formats have to be
-/// parsed as a whole document before any row is addressable — so they fall back
+/// `batch` rows are ever live. JSON scans the schema and then streams rows in
+/// a second pass. XLSX still materializes a bounded worksheet, so it falls back
 /// to reading fully and are handed to `sink` in batches for a uniform caller.
 ///
 /// `sink` returns `false` to stop reading — what the preview uses to look at
@@ -173,6 +173,30 @@ pub fn read_rows_batched(
     batch: usize,
     sink: &mut dyn FnMut(&[Vec<String>]) -> Result<bool>,
 ) -> Result<(Vec<String>, usize)> {
+    read_rows_batched_cancelled(
+        path,
+        format,
+        has_header,
+        batch,
+        sink,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+}
+
+pub fn read_rows_batched_cancelled(
+    path: &Path,
+    format: ImportFormat,
+    has_header: bool,
+    batch: usize,
+    sink: &mut dyn FnMut(&[Vec<String>]) -> Result<bool>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(Vec<String>, usize)> {
+    if cancel.is_cancelled() {
+        return Err(FaroError::Cancelled);
+    }
+    if matches!(format, ImportFormat::Json) {
+        return read_json_batched(path, batch, sink, cancel);
+    }
     let delimiter = match format {
         ImportFormat::Csv => Some(sniff_delimiter(path)?),
         ImportFormat::Tsv => Some(b'\t'),
@@ -195,13 +219,34 @@ pub fn read_rows_batched(
 
     let mut buffer: Vec<Vec<String>> = Vec::with_capacity(batch.max(1));
     let mut total = 0usize;
+    let mut batch_bytes = 0usize;
     for record in reader.records() {
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
         let record = record.map_err(|e| FaroError::Io(e.to_string()))?;
+        let bytes = record
+            .iter()
+            .map(|value| 32 + value.len() * 2)
+            .sum::<usize>();
+        if bytes > crate::budget::RESULT_BYTES {
+            return Err(crate::budget::exceeded("A delimited row"));
+        }
+        if !buffer.is_empty() && batch_bytes.saturating_add(bytes) > crate::budget::RESULT_BYTES {
+            total += buffer.len();
+            if !sink(&buffer)? {
+                return Ok((columns, total));
+            }
+            buffer.clear();
+            batch_bytes = 0;
+        }
+        batch_bytes += bytes;
         buffer.push(record.iter().map(String::from).collect());
         if buffer.len() >= batch.max(1) {
             total += buffer.len();
             let keep_going = sink(&buffer)?;
             buffer.clear();
+            batch_bytes = 0;
             if !keep_going {
                 return Ok((columns, total));
             }
@@ -325,9 +370,155 @@ fn read_delimited(
     Ok((columns, rows))
 }
 
+/// Parse a JSON array one value at a time. Preserve sink errors verbatim.
+fn visit_json(path: &Path, sink: &mut dyn FnMut(serde_json::Value) -> Result<bool>) -> Result<()> {
+    use serde::de::{DeserializeSeed, SeqAccess, Visitor};
+    struct ArrayVisitor<'a> {
+        sink: &'a mut dyn FnMut(serde_json::Value) -> Result<bool>,
+        failure: &'a mut Option<FaroError>,
+        stopped: &'a mut bool,
+    }
+    impl<'de> Visitor<'de> for ArrayVisitor<'_> {
+        type Value = ();
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a JSON array of objects")
+        }
+        fn visit_seq<A: SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> std::result::Result<(), A::Error> {
+            while let Some(value) = sequence.next_element::<serde_json::Value>()? {
+                if crate::budget::json_bytes(&value) > crate::budget::RESULT_BYTES {
+                    *self.failure = Some(crate::budget::exceeded("A JSON row"));
+                    return Err(serde::de::Error::custom("JSON row exceeds memory budget"));
+                }
+                match (self.sink)(value) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        *self.stopped = true;
+                        return Err(serde::de::Error::custom("preview complete"));
+                    }
+                    Err(error) => {
+                        *self.failure = Some(error);
+                        return Err(serde::de::Error::custom("JSON sink failed"));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+    impl<'de> DeserializeSeed<'de> for ArrayVisitor<'_> {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> std::result::Result<(), D::Error> {
+            deserializer.deserialize_seq(self)
+        }
+    }
+    let mut failure = None;
+    let mut stopped = false;
+    let mut deserializer =
+        serde_json::Deserializer::from_reader(std::io::BufReader::new(std::fs::File::open(path)?));
+    let result = ArrayVisitor {
+        sink,
+        failure: &mut failure,
+        stopped: &mut stopped,
+    }
+    .deserialize(&mut deserializer);
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if stopped {
+        return Ok(());
+    }
+    result.map_err(|error| {
+        FaroError::Other(format!(
+            "expected the JSON file to contain an array of objects: {error}"
+        ))
+    })?;
+    deserializer.end()?;
+    Ok(())
+}
+
+fn read_json_batched(
+    path: &Path,
+    batch: usize,
+    sink: &mut dyn FnMut(&[Vec<String>]) -> Result<bool>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(Vec<String>, usize)> {
+    let mut columns = Vec::<String>::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut column_bytes = 0usize;
+    visit_json(path, &mut |value| {
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
+        if let Some(object) = value.as_object() {
+            for key in object.keys() {
+                if seen.insert(key.clone()) {
+                    column_bytes = column_bytes.saturating_add(key.len() * 4 + 64);
+                    if column_bytes > crate::budget::RESULT_BYTES || columns.len() >= 10_000 {
+                        return Err(crate::budget::exceeded("The JSON column list"));
+                    }
+                    columns.push(key.clone());
+                }
+            }
+        }
+        Ok(true)
+    })?;
+    let mut rows = Vec::new();
+    let mut bytes = 0usize;
+    let mut total = 0usize;
+    let mut stopped = false;
+    visit_json(path, &mut |value| {
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
+        let row: Vec<String> = columns
+            .iter()
+            .map(|key| match value.get(key) {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(text)) => text.clone(),
+                Some(value) => value.to_string(),
+            })
+            .collect();
+        let size = row.iter().map(|value| 32 + value.len() * 2).sum::<usize>();
+        if size > crate::budget::RESULT_BYTES {
+            return Err(crate::budget::exceeded("A JSON row"));
+        }
+        if !rows.is_empty() && bytes.saturating_add(size) > crate::budget::RESULT_BYTES {
+            total += rows.len();
+            if !sink(&rows)? {
+                stopped = true;
+                return Ok(false);
+            }
+            rows.clear();
+            bytes = 0;
+        }
+        bytes += size;
+        rows.push(row);
+        if rows.len() >= batch.max(1) {
+            total += rows.len();
+            if !sink(&rows)? {
+                stopped = true;
+                return Ok(false);
+            }
+            rows.clear();
+            bytes = 0;
+        }
+        Ok(true)
+    })?;
+    if !stopped && !rows.is_empty() {
+        total += rows.len();
+        sink(&rows)?;
+    }
+    Ok((columns, total))
+}
+
 fn read_json(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>)> {
-    let text = std::fs::read_to_string(path)?;
-    let parsed: serde_json::Value = serde_json::from_str(&text)?;
+    let bytes = crate::budget::read_materialized(path)?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes)?;
 
     let array = parsed.as_array().ok_or_else(|| {
         FaroError::Other("expected the JSON file to contain an array of objects".into())
@@ -364,10 +555,28 @@ fn read_json(path: &Path) -> Result<(Vec<String>, Vec<Vec<String>>)> {
 }
 
 fn read_xlsx(path: &Path, has_header: bool) -> Result<(Vec<String>, Vec<Vec<String>>)> {
-    use calamine::{open_workbook_auto, Reader};
+    use calamine::{open_workbook, Reader, Xlsx};
 
-    let mut workbook = open_workbook_auto(path)
-        .map_err(|e| FaroError::Io(format!("could not open workbook: {e}")))?;
+    if std::fs::metadata(path)?.len() > crate::budget::MATERIALIZED_BYTES as u64 {
+        return Err(crate::budget::exceeded("This workbook"));
+    }
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)
+        .map_err(|e| FaroError::Io(e.to_string()))?;
+    let mut expanded = 0u64;
+    for index in 0..archive.len() {
+        expanded = expanded.saturating_add(
+            archive
+                .by_index(index)
+                .map_err(|e| FaroError::Io(e.to_string()))?
+                .size(),
+        );
+        if expanded > crate::budget::MATERIALIZED_BYTES as u64 {
+            return Err(crate::budget::exceeded("This workbook's expanded contents"));
+        }
+    }
+    drop(archive);
+    let mut workbook: Xlsx<_> =
+        open_workbook(path).map_err(|e| FaroError::Io(format!("could not open workbook: {e}")))?;
 
     let sheet_name = workbook
         .sheet_names()
@@ -375,6 +584,39 @@ fn read_xlsx(path: &Path, has_header: bool) -> Result<(Vec<String>, Vec<Vec<Stri
         .cloned()
         .ok_or_else(|| FaroError::Other("the workbook has no sheets".into()))?;
 
+    {
+        let mut cells = workbook
+            .worksheet_cells_reader(&sheet_name)
+            .map_err(|error| FaroError::Io(error.to_string()))?;
+        let mut bytes = 0usize;
+        let mut first = (u32::MAX, u32::MAX);
+        let mut last = (0u32, 0u32);
+        while let Some(cell) = cells
+            .next_cell()
+            .map_err(|error| FaroError::Io(error.to_string()))?
+        {
+            let (row, column) = cell.get_position();
+            first = (first.0.min(row), first.1.min(column));
+            last = (last.0.max(row), last.1.max(column));
+            let size = match cell.get_value() {
+                calamine::DataRef::SharedString(text) => text.len() * 2,
+                calamine::DataRef::String(text)
+                | calamine::DataRef::DateTimeIso(text)
+                | calamine::DataRef::DurationIso(text) => text.len() * 2,
+                _ => 32,
+            };
+            bytes = bytes.saturating_add(64 + size);
+            if bytes > crate::budget::MATERIALIZED_BYTES {
+                return Err(crate::budget::exceeded("The expanded workbook cells"));
+            }
+        }
+        if first.0 != u32::MAX {
+            let dense = (last.0 - first.0 + 1) as u64 * (last.1 - first.1 + 1) as u64;
+            if dense > (crate::budget::MATERIALIZED_BYTES / 64) as u64 {
+                return Err(crate::budget::exceeded("The worksheet dimensions"));
+            }
+        }
+    }
     let range = workbook
         .worksheet_range(&sheet_name)
         .map_err(|e| FaroError::Io(format!("could not read sheet: {e}")))?;
@@ -475,6 +717,42 @@ mod tests {
             "reported total disagrees with what was sent"
         );
         (columns, sizes, all)
+    }
+
+    #[test]
+    fn sparse_workbook_dimensions_are_checked_before_dense_allocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sparse.xlsx");
+        let mut workbook = rust_xlsxwriter::Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.write_string(0, 0, "header").unwrap();
+        sheet.write_string(999_999, 9999, "end").unwrap();
+        workbook.save(&path).unwrap();
+        assert!(matches!(
+            read_rows(&path, ImportFormat::Xlsx, true),
+            Err(FaroError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn streamed_json_preserves_sink_errors_and_can_stop_early() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("rows.json");
+        std::fs::write(&path, r#"[{"a":1},{"b":2},{"a":3}]"#).unwrap();
+        let error = read_rows_batched(&path, ImportFormat::Json, true, 1, &mut |_| {
+            Err(FaroError::Cancelled)
+        })
+        .unwrap_err();
+        assert!(matches!(error, FaroError::Cancelled));
+        let mut calls = 0;
+        let (columns, rows) = read_rows_batched(&path, ImportFormat::Json, true, 1, &mut |_| {
+            calls += 1;
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(columns, vec!["a", "b"]);
+        assert_eq!(rows, 1);
+        assert_eq!(calls, 1);
     }
 
     #[test]

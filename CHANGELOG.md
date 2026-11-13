@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Conflict protection for table edits: updates compare the original edited
+  values, and deletes compare the original row, before applying changes.
+  Changes whose original values cannot be compared safely are refused.
+- Consistent snapshot backups where the engine supports them, with explicit
+  best-effort consent when a snapshot is unavailable.
+- Confirmation before closing, quitting or restarting for an update when tabs
+  contain staged edits or database operations are still running.
+- Connection status now indicates when saved settings or credentials require
+  a reconnect to take effect.
+- Browser and native desktop smoke tests, shared frontend/backend IPC contract
+  fixtures, and production startup and JavaScript bundle-size checks in CI.
+
+### Changed
+
+- Defer loading the SQL editor, formatter and tab UI to reduce startup assets.
+- Sort and filter result pages larger than 2,000 rows in a worker, and virtualize
+  columns as well as rows for wide tables.
+- Apply estimated memory budgets to results, query runs, cached data and tab
+  results; limit materialized workbook and restore inputs and editor submissions.
+  These limits govern retained data rather than total process memory.
+- Stream JSON imports and ClickHouse responses, bound import batches by bytes
+  as well as rows, and move output file I/O to a bounded background writer.
+- Serialize editor submissions per connection and give managed edits, imports
+  and restores separate sessions to preserve editor transaction ownership.
+- Migrate SQLite sessions to bundled `rusqlite` 0.42, use SQLx 0.9 engine crates
+  directly for PostgreSQL and MySQL, and replace the SQL Server pool manager
+  with one built against Tiberius 0.13.
+- Refresh frontend and Rust dependencies and raise the minimum Rust version
+  to 1.94.
+- Improve modal scrolling, focus restoration, platform-specific shortcut labels,
+  keyboard access to tab controls, and text contrast in both themes.
+- Clarify that read-only mode helps prevent accidental writes; database
+  privileges remain necessary to enforce access restrictions.
+
+### Fixed
+
+- Prevent stale query, table, formatting and progress responses from replacing
+  newer state, and prevent repeated actions from starting duplicate operations.
+- Keep cancelled operations registered until cleanup completes, isolate
+  cancellation to the session that owns the work, and await commits already
+  issued before reporting their result. SQL Server cancellation waits for the
+  executing statement to drain before rollback.
+- Keep same-named tables in different schemas independently selectable for
+  backups, and require a fresh best-effort decision each time the dialog opens.
+- Reject oversized sparse Excel ranges before dense allocation and preserve
+  producer errors during streaming imports.
+- Report credential deletion failures, retain fallback credentials after failed
+  replacement, and clear obsolete fallback values after successful persistence.
+- Restore SQL Server isolation settings after snapshot cleanup and use MySQL's
+  simple protocol for transaction control.
+
+### Security
+
+- Detect quoted side-effecting function names in read-only SQL checks.
+- Create transfer outputs exclusively inside private temporary directories,
+  refuse injected symlinks, and preserve existing destinations when replacement
+  fails.
+
 ## [1.2.0] - 2026-10-28
 
 ### Changed
@@ -19,14 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update Tokio to `1.54.1` and Biome to `2.6.3`.
 - Refresh the application logo and documentation, and use ad-hoc signing for macOS bundles.
 
-
 ### Fixed
 
 - Pinned `rusqlite` to a version that shares the native SQLite library with
   SQLx, avoiding conflicting SQLite library dependencies during builds.
 - Pinned the SQL Server driver to the version used by its connection pool.
 - Disable sccache on Windows for Rust tests and release builds.
-
 
 ### Security
 

@@ -46,6 +46,23 @@ impl Cached {
         }
     }
 
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Page(result) => crate::budget::result_bytes(result),
+            Self::Run(run) => run
+                .statements
+                .iter()
+                .map(|statement| {
+                    statement.sql.len()
+                        + match &statement.outcome {
+                            Some(QueryOutcome::Rows(result)) => crate::budget::result_bytes(result),
+                            _ => 64,
+                        }
+                })
+                .sum(),
+        }
+    }
+
     fn rows(&self) -> usize {
         match self {
             Cached::Run(run) => run
@@ -74,17 +91,28 @@ impl ResultCache {
 
     /// Keep a result under its query id, evicting the oldest past the bounds.
     pub fn insert(&self, query_id: String, result: Cached) {
+        self.insert_with_limit(query_id, result, crate::budget::CACHE_BYTES);
+    }
+
+    fn insert_with_limit(&self, query_id: String, result: Cached, max_bytes: usize) {
         let mut entries = self.lock();
         entries.retain(|(id, _)| id != &query_id);
+        if result.bytes() > max_bytes || result.rows() > MAX_ROWS {
+            return;
+        }
         entries.push_back((query_id, result));
         let mut rows: usize = entries.iter().map(|(_, c)| c.rows()).sum();
-        // Always keep the newest entry, however large: it is the one the user
-        // is looking at and most likely to export.
-        while entries.len() > 1 && (entries.len() > MAX_ENTRIES || rows > MAX_ROWS) {
+        let mut bytes: usize = entries.iter().map(|(_, result)| result.bytes()).sum();
+        while entries.len() > MAX_ENTRIES || rows > MAX_ROWS || bytes > max_bytes {
             if let Some((_, evicted)) = entries.pop_front() {
                 rows -= evicted.rows();
+                bytes -= evicted.bytes();
             }
         }
+    }
+
+    pub fn remove(&self, query_id: &str) {
+        self.lock().retain(|(id, _)| id != query_id);
     }
 
     /// The result kept under `query_id`, if it is still held.
@@ -123,6 +151,27 @@ mod tests {
     }
 
     #[test]
+    fn byte_budget_evicts_old_results_even_with_few_rows_and_supports_release() {
+        let cache = ResultCache::new();
+        let make = || {
+            Cached::Page(Arc::new(ResultSet {
+                columns: vec![],
+                rows: vec![vec![Value::Text("x".repeat(100))]],
+                truncated: false,
+                elapsed_ms: 0,
+            }))
+        };
+        cache.insert_with_limit("old".into(), make(), 400);
+        cache.insert_with_limit("new".into(), make(), 400);
+        assert!(cache.get("old").is_none());
+        assert!(cache.get("new").is_some());
+        cache.remove("new");
+        assert!(cache.get("new").is_none());
+        cache.insert_with_limit("too-big".into(), make(), 100);
+        assert!(cache.get("too-big").is_none());
+    }
+
+    #[test]
     fn a_result_is_found_again_by_its_query_id() {
         let cache = ResultCache::new();
         cache.insert("q1".into(), page(3));
@@ -143,16 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn the_row_cap_bounds_memory_but_never_evicts_the_newest() {
+    fn oversized_results_are_not_retained() {
         let cache = ResultCache::new();
         cache.insert("old".into(), page(MAX_ROWS / 2 + 1));
         cache.insert("new".into(), page(MAX_ROWS / 2 + 1));
         assert_eq!(held(&cache, "old"), None);
         assert_eq!(held(&cache, "new"), Some(MAX_ROWS / 2 + 1));
 
-        // A single result larger than the cap is still kept.
+        // A single result larger than the cap is refused.
         cache.insert("huge".into(), page(MAX_ROWS + 1));
-        assert_eq!(held(&cache, "huge"), Some(MAX_ROWS + 1));
+        assert_eq!(held(&cache, "huge"), None);
     }
 
     #[test]

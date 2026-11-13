@@ -400,7 +400,7 @@ pub fn bare_words(sql: &str) -> Vec<String> {
 /// the engine's real rules, or check every plausible set — see
 /// [`is_read_only_statement`].
 pub fn bare_words_with(sql: &str, rules: LexRules) -> Vec<String> {
-    bare_words_up_to(sql, rules, usize::MAX)
+    bare_words_up_to(sql, rules, usize::MAX, false)
 }
 
 /// The statement's first bare word, upper-cased — its leading keyword.
@@ -410,11 +410,16 @@ pub fn bare_words_with(sql: &str, rules: LexRules) -> Vec<String> {
 /// `SELECT`. Stops at the first word rather than tokenizing the whole
 /// statement, since callers ask this of every statement they run.
 pub fn leading_word(sql: &str) -> Option<String> {
-    bare_words_up_to(sql, LexRules::PERMISSIVE, 1).pop()
+    bare_words_up_to(sql, LexRules::PERMISSIVE, 1, false).pop()
 }
 
 /// [`bare_words_with`], stopping once `max` words have been collected.
-fn bare_words_up_to(sql: &str, rules: LexRules, max: usize) -> Vec<String> {
+fn bare_words_up_to(
+    sql: &str,
+    rules: LexRules,
+    max: usize,
+    check_identifiers: bool,
+) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
     let mut chars = sql.chars().peekable();
@@ -457,7 +462,19 @@ fn bare_words_up_to(sql: &str, rules: LexRules, max: usize) -> Vec<String> {
 
         if let Some((close, backslash)) = rules.opens(c) {
             flush!();
-            consume_quoted(&mut chars, close, backslash, None);
+            let identifier = c != '\'' && !(c == '"' && rules.double_quote_is_string);
+            let mut quoted = String::new();
+            let capture = (check_identifiers && identifier).then_some(&mut quoted);
+            consume_quoted(&mut chars, close, backslash, capture);
+            if check_identifiers && identifier {
+                let name = quoted
+                    .strip_suffix(close)
+                    .unwrap_or(&quoted)
+                    .to_ascii_uppercase();
+                if SIDE_EFFECT_FUNCTIONS.contains(&name.as_str()) {
+                    out.push(name);
+                }
+            }
             continue;
         }
 
@@ -543,7 +560,7 @@ pub fn count_writes(statements: &[String], rules: Option<LexRules>) -> usize {
 /// Whether a statement is safe to run read-only, judged with one engine's
 /// quoting rules.
 pub fn is_read_only_statement_with(sql: &str, rules: LexRules) -> bool {
-    let words = bare_words_with(sql, rules);
+    let words = bare_words_up_to(sql, rules, usize::MAX, true);
     let Some(first) = words.first() else {
         // No bare tokens at all: a comment, or only a literal. Nothing to run.
         return true;
@@ -1403,6 +1420,19 @@ SELECT f()
             "-- inspect\nPRAGMA table_info(t)",
         ] {
             assert!(is_read_only_statement(sql), "should be allowed: {sql}");
+        }
+    }
+
+    #[test]
+    fn quoted_side_effect_functions_are_refused() {
+        for statement in [
+            r#"SELECT pg_catalog."set_config"('default_transaction_read_only', 'off', false)"#,
+            r#"SELECT "pg_catalog"."nextval"('orders_id_seq')"#,
+        ] {
+            assert!(
+                !is_read_only_statement_with(statement, LexRules::STANDARD),
+                "{statement}"
+            );
         }
     }
 

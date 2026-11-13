@@ -30,7 +30,14 @@ const table = (name: string): TableInfo => ({
 function captureProgress<T>() {
   let emit: ((payload: T) => void) | null = null;
   vi.mocked(listen).mockImplementation((async (_event: string, handler: unknown) => {
-    emit = (payload: T) => (handler as (e: { payload: T }) => void)({ payload });
+    emit = (payload: T) => {
+      const operation = callsTo(
+        _event === 'faro://backup-progress' ? 'backup_database' : 'restore_database',
+      ).at(-1);
+      (handler as (event: { payload: unknown }) => void)({
+        payload: { queryId: operation?.queryId, progress: payload },
+      });
+    };
     return () => {};
   }) as unknown as typeof listen);
   return {
@@ -94,7 +101,11 @@ describe('BackupDialog — running a backup', () => {
     expect(await screen.findByText(/Backed up 2 tables/)).toBeInTheDocument();
 
     const call = callsTo('backup_database')[0];
-    expect(call).toMatchObject({ connectionId: 'c1', path: '/tmp/prod.sql' });
+    expect(call).toMatchObject({
+      connectionId: 'c1',
+      path: '/tmp/prod.sql',
+      allowBestEffort: false,
+    });
     // The dump has to name what the user actually saw ticked, not "everything".
     expect(call?.options).toMatchObject({
       tables: [
@@ -105,6 +116,25 @@ describe('BackupDialog — running a backup', () => {
       includeData: true,
       dropExisting: false,
     });
+  });
+
+  it('allows best-effort backup only after explicit opt-in', async () => {
+    mockInvoke({
+      backup_database: () => ({
+        tables: 1,
+        rows: 1,
+        bytes: 1,
+        path: '/tmp/prod.sql',
+        consistentSnapshot: false,
+      }),
+    });
+    vi.mocked(save).mockResolvedValue('/tmp/prod.sql');
+    renderBackup();
+    await userEvent.click(screen.getByRole('checkbox', { name: /Allow best-effort backup/ }));
+    await userEvent.click(screen.getByRole('button', { name: /choose file/i }));
+    await screen.findByText(/Backed up 1 tables/);
+    expect(callsTo('backup_database')[0]).toMatchObject({ allowBestEffort: true });
+    expect(screen.getByText(/Best-effort dump:/)).toBeInTheDocument();
   });
 
   it('writes nothing when the save dialog is dismissed', async () => {
@@ -313,6 +343,8 @@ describe('RestoreDialog — running a restore', () => {
     await screen.findByText(/Ran 1 statements/);
     // `cancel_query` keys off this, which is the only way to stop a restore.
     expect(ipc.RESTORE_PROGRESS_EVENT).toBe('faro://restore-progress');
-    expect(callsTo('restore_database')[0]?.queryId).toEqual(expect.stringMatching(/^res-\d+$/));
+    expect(callsTo('restore_database')[0]?.queryId).toEqual(
+      expect.stringMatching(/^res-\d+-[a-f0-9-]+$/),
+    );
   });
 });

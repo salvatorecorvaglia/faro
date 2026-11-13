@@ -1,6 +1,8 @@
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { create } from 'zustand';
+import { runningOperations } from '@/ipc';
+import { confirmExit } from './exit';
 
 export type UpdaterStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
 
@@ -108,6 +110,7 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
 
   restartApp: async () => {
     try {
+      if (!(await confirmExit(await runningOperations()))) return;
       await relaunch();
     } catch (err) {
       logError('[Updater] Failed to relaunch app:', err);

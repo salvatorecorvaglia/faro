@@ -17,6 +17,24 @@ use crate::model::{
 pub struct DuckDbDialect;
 
 impl Dialect for DuckDbDialect {
+    fn snapshot_eq(&self, column: &str, value: &Value, _type_name: &str) -> String {
+        match value {
+            Value::Float(_) => {
+                let kind = if matches!(_type_name.to_ascii_uppercase().as_str(), "REAL" | "FLOAT") {
+                    "FLOAT"
+                } else {
+                    "DOUBLE"
+                };
+                format!("{column} = CAST({} AS {kind})", self.literal(value))
+            }
+            Value::Text(text) => format!(
+                "encode(CAST({column} AS VARCHAR)) = {}",
+                self.quote_bytes(text.as_bytes())
+            ),
+            _ => format!("{column} = {}", self.literal(value)),
+        }
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         dialect::quote_double(ident)
     }
@@ -65,6 +83,8 @@ impl Dialect for DuckDbDialect {
 /// the SQLite driver.
 pub struct DuckDbDriver {
     conn: Arc<Mutex<Connection>>,
+    managed: Arc<Mutex<Connection>>,
+    managed_interrupt: Arc<duckdb::InterruptHandle>,
     /// Interrupts whatever statement the connection is running.
     ///
     /// Held outside the mutex on purpose: the running statement holds the
@@ -108,11 +128,30 @@ impl DuckDbDriver {
         .map_err(|e| FaroError::Connection(e.to_string()))?
         .map_err(|e| FaroError::Connection(e.to_string()))?;
 
+        let managed = conn.try_clone().map_err(map_err)?;
         Ok(Self {
+            managed_interrupt: managed.interrupt_handle(),
+            managed: Arc::new(Mutex::new(managed)),
             interrupt: conn.interrupt_handle(),
             conn: Arc::new(Mutex::new(conn)),
             dialect: DuckDbDialect,
         })
+    }
+
+    async fn with_managed<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        let conn = self.managed.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn.lock().map_err(|_| {
+                FaroError::Other("the managed DuckDB session is no longer usable".into())
+            })?;
+            f(&guard)
+        })
+        .await
+        .map_err(|e| FaroError::Other(format!("DuckDB task failed: {e}")))?
     }
 
     /// Run a closure against the connection on a blocking thread.
@@ -187,6 +226,7 @@ impl DuckDbDriver {
         // column's declared type tells them apart.
         let mut zoned: Vec<bool> = Vec::new();
         let mut data: Vec<Vec<Value>> = Vec::new();
+        let mut budget = crate::budget::RowBudget::default();
         let mut seen = 0u64;
 
         while let Some(row) = rows.next().map_err(map_err)? {
@@ -206,6 +246,7 @@ impl DuckDbDriver {
                             .unwrap_or_else(|_| "UNKNOWN".into()),
                     })
                     .collect();
+                budget.columns(&columns)?;
                 zoned = (0..columns.len())
                     .map(|i| {
                         matches!(
@@ -228,22 +269,22 @@ impl DuckDbDriver {
             }
 
             let width = columns.len();
-            data.push(
-                (0..width)
-                    .map(|i| match row.get_ref(i) {
-                        // An instant, so it says so: RFC 3339 with its UTC
-                        // offset. Shown as a bare `2024-01-01 08:00:00` it lost
-                        // the fact that it was UTC — and a dump of it restored
-                        // as that wall time in whatever zone the session used,
-                        // shifting every value by the difference.
-                        Ok(ValueRef::Timestamp(unit, v)) if zoned[i] => {
-                            Value::Timestamp(format_timestamp_utc(unit, v))
-                        }
-                        Ok(v) => decode_value(v),
-                        Err(_) => Value::Null,
-                    })
-                    .collect(),
-            );
+            let row: Vec<Value> = (0..width)
+                .map(|i| match row.get_ref(i) {
+                    // An instant, so it says so: RFC 3339 with its UTC
+                    // offset. Shown as a bare `2024-01-01 08:00:00` it lost
+                    // the fact that it was UTC — and a dump of it restored
+                    // as that wall time in whatever zone the session used,
+                    // shifting every value by the difference.
+                    Ok(ValueRef::Timestamp(unit, v)) if zoned[i] => {
+                        Value::Timestamp(format_timestamp_utc(unit, v))
+                    }
+                    Ok(v) => decode_value(v),
+                    Err(_) => Value::Null,
+                })
+                .collect();
+            budget.push(&row)?;
+            data.push(row);
         }
 
         // A statement returning no rows still has columns worth reporting.
@@ -258,6 +299,7 @@ impl DuckDbDriver {
                 .collect();
         }
 
+        budget.columns(&columns)?;
         Ok(ResultSet {
             columns,
             rows: data,
@@ -304,6 +346,29 @@ fn map_err(e: duckdb::Error) -> FaroError {
 
 #[async_trait]
 impl Driver for DuckDbDriver {
+    async fn snapshot_session(&self) -> Result<Option<Box<dyn Driver>>> {
+        let session = self.managed_session().await?;
+        session
+            .execute("BEGIN TRANSACTION", CancellationToken::new())
+            .await?;
+        Ok(Some(session))
+    }
+
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        let conn = self.managed.clone();
+        let interrupt = conn
+            .lock()
+            .map_err(|_| FaroError::Other("the managed DuckDB session is no longer usable".into()))?
+            .interrupt_handle();
+        Ok(Box::new(Self {
+            conn,
+            managed: self.managed.clone(),
+            managed_interrupt: self.managed_interrupt.clone(),
+            interrupt,
+            dialect: DuckDbDialect,
+        }))
+    }
+
     async fn ping(&self) -> Result<()> {
         self.with_conn(|c| {
             c.execute_batch("SELECT 1").map_err(map_err)?;
@@ -521,7 +586,7 @@ impl Driver for DuckDbDriver {
     async fn apply_transaction(&self, statements: &[GuardedStatement]) -> Result<u64> {
         let owned: Vec<GuardedStatement> = statements.to_vec();
 
-        self.with_conn(move |c| {
+        self.with_managed(move |c| {
             if owned.is_empty() {
                 return Ok(0);
             }
@@ -568,19 +633,49 @@ impl Driver for DuckDbDriver {
     /// mutex, receiving batches with `blocking_recv`. Taking the lock per batch
     /// instead would let any other DuckDB call — a browse, a schema refresh —
     /// slip in between batches and run *inside* the import's open transaction.
-    async fn apply_streaming(
+    async fn apply_streaming_cancelled(
         &self,
         mut chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+        cancel: CancellationToken,
     ) -> Result<u64> {
         use crate::model::ApplyChunk;
 
-        self.with_conn(move |c| {
+        if cancel.is_cancelled() {
+            return Err(FaroError::Cancelled);
+        }
+        let runtime = tokio::runtime::Handle::current();
+        let token = cancel.clone();
+        let running = Arc::new(Mutex::new(0u8));
+        let active = running.clone();
+        let work = self.with_managed(move |c| {
+            struct Finished(Arc<Mutex<u8>>);
+            impl Drop for Finished {
+                fn drop(&mut self) {
+                    *self.0.lock().unwrap_or_else(|e| e.into_inner()) = 4;
+                }
+            }
+            let _finished = Finished(active.clone());
+            *active.lock().unwrap_or_else(|e| e.into_inner()) = 1;
+            let abort = |error| {
+                *active.lock().unwrap_or_else(|e| e.into_inner()) = 4;
+                rollback(c, error)
+            };
+            if token.is_cancelled() {
+                *active.lock().unwrap_or_else(|e| e.into_inner()) = 4;
+                return Err(FaroError::Cancelled);
+            }
             c.execute_batch("BEGIN TRANSACTION").map_err(map_err)?;
             let mut total = 0u64;
             let mut index = 0usize;
             let mut done = false;
 
-            while let Some(chunk) = chunks.blocking_recv() {
+            while let Some(chunk) = runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => None,
+                    chunk = chunks.recv() => chunk,
+                }
+            }) {
                 let batch = match chunk {
                     ApplyChunk::Batch(batch) => batch,
                     ApplyChunk::Done => {
@@ -589,14 +684,17 @@ impl Driver for DuckDbDriver {
                     }
                 };
                 for stmt in &batch {
+                    if token.is_cancelled() {
+                        return Err(abort(FaroError::Cancelled));
+                    }
                     let affected = match c.execute(&stmt.sql, []) {
                         Ok(n) => n as u64,
-                        Err(e) => return Err(rollback(c, map_err(e))),
+                        Err(e) => return Err(abort(map_err(e))),
                     };
                     if let Some(expected) = stmt.expect {
                         if affected != expected {
                             let guard = super::tx::guard_error(index, None, expected, affected);
-                            return Err(rollback(c, guard));
+                            return Err(abort(guard));
                         }
                     }
                     total += affected;
@@ -606,20 +704,54 @@ impl Driver for DuckDbDriver {
 
             // Only an explicit `Done` earns a commit; a sender dropped without
             // one means the reader failed partway through the file.
+            if token.is_cancelled() {
+                return Err(abort(FaroError::Cancelled));
+            }
             if !done {
-                return Err(rollback(
-                    c,
-                    FaroError::Other(
-                        "the source could not be read to the end, so nothing was applied".into(),
-                    ),
-                ));
+                return Err(abort(FaroError::Other(
+                    "the source could not be read to the end, so nothing was applied".into(),
+                )));
+            }
+            // State 1 can be claimed either by cancellation (3) or commit (2).
+            // An issued commit must never be interrupted or misreported as cancelled.
+            let can_commit = {
+                let mut phase = active.lock().unwrap_or_else(|e| e.into_inner());
+                if *phase == 1 {
+                    *phase = 2;
+                    true
+                } else {
+                    false
+                }
+            };
+            if !can_commit {
+                return Err(abort(FaroError::Cancelled));
             }
             if let Err(e) = c.execute_batch("COMMIT") {
-                return Err(rollback(c, map_err(e)));
+                return Err(abort(map_err(e)));
             }
             Ok(total)
-        })
-        .await
+        });
+        tokio::pin!(work);
+        tokio::select! {
+            biased;
+            result = &mut work => result,
+            _ = cancel.cancelled() => {
+                // A cancel may land just before native execution starts. Retry
+                // the interrupt until rollback begins, but never interrupt commit.
+                loop {
+                    {
+                        let mut phase = running.lock().unwrap_or_else(|e| e.into_inner());
+                        if *phase == 1 { *phase = 3; }
+                        if *phase == 3 { self.managed_interrupt.interrupt(); }
+                    }
+                    tokio::select! {
+                        biased;
+                        result = &mut work => break result,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                    }
+                }
+            }
+        }
     }
 
     fn dialect(&self) -> &dyn Dialect {

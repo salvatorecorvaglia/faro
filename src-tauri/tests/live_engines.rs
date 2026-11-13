@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 /// SQL Server tests share one database, and the ones that run DDL inside a
 /// transaction deadlock against the battery's catalog reads (error 1205)
 /// when the harness runs them in parallel. Each holds this for its duration.
+static MYSQL_SNAPSHOT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static SQLSERVER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn config(engine: Engine, port: u16, database: &str) -> ConnectionConfig {
@@ -314,6 +315,7 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
         d,
         &table("authors"),
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("name", "Ada Byron")],
         }],
@@ -331,6 +333,7 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
         d,
         &table("authors"),
         &[PendingChange::Update {
+            original: vec![],
             key: vec![cell("id", "1")],
             cells: vec![cell("name", "Ada Lovelace")],
         }],
@@ -364,10 +367,12 @@ async fn exercise(d: &dyn Driver, schema: Option<&str>, label: &str) {
         &table("authors"),
         &[
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "1")],
                 cells: vec![cell("name", "Should Not Persist")],
             },
             PendingChange::Update {
+                original: vec![],
                 key: vec![cell("id", "999999")],
                 cells: vec![cell("name", "Ghost")],
             },
@@ -2001,4 +2006,217 @@ async fn sqlserver_streams_an_import_and_rolls_back_an_unfinished_one() {
         .await
         .unwrap();
     d.close().await;
+}
+
+/// Verify a multi-page backup reader does not observe a commit from the editor.
+async fn verify_snapshot(driver: &dyn Driver, table: &str) {
+    let cancel = || CancellationToken::new();
+    driver
+        .execute(
+            &format!("CREATE TABLE {table} (id INT PRIMARY KEY, name VARCHAR(80))"),
+            cancel(),
+        )
+        .await
+        .unwrap();
+    driver
+        .execute(
+            &format!("INSERT INTO {table} VALUES (1, 'before')"),
+            cancel(),
+        )
+        .await
+        .unwrap();
+    let snapshot = driver
+        .snapshot_session()
+        .await
+        .unwrap()
+        .expect("snapshot support");
+    let select = format!("SELECT name FROM {table} WHERE id = 1");
+    assert_eq!(
+        snapshot.query(&select, 10, cancel()).await.unwrap().rows[0][0],
+        Value::Text("before".into())
+    );
+    driver
+        .execute(
+            &format!("UPDATE {table} SET name = 'after' WHERE id = 1"),
+            cancel(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.query(&select, 10, cancel()).await.unwrap().rows[0][0],
+        Value::Text("before".into())
+    );
+    snapshot.end_snapshot().await.unwrap();
+    // Reusing the managed connection must see current data and accept writes.
+    let managed = driver.managed_session().await.unwrap();
+    assert_eq!(
+        managed.query(&select, 10, cancel()).await.unwrap().rows[0][0],
+        Value::Text("after".into())
+    );
+    driver
+        .execute(&format!("DROP TABLE {table}"), cancel())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn mysql_and_mariadb_snapshot_readers_are_repeatable_and_read_only() {
+    let _serial = MYSQL_SNAPSHOT.lock().await;
+    for (engine, port) in [(Engine::MySql, 53306), (Engine::MariaDb, 53307)] {
+        let Some(driver) = try_open(engine, port, "faro_test").await else {
+            continue;
+        };
+        let table = format!("faro_snapshot_{}", uuid::Uuid::new_v4().simple());
+        verify_snapshot(&*driver, &table).await;
+        driver.close().await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_nontransactional_tables_refuse_snapshot_guarantees() {
+    let _serial = MYSQL_SNAPSHOT.lock().await;
+    let Some(driver) = try_open(Engine::MySql, 53306, "faro_test").await else {
+        return;
+    };
+    let table = format!("faro_myisam_{}", uuid::Uuid::new_v4().simple());
+    driver
+        .execute(
+            &format!("CREATE TABLE {table} (id INT) ENGINE=MyISAM"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(driver.snapshot_session().await.unwrap().is_none());
+    driver
+        .execute(&format!("DROP TABLE {table}"), CancellationToken::new())
+        .await
+        .unwrap();
+    driver.close().await;
+}
+
+#[tokio::test]
+async fn sqlserver_snapshot_requires_server_opt_in_and_restores_session_isolation() {
+    let _serial = SQLSERVER.lock().await;
+    let Some(admin) = try_open(Engine::SqlServer, 51433, "master").await else {
+        return;
+    };
+    let database = format!("snapshot_{}", uuid::Uuid::new_v4().simple());
+    admin
+        .execute(
+            &format!("CREATE DATABASE {database}"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let driver = try_open(Engine::SqlServer, 51433, &database).await.unwrap();
+    assert!(driver.snapshot_session().await.unwrap().is_none());
+    admin
+        .execute(
+            &format!("ALTER DATABASE {database} SET ALLOW_SNAPSHOT_ISOLATION ON"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    verify_snapshot(&*driver, "snapshot_rows").await;
+    let managed = driver.managed_session().await.unwrap();
+    let options = managed
+        .query("DBCC USEROPTIONS", 100, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(options.rows.iter().any(|row| row.first()
+        == Some(&Value::Text("isolation level".into()))
+        && row.get(1) == Some(&Value::Text("read committed".into()))));
+    drop(managed);
+    driver.close().await;
+    admin
+        .execute(
+            &format!("ALTER DATABASE {database} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE {database}"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_managed_writes_rollback_after_live_server_locks_release() {
+    let _serial = SQLSERVER.lock().await;
+    for (engine, port) in [
+        (Engine::Postgres, 55432),
+        (Engine::MySql, 53306),
+        (Engine::MariaDb, 53307),
+        (Engine::SqlServer, 51433),
+    ] {
+        let Some(driver) = try_open(engine, port, "faro_test").await else {
+            continue;
+        };
+        let table = format!("faro_lock_{}", uuid::Uuid::new_v4().simple());
+        let token = CancellationToken::new();
+        driver
+            .execute(
+                &format!("CREATE TABLE {table} (id INT PRIMARY KEY, value INT)"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        driver
+            .execute(
+                &format!("INSERT INTO {table} VALUES (1, 0)"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        driver
+            .execute(driver.dialect().begin_statement(), CancellationToken::new())
+            .await
+            .unwrap();
+        driver
+            .execute(
+                &format!("UPDATE {table} SET value = 10 WHERE id = 1"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let changes = [GuardedStatement {
+            sql: format!("UPDATE {table} SET value = 20 WHERE id = 1"),
+            expect: Some(1),
+        }];
+        let write = driver.apply_transaction_cancelled(&changes, token.clone());
+        tokio::pin!(write);
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {},
+            result = &mut write => panic!("{engine:?}: write should wait for the editor's row lock, got {result:?}"),
+        }
+        token.cancel();
+        let release = driver.execute("ROLLBACK", CancellationToken::new());
+        let (write, release) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(write, release)
+        })
+        .await
+        .expect("cancellation must finish after lock release");
+        release.unwrap();
+        assert!(
+            matches!(write, Err(faro_lib::error::FaroError::Cancelled)),
+            "{engine:?}: {write:?}"
+        );
+        let managed = driver.managed_session().await.unwrap();
+        let data = managed
+            .query(
+                &format!("SELECT value FROM {table} WHERE id = 1"),
+                10,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            data.rows[0][0],
+            Value::Int(0),
+            "{engine:?}: cancelled write must not commit"
+        );
+        driver
+            .execute(&format!("DROP TABLE {table}"), CancellationToken::new())
+            .await
+            .unwrap();
+        driver.close().await;
+    }
 }

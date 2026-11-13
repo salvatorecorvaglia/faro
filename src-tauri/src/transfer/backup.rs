@@ -55,6 +55,7 @@ pub struct BackupResult {
     pub rows: u64,
     pub bytes: u64,
     pub path: String,
+    pub consistent_snapshot: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,7 +83,18 @@ pub async fn write_backup(
     path: &std::path::Path,
     options: &BackupOptions,
     cancel: tokio_util::sync::CancellationToken,
-    mut on_progress: impl FnMut(BackupProgress),
+    on_progress: impl FnMut(BackupProgress) + Send,
+) -> Result<BackupResult> {
+    write_backup_with_consistency(driver, path, options, cancel, false, on_progress).await
+}
+
+pub async fn write_backup_with_consistency(
+    driver: &dyn Driver,
+    path: &std::path::Path,
+    options: &BackupOptions,
+    cancel: tokio_util::sync::CancellationToken,
+    consistent_snapshot: bool,
+    mut on_progress: impl FnMut(BackupProgress) + Send,
 ) -> Result<BackupResult> {
     let dialect = driver.dialect();
 
@@ -120,12 +132,20 @@ pub async fn write_backup(
 
     // Written aside and moved into place at the end, so a backup that fails or
     // is cancelled leaves no file that looks like a finished one.
-    let output = super::PartialFile::new(path);
-    let file = std::fs::File::create(output.path())?;
-    let mut out = std::io::BufWriter::new(file);
+    let mut writer = super::writer::DiskWriter::new(path.to_path_buf(), cancel.clone());
+    let mut out = super::writer::Buffer::default();
 
     writeln!(out, "-- Faro backup")?;
     writeln!(out, "-- Generated {}", chrono::Utc::now().to_rfc3339())?;
+    writeln!(
+        out,
+        "-- Data consistency: {}",
+        if consistent_snapshot {
+            "consistent read snapshot"
+        } else {
+            "best effort; concurrent changes may appear"
+        }
+    )?;
     writeln!(
         out,
         "-- Type names are the source engine's own, so restore into the same engine."
@@ -155,6 +175,7 @@ pub async fn write_backup(
         if options.drop_existing {
             for stmt in drop_statements(&details, dialect) {
                 writeln!(out, "{stmt}")?;
+                writer.write(out.take()).await?;
             }
         }
         for (index, detail) in details.iter().enumerate() {
@@ -168,6 +189,7 @@ pub async fn write_backup(
                 None => create_table_sql(detail, dialect),
             };
             writeln!(out, "{ddl}")?;
+            writer.write(out.take()).await?;
         }
     }
 
@@ -183,19 +205,28 @@ pub async fn write_backup(
             // next table's rows begin.
             for stmt in driver.pre_data_sql(&detail.table).await? {
                 writeln!(out, "{stmt}")?;
+                writer.write(out.take()).await?;
             }
-            let written =
-                write_table_data(driver, &mut out, detail, dialect, cancel.clone(), |rows| {
+            let written = write_table_data(
+                driver,
+                &mut out,
+                &mut writer,
+                detail,
+                dialect,
+                cancel.clone(),
+                |rows| {
                     on_progress(BackupProgress {
                         table: detail.table.name.clone(),
                         table_index: index,
                         table_count: details.len(),
                         rows_written: rows,
                     });
-                })
-                .await?;
+                },
+            )
+            .await?;
             for stmt in driver.post_data_sql(&detail.table).await? {
                 writeln!(out, "{stmt}")?;
+                writer.write(out.take()).await?;
             }
             total_rows += written;
         }
@@ -205,6 +236,7 @@ pub async fn write_backup(
         for detail in &details {
             for stmt in driver.post_data_sql(&detail.table).await? {
                 writeln!(out, "{stmt}")?;
+                writer.write(out.take()).await?;
             }
         }
     }
@@ -231,32 +263,32 @@ pub async fn write_backup(
                     continue;
                 }
                 writeln!(out, "{stmt}")?;
+                writer.write(out.take()).await?;
             }
         }
     }
 
-    out.flush()?;
-    // Closed before the rename, which Windows refuses on an open file.
-    drop(out);
-    output.commit()?;
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    writer.write(out.take()).await?;
+    let bytes = writer.finish().await?;
 
     Ok(BackupResult {
         tables: details.len(),
         rows: total_rows,
         bytes,
         path: path.to_string_lossy().into_owned(),
+        consistent_snapshot,
     })
 }
 
 /// Page through a table, emitting batched `INSERT`s.
 async fn write_table_data(
     driver: &dyn Driver,
-    out: &mut impl Write,
+    out: &mut super::writer::Buffer,
+    writer: &mut super::writer::DiskWriter,
     detail: &TableDetail,
     dialect: &dyn Dialect,
     cancel: tokio_util::sync::CancellationToken,
-    mut on_batch: impl FnMut(u64),
+    on_batch: impl FnMut(u64) + Send,
 ) -> Result<u64> {
     let qualified = dialect.qualify(detail.table.schema.as_deref(), &detail.table.name);
     // Columns the engine computes are left out: an INSERT may not supply them,
@@ -280,16 +312,17 @@ async fn write_table_data(
 
     // Paged in a stable order — a partition of the table rather than a
     // resample — and by key where the table has one; see `walk_pages`.
-    let mut total = 0u64;
-    crate::transfer::export::walk_pages(
+    let prefix = &prefix;
+    let (_, _, total, _) = crate::transfer::export::walk_pages_fold(
         driver,
         detail,
         &select_list.join(", "),
         FETCH_BATCH,
         cancel,
-        |page| {
+        (out, writer, 0u64, on_batch),
+        move |(out, writer, mut total, mut on_batch), page| async move {
             if page.rows.is_empty() {
-                return Ok(());
+                return Ok((out, writer, total, on_batch));
             }
 
             // A value Faro could not decode would be dumped as its type name
@@ -314,7 +347,8 @@ async fn write_table_data(
 
             total += page.rows.len() as u64;
             on_batch(total);
-            Ok(())
+            writer.write(out.take()).await?;
+            Ok((out, writer, total, on_batch))
         },
     )
     .await?;
@@ -549,10 +583,7 @@ async fn abort_outcome(driver: &dyn Driver, atomic: bool, applied: usize, total:
     if !atomic {
         return format!("{applied} of {total} statements had run and remain applied.");
     }
-    match driver
-        .execute("ROLLBACK", tokio_util::sync::CancellationToken::new())
-        .await
-    {
+    match driver.rollback().await {
         Ok(_) => "Nothing was applied — the database is as it was.".to_string(),
         // Say so plainly. Believing a failed restore left no trace, when it
         // did, is worse than knowing it is half-applied.
@@ -644,6 +675,10 @@ pub async fn restore(
         on_progress(index + 1, total);
     }
 
+    if cancel.is_cancelled() {
+        let outcome = abort_outcome(driver, atomic, total, total).await;
+        return Err(FaroError::Other(format!("Restore cancelled.\n\n{outcome}")));
+    }
     if atomic {
         driver
             .execute("COMMIT", tokio_util::sync::CancellationToken::new())

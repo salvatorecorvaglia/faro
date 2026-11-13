@@ -1,4 +1,5 @@
 import { Modal } from '@/components/ui';
+import { IS_APPLE } from '@/lib/shortcuts';
 
 /**
  * The keyboard reference, opened with `?` or from the palette.
@@ -6,16 +7,6 @@ import { Modal } from '@/components/ui';
  * Modifiers are rendered per platform: showing `⌘` to a Windows user is worse
  * than showing nothing, because they will try it.
  */
-// `navigator.platform` is deprecated; `userAgentData.platform` is its
-// replacement, with the old field kept as the fallback for engines that do not
-// implement it yet.
-const IS_APPLE =
-  typeof navigator !== 'undefined' &&
-  /Mac|iPhone|iPad/.test(
-    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
-      navigator.platform,
-  );
-
 const MOD = IS_APPLE ? '⌘' : 'Ctrl';
 const SHIFT = IS_APPLE ? '⇧' : 'Shift';
 const ENTER = IS_APPLE ? '↵' : 'Enter';
@@ -48,6 +39,7 @@ const GROUPS: { title: string; shortcuts: Shortcut[] }[] = [
     shortcuts: [
       { keys: `${MOD} ${ENTER}`, action: 'Run', note: 'the selection, if there is one' },
       { keys: `${SHIFT} ${ENTER}`, action: 'Run', note: 'the same thing' },
+      { keys: `${MOD} ${SHIFT} ${ENTER}`, action: 'Run the statement under the cursor' },
       { keys: `${MOD} ${SHIFT} F`, action: 'Format SQL', note: 'SQL engines only' },
       { keys: `${MOD} S`, action: 'Save the query' },
       { keys: `${MOD} Z`, action: 'Undo' },

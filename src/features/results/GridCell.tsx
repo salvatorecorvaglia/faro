@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
-
 import type { EditValue, Value } from '@/ipc/types';
+import { shortcut } from '@/lib/shortcuts';
 import { formatValue, isNumeric } from '@/lib/value';
 import { ROW_HEIGHT } from './gridLayout';
 
@@ -8,6 +8,8 @@ export function Cell({
   value,
   staged,
   width,
+  position,
+  columnIndex,
   selected,
   editing,
   editable,
@@ -19,6 +21,8 @@ export function Cell({
   value: Value | undefined;
   staged: EditValue | undefined;
   width: number;
+  position?: React.CSSProperties;
+  columnIndex?: number;
   selected: boolean;
   editing: boolean;
   editable: boolean;
@@ -44,7 +48,11 @@ export function Cell({
   const numeric = !dirty && value ? isNumeric(value) : false;
 
   if (editing) {
-    return <CellEditor width={width} initial={text} onCommit={onCommit} onCancel={onCancel} />;
+    return (
+      <div style={position}>
+        <CellEditor width={width} initial={text} onCommit={onCommit} onCancel={onCancel} />
+      </div>
+    );
   }
 
   const placeholder = isDefault ? 'default' : showsNull ? 'NULL' : text;
@@ -52,10 +60,12 @@ export function Cell({
   return (
     <div
       role="gridcell"
+      aria-colindex={columnIndex}
       aria-selected={selected}
       className="selectable shrink-0 cursor-default truncate border-r px-2"
       style={{
         width,
+        ...position,
         // The row height, so a cell's text sits on the same baseline the
         // virtualizer positions the row at. Shared rather than repeated: the
         // two drifting apart puts every value a pixel off its row.
@@ -159,7 +169,7 @@ function CellEditor({
           commit({ kind: 'null' });
         }
       }}
-      title="Enter to save · Esc to cancel · ⌘⌫ for NULL"
+      title={`Enter to save · Esc to cancel · ${shortcut('Backspace')} for NULL`}
     />
   );
 }

@@ -43,7 +43,10 @@ pub async fn run_query(
     query_id: String,
     limit: Option<u64>,
 ) -> Result<std::sync::Arc<RunResult>> {
-    let driver = state.registry.get(&connection_id).await?;
+    if sql_text.len() > 8 * 1024 * 1024 {
+        return Err(crate::budget::exceeded("This editor submission"));
+    }
+    let (driver, read_only) = state.registry.session(&connection_id).await?;
     // Clamped, not trusted: the limit comes from the frontend and feeds both
     // the row cap and the `limit + 1` truncation probe.
     let limit = crate::driver::clamp_limit(limit);
@@ -55,6 +58,9 @@ pub async fn run_query(
     // Comment-only fragments are dropped: a script ending in a comment would
     // otherwise send an empty statement, which MySQL rejects outright.
     let statements = sql::executable_statements(&sql_text, rules);
+    if statements.len() > 10_000 {
+        return Err(crate::budget::exceeded("The number of statements"));
+    }
 
     // A read-only connection runs reads and nothing else.
     //
@@ -65,7 +71,7 @@ pub async fn run_query(
     // Skipped for engines whose query language is not SQL: MongoDB queries are
     // documents, a leading-keyword test means nothing against them, and the
     // Mongo driver already refuses every write form it does not recognise.
-    if driver.dialect().is_sql() && state.registry.is_read_only(&connection_id).await {
+    if driver.dialect().is_sql() && read_only {
         if let Some(write) = statements
             .iter()
             .find(|s| !sql::is_read_only_statement_with(s, rules))
@@ -82,12 +88,32 @@ pub async fn run_query(
     }
 
     let query = state.registry.begin_query(&connection_id, &query_id);
+    let _submission = state
+        .registry
+        .submission(&connection_id, query.token())
+        .await?;
     let started = std::time::Instant::now();
 
-    let mut results = Vec::with_capacity(statements.len());
+    let mut results = Vec::new();
+    let mut retained_bytes = 0usize;
     for stmt in statements {
         match driver.run(&stmt, limit, query.token()).await {
             Ok(outcome) => {
+                let bytes = match &outcome {
+                    QueryOutcome::Rows(result) => crate::budget::result_bytes(result),
+                    _ => 64,
+                };
+                retained_bytes = retained_bytes
+                    .saturating_add(bytes)
+                    .saturating_add(stmt.len());
+                if retained_bytes > crate::budget::RUN_BYTES {
+                    results.push(StatementResult {
+                        sql: stmt,
+                        outcome: None,
+                        error: Some(crate::budget::exceeded("This script's combined results")),
+                    });
+                    break;
+                }
                 results.push(StatementResult {
                     sql: stmt,
                     outcome: Some(outcome),
@@ -235,4 +261,11 @@ pub async fn script_summary(
 #[tauri::command]
 pub fn statement_at_cursor(sql_text: String, offset: usize) -> Option<String> {
     sql::statement_at(&sql_text, offset)
+}
+
+/// Release results when their tab closes or replaces them.
+#[tauri::command]
+pub async fn release_result(state: State<'_, AppState>, query_id: String) -> Result<()> {
+    state.results.remove(&query_id);
+    Ok(())
 }

@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as ipc from '@/ipc';
 
@@ -14,6 +14,7 @@ import * as ipc from '@/ipc';
  * just the backend work, not a native file picker sitting on top of it.
  */
 export function useAsyncAction() {
+  const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -31,6 +32,8 @@ export function useAsyncAction() {
    */
   // biome-ignore lint/suspicious/noConfusingVoidType: an action may fall off the end without an explicit return, which infers as void, not undefined.
   const run = useCallback(async (action: () => Promise<string | void>) => {
+    if (inFlight.current) return false;
+    inFlight.current = true;
     setError(null);
     setDone(null);
     setBusy(true);
@@ -42,6 +45,7 @@ export function useAsyncAction() {
       setError(ipc.errorMessage(e));
       return false;
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }, []);
@@ -53,12 +57,12 @@ export function useAsyncAction() {
  * Subscribe to a Tauri progress event while `active`, so a backup or restore
  * that takes long enough to look like a hang shows what it is doing instead.
  */
-export function useBackendProgress<T>(event: string, active: boolean) {
+export function useBackendProgress<T>(event: string, active: boolean, queryId?: string | null) {
   const [progress, setProgress] = useState<T | null>(null);
 
   useEffect(() => {
+    setProgress(null);
     if (!active) {
-      setProgress(null);
       return;
     }
     // Caught, not floated: if `listen` rejects — the event system unavailable,
@@ -66,11 +70,16 @@ export function useBackendProgress<T>(event: string, active: boolean) {
     // teardown, which is both invisible and noisy in exactly the place nobody
     // is looking. Losing progress updates is the honest failure here; the
     // backup itself is unaffected.
-    const unlisten = listen<T>(event, (e) => setProgress(e.payload)).catch(() => null);
+    let disposed = false;
+    const unlisten = listen<{ queryId: string; progress: T }>(event, (e) => {
+      if (disposed) return;
+      if (queryId && e.payload.queryId === queryId) setProgress(e.payload.progress);
+    }).catch(() => null);
     return () => {
+      disposed = true;
       void unlisten.then((f) => f?.());
     };
-  }, [event, active]);
+  }, [event, active, queryId]);
 
   return progress;
 }

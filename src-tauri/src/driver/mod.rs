@@ -9,6 +9,7 @@ mod fetch;
 mod fk;
 mod mongo;
 mod mssql;
+mod mssql_pool;
 mod mysql;
 mod pool;
 mod postgres;
@@ -33,6 +34,30 @@ pub use dialect::Dialect;
 /// never requires touching UI or command code.
 #[async_trait]
 pub trait Driver: Send + Sync {
+    /// Start a dedicated consistent read transaction. The caller must hold
+    /// the managed-operation lease and end it with ROLLBACK on all outcomes.
+    async fn snapshot_session(&self) -> Result<Option<Box<dyn Driver>>> {
+        Ok(None)
+    }
+
+    /// Roll back this session, accounting for engines that already aborted it.
+    async fn rollback(&self) -> Result<()> {
+        self.execute("ROLLBACK", CancellationToken::new()).await?;
+        Ok(())
+    }
+
+    /// Close a read snapshot and restore any session isolation settings.
+    async fn end_snapshot(&self) -> Result<()> {
+        self.rollback().await
+    }
+
+    /// An operation-scoped view of the isolated managed session.
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        Err(crate::error::FaroError::Other(
+            "This engine has no managed SQL session".into(),
+        ))
+    }
+
     /// Cheap round-trip used to validate credentials and detect dropped links.
     async fn ping(&self) -> Result<()>;
 
@@ -145,6 +170,23 @@ pub trait Driver: Send + Sync {
     /// asked for.
     async fn apply_transaction(&self, statements: &[GuardedStatement]) -> Result<u64>;
 
+    async fn apply_transaction_cancelled(
+        &self,
+        statements: &[GuardedStatement],
+        cancel: CancellationToken,
+    ) -> Result<u64> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        sender
+            .send(ApplyChunk::Batch(statements.to_vec()))
+            .await
+            .map_err(|e| crate::error::FaroError::Other(e.to_string()))?;
+        sender
+            .send(ApplyChunk::Done)
+            .await
+            .map_err(|e| crate::error::FaroError::Other(e.to_string()))?;
+        self.apply_streaming_cancelled(receiver, cancel).await
+    }
+
     /// Apply statements that arrive over time, all inside one transaction.
     ///
     /// For import, where the statements are generated from a file being read in
@@ -162,11 +204,24 @@ pub trait Driver: Send + Sync {
     /// stream is no worse off than before.
     async fn apply_streaming(
         &self,
+        chunks: tokio::sync::mpsc::Receiver<ApplyChunk>,
+    ) -> Result<u64> {
+        self.apply_streaming_cancelled(chunks, CancellationToken::new())
+            .await
+    }
+
+    async fn apply_streaming_cancelled(
+        &self,
         mut chunks: tokio::sync::mpsc::Receiver<ApplyChunk>,
+        cancel: CancellationToken,
     ) -> Result<u64> {
         let mut all = Vec::new();
         let mut done = false;
-        while let Some(chunk) = chunks.recv().await {
+        while let Some(chunk) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(crate::error::FaroError::Cancelled),
+            chunk = chunks.recv() => chunk,
+        } {
             match chunk {
                 ApplyChunk::Batch(batch) => all.extend(batch),
                 ApplyChunk::Done => {
@@ -179,6 +234,9 @@ pub trait Driver: Send + Sync {
             return Err(crate::error::FaroError::Other(
                 "the source could not be read to the end, so nothing was applied".into(),
             ));
+        }
+        if cancel.is_cancelled() {
+            return Err(crate::error::FaroError::Cancelled);
         }
         self.apply_transaction(&all).await
     }

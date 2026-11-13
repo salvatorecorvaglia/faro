@@ -1,6 +1,6 @@
+use crate::sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlRow, MySqlSslMode};
+use crate::sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlRow, MySqlSslMode};
-use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +20,16 @@ impl Dialect for MySqlDialect {
     /// identifiers with backticks.
     fn lex_rules(&self) -> crate::sql::LexRules {
         crate::sql::LexRules::MYSQL
+    }
+
+    fn snapshot_eq(&self, column: &str, value: &Value, _type_name: &str) -> String {
+        match value {
+            Value::Text(text) => format!(
+                "CAST({column} AS BINARY) = CAST({} AS BINARY)",
+                self.quote_string(text)
+            ),
+            _ => format!("{column} = {}", self.literal(value)),
+        }
     }
 
     fn quote_ident(&self, ident: &str) -> String {
@@ -73,6 +83,7 @@ pub struct MySqlDriver {
     pool: MySqlPool,
     /// Catalog reads only, so schema browsing never queues behind a long query.
     meta: MySqlPool,
+    managed: MySqlPool,
     dialect: MySqlDialect,
     /// The connected database, used to scope catalog queries.
     database: String,
@@ -117,8 +128,8 @@ impl MySqlDriver {
 
         // See `driver::pool::dual_pool` for why user SQL gets one connection
         // and catalog reads get their own.
-        let (pool, meta) = super::pool::dual_pool::<sqlx::MySql>(
-            opts,
+        let (pool, meta) = super::pool::dual_pool::<crate::sqlx::MySql>(
+            opts.clone(),
             Some(std::time::Duration::from_secs(15)),
             session_init,
         )
@@ -126,16 +137,19 @@ impl MySqlDriver {
 
         // Resolve the database from the server rather than trusting the config:
         // it may have been omitted, and every catalog query needs it.
-        let database: String = sqlx::query("SELECT DATABASE()")
+        let database: String = crate::sqlx::query("SELECT DATABASE()")
             .fetch_one(&meta)
             .await
             .ok()
             .and_then(|r| r.get::<Option<String>, _>(0))
             .unwrap_or_else(|| config.database.clone());
 
+        let managed = super::pool::managed_pool::<crate::sqlx::MySql>(opts, session_init).await?;
+
         Ok(Self {
             pool,
             meta,
+            managed,
             dialect: MySqlDialect,
             database,
         })
@@ -144,8 +158,44 @@ impl MySqlDriver {
 
 #[async_trait]
 impl Driver for MySqlDriver {
+    async fn snapshot_session(&self) -> Result<Option<Box<dyn Driver>>> {
+        // Nontransactional tables cannot participate in an InnoDB snapshot.
+        let unsupported: i64 = crate::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' AND COALESCE(engine, '') <> 'InnoDB'"
+        ).bind(&self.database).fetch_one(&self.meta).await?;
+        if unsupported != 0 {
+            return Ok(None);
+        }
+        let session = Self {
+            pool: self.managed.clone(),
+            meta: self.managed.clone(),
+            managed: self.managed.clone(),
+            dialect: MySqlDialect,
+            database: self.database.clone(),
+        };
+        let mut connection = session.pool.acquire().await?;
+        crate::sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *connection)
+            .await?;
+        crate::sqlx::raw_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+            .execute(&mut *connection)
+            .await?;
+        drop(connection);
+        Ok(Some(Box::new(session)))
+    }
+
+    async fn managed_session(&self) -> Result<Box<dyn Driver>> {
+        Ok(Box::new(Self {
+            pool: self.managed.clone(),
+            meta: self.meta.clone(),
+            managed: self.managed.clone(),
+            dialect: MySqlDialect,
+            database: self.database.clone(),
+        }))
+    }
+
     async fn ping(&self) -> Result<()> {
-        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        crate::sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
 
@@ -160,7 +210,7 @@ impl Driver for MySqlDriver {
     }
 
     async fn list_tables(&self, _schema: Option<&str>) -> Result<Vec<TableInfo>> {
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT table_name AS name, table_type AS kind,
                    CAST(table_rows AS SIGNED) AS est_rows
@@ -199,7 +249,7 @@ impl Driver for MySqlDriver {
     }
 
     async fn describe_table(&self, table: &TableRef) -> Result<TableDetail> {
-        let col_rows = sqlx::query(
+        let col_rows = crate::sqlx::query(
             r#"
             SELECT column_name AS name,
                    column_type AS type_name,
@@ -225,7 +275,7 @@ impl Driver for MySqlDriver {
         }
 
         // Primary key columns in key order, which is what generated DML needs.
-        let pk_rows = sqlx::query(
+        let pk_rows = crate::sqlx::query(
             r#"
             SELECT column_name AS name
             FROM information_schema.key_column_usage
@@ -239,7 +289,7 @@ impl Driver for MySqlDriver {
         .await?;
         let primary_key: Vec<String> = pk_rows.iter().map(|r| r.get("name")).collect();
 
-        let fk_rows = sqlx::query(
+        let fk_rows = crate::sqlx::query(
             r#"
             SELECT k.constraint_name AS name,
                    k.column_name AS column_name,
@@ -270,7 +320,7 @@ impl Driver for MySqlDriver {
             |name| name.clone(),
         );
 
-        let idx_rows = sqlx::query(
+        let idx_rows = crate::sqlx::query(
             r#"
             SELECT index_name AS name,
                    CAST(non_unique AS SIGNED) AS non_unique,
@@ -318,7 +368,7 @@ impl Driver for MySqlDriver {
         // Aliased deliberately: MySQL returns information_schema columns in
         // upper case, and sqlx looks them up case-sensitively, so an unaliased
         // `table_type` is not found by that name.
-        let kind_row = sqlx::query(
+        let kind_row = crate::sqlx::query(
             "SELECT table_type AS kind FROM information_schema.tables
              WHERE table_schema = ? AND table_name = ?",
         )
@@ -362,7 +412,7 @@ impl Driver for MySqlDriver {
     /// `ON UPDATE` clauses all survive.
     async fn table_ddl(&self, table: &TableRef) -> Result<Option<String>> {
         let quoted = self.dialect.quote_ident(&table.name);
-        let row = sqlx::query(AssertSqlSafe(format!("SHOW CREATE TABLE {quoted}")))
+        let row = crate::sqlx::query(AssertSqlSafe(format!("SHOW CREATE TABLE {quoted}")))
             .fetch_optional(&self.meta)
             .await?;
 
@@ -379,7 +429,7 @@ impl Driver for MySqlDriver {
     async fn schema_snapshot(&self, _schema: Option<&str>) -> Result<Vec<TableColumns>> {
         // One catalog query for every table's columns, rather than four per
         // table through the default walk.
-        let rows = sqlx::query(
+        let rows = crate::sqlx::query(
             r#"
             SELECT table_name AS name, column_name AS column_name
             FROM information_schema.columns
@@ -419,7 +469,7 @@ impl Driver for MySqlDriver {
         let res = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(FaroError::Cancelled),
-            res = sqlx::query(AssertSqlSafe(owned)).execute(&mut *conn) => res?,
+            res = crate::sqlx::raw_sql(AssertSqlSafe(owned)).execute(&mut *conn) => res?,
         };
         Ok(ExecResult {
             rows_affected: res.rows_affected(),
@@ -428,14 +478,15 @@ impl Driver for MySqlDriver {
     }
 
     async fn apply_transaction(&self, statements: &[GuardedStatement]) -> Result<u64> {
-        super::tx::apply_guarded_mysql(&self.pool, statements).await
+        super::tx::apply_guarded_mysql(&self.managed, statements).await
     }
 
-    async fn apply_streaming(
+    async fn apply_streaming_cancelled(
         &self,
         chunks: tokio::sync::mpsc::Receiver<crate::model::ApplyChunk>,
+        cancel: CancellationToken,
     ) -> Result<u64> {
-        super::tx::apply_streaming_mysql(&self.pool, chunks).await
+        super::tx::apply_streaming_mysql(&self.managed, chunks, cancel).await
     }
 
     fn dialect(&self) -> &dyn Dialect {
@@ -445,6 +496,7 @@ impl Driver for MySqlDriver {
     async fn close(&self) {
         self.pool.close().await;
         self.meta.close().await;
+        self.managed.close().await;
     }
 }
 

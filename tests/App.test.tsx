@@ -51,6 +51,7 @@ beforeEach(() => {
     keychainOk: true,
   });
   mockInvoke({
+    set_exit_guard: () => {},
     list_connection_status: () => [connection()],
     keychain_available: () => true,
     list_schemas: () => [{ name: 'public', isSystem: false }],

@@ -149,6 +149,11 @@ pub trait Dialect: Send + Sync {
         self.quote_ident(&column.name)
     }
 
+    /// Exact snapshot comparison, independent of a column's display collation.
+    fn snapshot_eq(&self, column: &str, value: &Value, _type_name: &str) -> String {
+        format!("{column} = {}", self.literal(value))
+    }
+
     fn literal(&self, value: &Value) -> String {
         match value {
             Value::Bool(b) => self.bool_literal(*b).to_string(),

@@ -295,10 +295,17 @@ function ConnectionNode({
   onBackup: () => void;
   onRestore: () => void;
 }) {
+  const active = conn.activeConfig ?? conn;
   const openQueryTab = useTabs((s) => s.openQueryTab);
 
   return (
     <div>
+      {conn.connected && (
+        <div className="px-3 text-xs text-muted">
+          Active: {active.filePath ?? `${active.host}:${active.port}/${active.database}`} ·{' '}
+          {active.readOnly ? 'Read-only' : 'Read/write'}
+        </div>
+      )}
       <div
         className="group flex h-7 cursor-pointer items-center gap-1 px-1.5 hover:bg-[var(--bg-inset)]"
         role="button"
@@ -323,6 +330,14 @@ function ConnectionNode({
         )}
         <IconDatabase size={13} className="shrink-0 opacity-60" />
         <span className="min-w-0 flex-1 truncate text-sm">{conn.name}</span>
+        {conn.reconnectRequired && (
+          <span
+            className="text-xs text-warning"
+            title="Saved settings differ from the active session. Disconnect and reconnect to apply them."
+          >
+            Reconnect required
+          </span>
+        )}
 
         {connecting && <Spinner size={12} />}
 
@@ -337,7 +352,7 @@ function ConnectionNode({
               title="New query"
               onClick={(e) => {
                 e.stopPropagation();
-                openQueryTab(conn.id, starterQuery(conn.engine));
+                openQueryTab(conn.id, starterQuery(active.engine));
               }}
             >
               <IconPlus size={12} />
@@ -356,7 +371,7 @@ function ConnectionNode({
               <IconRefresh size={12} />
             </button>
           )}
-          {conn.connected && isSqlEngine(conn.engine) && (
+          {conn.connected && isSqlEngine(active.engine) && (
             <>
               <button
                 type="button"
@@ -375,9 +390,9 @@ function ConnectionNode({
               <button
                 type="button"
                 className="btn btn-ghost px-1"
-                disabled={conn.readOnly}
+                disabled={active.readOnly}
                 title={
-                  conn.readOnly
+                  active.readOnly
                     ? 'This connection is open read-only'
                     : 'Restore a dump into this database'
                 }

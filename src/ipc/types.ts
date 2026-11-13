@@ -44,6 +44,8 @@ export interface ConnectionConfig {
 export interface ConnectionStatus extends ConnectionConfig {
   connected: boolean;
   hasPassword: boolean;
+  activeConfig?: ConnectionConfig | null;
+  reconnectRequired?: boolean;
 }
 
 export interface EngineInfo {
@@ -244,9 +246,9 @@ export interface CellEdit {
 }
 
 export type PendingChange =
-  | { type: 'update'; key: CellEdit[]; cells: CellEdit[] }
+  | { type: 'update'; key: CellEdit[]; cells: CellEdit[]; original: CellEdit[] }
   | { type: 'insert'; cells: CellEdit[] }
-  | { type: 'delete'; key: CellEdit[] };
+  | { type: 'delete'; key: CellEdit[]; original: CellEdit[] };
 
 export interface GuardedStatement {
   sql: string;
@@ -306,6 +308,7 @@ export interface BackupOptions {
 }
 
 export interface BackupResult {
+  consistentSnapshot?: boolean;
   tables: number;
   rows: number;
   bytes: number;
@@ -351,6 +354,8 @@ export interface FaroError {
     | 'keychain'
     | 'sql'
     | 'io'
+    | 'conflict'
+    | 'resourceLimit'
     | 'other';
   message: string;
   code?: string;

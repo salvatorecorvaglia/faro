@@ -8,6 +8,9 @@ import type { BackupProgress, TableInfo } from '@/ipc/types';
 import { formatBytes, formatRowCount } from '@/lib/value';
 import { confirmDialog } from '@/state/confirm';
 
+const tableKey = (table: { schema: string | null; name: string }) =>
+  JSON.stringify([table.schema, table.name]);
+
 let backupCounter = 0;
 let restoreCounter = 0;
 
@@ -40,8 +43,10 @@ export function BackupDialog({
   const [includeSchema, setIncludeSchema] = useState(true);
   const [includeData, setIncludeData] = useState(true);
   const [dropExisting, setDropExisting] = useState(false);
+  const [allowBestEffort, setAllowBestEffort] = useState(false);
   const { busy, error, done, reset, run } = useAsyncAction();
-  const progress = useBackendProgress<BackupProgress>(ipc.BACKUP_PROGRESS_EVENT, busy);
+  const [queryId, setQueryId] = useState<string | null>(null);
+  const progress = useBackendProgress<BackupProgress>(ipc.BACKUP_PROGRESS_EVENT, busy, queryId);
 
   /** Whether the selection has been seeded for the current opening. */
   const seeded = useRef(false);
@@ -54,6 +59,7 @@ export function BackupDialog({
     }
     reset();
     setFilter('');
+    setAllowBestEffort(false);
   }, [open, reset]);
 
   // Seed the selection once the table list has actually arrived.
@@ -70,7 +76,7 @@ export function BackupDialog({
   useEffect(() => {
     if (!open || seeded.current || dataTables.length === 0) return;
     seeded.current = true;
-    setSelected(new Set(dataTables.map((t) => t.name)));
+    setSelected(new Set(dataTables.map(tableKey)));
   }, [open, dataTables]);
 
   const shown = filter.trim()
@@ -96,6 +102,8 @@ export function BackupDialog({
       });
       if (!path) return;
 
+      const operationId = `bak-${++backupCounter}-${crypto.randomUUID()}`;
+      setQueryId(operationId);
       const result = await ipc.backupDatabase(
         connectionId,
         path,
@@ -104,17 +112,21 @@ export function BackupDialog({
           // explicit keeps the dump reproducible from what the user actually
           // saw.
           tables: dataTables
-            .filter((t) => selected.has(t.name))
+            .filter((t) => selected.has(tableKey(t)))
             .map((t) => ({ schema: t.schema, name: t.name })),
           includeSchema,
           includeData,
           dropExisting,
         },
-        `bak-${++backupCounter}`,
+        operationId,
+        allowBestEffort,
       );
       return (
         `Backed up ${result.tables} tables, ${formatRowCount(result.rows)} rows ` +
-        `(${formatBytes(result.bytes)}) to ${result.path}`
+        `(${formatBytes(result.bytes)}) to ${result.path}. ` +
+        (result.consistentSnapshot
+          ? 'Read from a consistent snapshot.'
+          : 'Best-effort dump: concurrent database changes may affect consistency.')
       );
     });
   }
@@ -159,7 +171,7 @@ export function BackupDialog({
             <div className="flex gap-1">
               <button
                 className="btn btn-ghost text-xs"
-                onClick={() => setSelected(new Set(dataTables.map((t) => t.name)))}
+                onClick={() => setSelected(new Set(dataTables.map(tableKey)))}
                 type="button"
               >
                 All
@@ -184,6 +196,16 @@ export function BackupDialog({
             />
           )}
 
+          <label className="mb-2 flex items-start gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={allowBestEffort}
+              onChange={(event) => setAllowBestEffort(event.target.checked)}
+              disabled={busy}
+            />
+            Allow best-effort backup when a consistent snapshot is unavailable. Concurrent changes
+            may appear.
+          </label>
           <div className="max-h-48 overflow-auto rounded-md border p-1 border-line">
             {shown.length === 0 ? (
               <p className="px-2 py-3 text-center text-xs text-faint">
@@ -192,15 +214,17 @@ export function BackupDialog({
             ) : (
               shown.map((t) => (
                 <label
-                  key={t.name}
+                  key={tableKey(t)}
                   className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-0.5 text-xs hover:bg-[var(--bg-inset)]"
                 >
                   <input
                     type="checkbox"
-                    checked={selected.has(t.name)}
-                    onChange={() => toggle(t.name)}
+                    checked={selected.has(tableKey(t))}
+                    onChange={() => toggle(tableKey(t))}
                   />
-                  <span className="min-w-0 flex-1 truncate">{t.name}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {t.schema ? `${t.schema}.${t.name}` : t.name}
+                  </span>
                   {t.estimatedRows != null && (
                     <span className="text-2xs tabular-nums text-faint">
                       ~{formatRowCount(t.estimatedRows)}
@@ -272,9 +296,11 @@ export function RestoreDialog({
   const [info, setInfo] = useState<ipc.BackupFileInfo | null>(null);
   const [stopOnError, setStopOnError] = useState(true);
   const { busy, error, done, reset: resetStatus, run } = useAsyncAction();
+  const [queryId, setQueryId] = useState<string | null>(null);
   const progress = useBackendProgress<{ done: number; total: number }>(
     ipc.RESTORE_PROGRESS_EVENT,
     busy,
+    queryId,
   );
 
   useEffect(() => {
@@ -312,12 +338,9 @@ export function RestoreDialog({
     if (!proceed) return;
 
     const ok = await run(async () => {
-      const result = await ipc.restoreDatabase(
-        connectionId,
-        path,
-        { stopOnError },
-        `res-${++restoreCounter}`,
-      );
+      const operationId = `res-${++restoreCounter}-${crypto.randomUUID()}`;
+      setQueryId(operationId);
+      const result = await ipc.restoreDatabase(connectionId, path, { stopOnError }, operationId);
       return result.failed === 0
         ? `Ran ${result.statements} statements successfully.`
         : `Ran ${result.statements} statements; ${result.failed} failed.`;

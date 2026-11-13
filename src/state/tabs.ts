@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+import { releaseResult } from '@/ipc';
 
 import type { ResultSet, StatementResult, TableRef } from '@/ipc/types';
 import type { GridFilter, SortState } from '@/lib/grid';
@@ -311,6 +312,51 @@ const persistence = {
   },
 };
 
+/** Conservative retained UI data budget; estimates are cached by immutable result identity. */
+const MAX_RESULT_BYTES = 128 * 1024 * 1024;
+const resultSizes = new WeakMap<object, number>();
+function retainedBytes(value: unknown): number {
+  if (typeof value === 'string') return 2 * value.length + 32;
+  if (!value || typeof value !== 'object') return 16;
+  const cached = resultSizes.get(value);
+  if (cached !== undefined) return cached;
+  const bytes = Array.isArray(value)
+    ? 32 + value.reduce((total, item) => total + retainedBytes(item), 0)
+    : 64 +
+      Object.entries(value).reduce(
+        (total, [key, item]) => total + 2 * key.length + retainedBytes(item),
+        0,
+      );
+  resultSizes.set(value, bytes);
+  return bytes;
+}
+function boundResults(tabs: Tab[], newest: string, activeId: string | null): Tab[] {
+  const sizes = tabs.map((tab) => retainedBytes(tab.results) + retainedBytes(tab.browseResult));
+  let total = sizes.reduce((sum, size) => sum + size, 0);
+  const release = (tab: Tab): Tab => {
+    if (tab.resultQueryId) void releaseResult(tab.resultQueryId).catch(() => {});
+    return {
+      ...tab,
+      results: [],
+      browseResult: null,
+      resultQueryId: null,
+      error:
+        'Results released to keep memory bounded. Run the query or refresh this table to load them again.',
+    };
+  };
+  const bounded = tabs.map((tab, index) => {
+    if (total <= MAX_RESULT_BYTES || tab.id === newest || (tab.id === activeId && tab.dirty))
+      return tab;
+    total -= sizes[index] ?? 0;
+    return release(tab);
+  });
+  if (total > MAX_RESULT_BYTES)
+    return bounded.map((tab) =>
+      tab.id === newest && !(tab.id === activeId && tab.dirty) ? release(tab) : tab,
+    );
+  return bounded;
+}
+
 export const useTabs = create<TabState>()(
   persist<TabState, [], [], PersistedTabs>(
     (set, get) => ({
@@ -356,6 +402,8 @@ export const useTabs = create<TabState>()(
       closeTab: async (id) => {
         // Closing a tab with staged edits throws them away for good.
         if (!(await confirmLeaving(get().tabs.find((t) => t.id === id)))) return;
+        const closing = get().tabs.find((tab) => tab.id === id);
+        if (closing?.resultQueryId) void releaseResult(closing.resultQueryId).catch(() => {});
         set((s) => {
           const index = s.tabs.findIndex((t) => t.id === id);
           const tabs = s.tabs.filter((t) => t.id !== id);
@@ -376,10 +424,22 @@ export const useTabs = create<TabState>()(
         set({ activeId: id });
       },
 
-      update: (id, patch) =>
-        set((s) => ({
-          tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-        })),
+      update: (id, patch) => {
+        const existing = get().tabs.find((tab) => tab.id === id);
+        if (!existing) {
+          if (patch.resultQueryId) void releaseResult(patch.resultQueryId).catch(() => {});
+          return;
+        }
+        const previous = existing.resultQueryId;
+        if (previous && patch.resultQueryId && previous !== patch.resultQueryId)
+          void releaseResult(previous).catch(() => {});
+        set((s) => {
+          const tabs = s.tabs.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab));
+          return {
+            tabs: patch.results || patch.browseResult ? boundResults(tabs, id, s.activeId) : tabs,
+          };
+        });
+      },
 
       activeTab: () => {
         const { tabs, activeId } = get();

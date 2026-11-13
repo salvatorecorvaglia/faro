@@ -61,7 +61,7 @@ function TabBarItem({ id }: { id: string }) {
       </span>
       <button
         type="button"
-        className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100"
+        className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-60 group-focus-within:opacity-60 focus-visible:opacity-100 hover:!opacity-100"
         onClick={(e) => {
           e.stopPropagation();
           closeTab(tab.id);

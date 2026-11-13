@@ -13,7 +13,7 @@
 ## Features ✨
 
 - ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes, automatic protocol fallback probing (`Prefer` HTTPS to HTTP), and custom CA/client certificate authentication.
-- 🛡️ **Read-Only Mode & Safety**: Enhanced SQL statement parser and validator for strict connection-level read-only enforcement, preventing accidental data mutations or destructive DDL queries on production environments.
+- 🛡️ **Read-Only Mode & Safety**: SQL validation and engine-supported read-only settings help prevent accidental writes. This is not an authorization boundary: use database credentials with restricted privileges when writes must be impossible.
 - 🔒 **Secure Credential Storage**: Native OS password manager integration (macOS Keychain, Windows Credential Manager, Linux Secret Service via system `keyring`) with dynamic runtime re-probing and synchronized session fallback handling.
 - 📝 **Advanced SQL Editor & Command Palette**: Built with CodeMirror 6 featuring schema-aware autocompletion, configurable per-tab row limits, query formatting (`sql-formatter`), multi-query execution, and a keyboard-first Command Palette (`Cmd+K` / `Ctrl+K`).
 - 📊 **Virtualized Data Grid & High Precision**: Lightning-fast table rendering for massive datasets using `@tanstack/react-virtual`, complete with inline DML editing, dirty-state protection against accidental navigation loss, high-precision `BigDecimal` numerical decoding with normalized zero-stripping formatting, dynamic filtering, and column sorting.
@@ -46,8 +46,9 @@
 ### Prerequisites
 
 Ensure you have the following installed on your machine:
+
 - **Node.js**: `v20.0.0` or higher (v22 recommended)
-- **Rust Toolchain**: `1.85`+ (`rustup update stable`)
+- **Rust Toolchain**: `1.94`+ (`rustup update stable`)
 - **System Dependencies for Tauri v2**: Refer to the official [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for your operating system (macOS Xcode tools, Linux `libwebkit2gtk-4.1-dev`, or Windows C++ Build Tools).
 
 ### Installation

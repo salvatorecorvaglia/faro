@@ -1,6 +1,9 @@
 import type { FilterOp, ResultSet, Value } from '@/ipc/types';
 import { formatValue } from './value';
 
+// Reuse locale setup across the O(n log n) comparisons of a result-page sort.
+const textCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 export interface SortState {
   column: string;
   desc: boolean;
@@ -37,10 +40,7 @@ export function compareValues(a: Value | undefined, b: Value | undefined): numbe
 
   // localeCompare so accented text sorts next to its base letter rather than
   // after every ASCII character.
-  return formatValue(a!).localeCompare(formatValue(b!), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  });
+  return textCollator.compare(formatValue(a!), formatValue(b!));
 }
 
 /** Numeric view of a value, or null when it is not a number. */

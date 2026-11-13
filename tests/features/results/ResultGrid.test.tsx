@@ -65,6 +65,28 @@ describe('ResultGrid keyboard and semantics', () => {
   const selectedCells = () =>
     screen.getAllByRole('gridcell').filter((c) => c.getAttribute('aria-selected') === 'true');
 
+  it('leaves arrow keys and Enter to the filter controls', () => {
+    renderGrid({ showFilters: true });
+    const input = screen.getAllByRole('textbox')[0]!;
+    input.focus();
+    expect(fireEvent.keyDown(input, { key: 'ArrowRight' })).toBe(true);
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(true);
+    expect(selectedCells()).toHaveLength(0);
+    const operator = screen.getByRole('combobox', { name: 'Filter operator for id' });
+    expect(fireEvent.keyDown(operator, { key: 'ArrowDown' })).toBe(true);
+    expect(selectedCells()).toHaveLength(0);
+  });
+
+  it('scrolls horizontally to keep the keyboard selection visible', () => {
+    renderGrid();
+    const grid = screen.getByRole('grid');
+    Object.defineProperty(grid, 'clientWidth', { value: 100, configurable: true });
+    fireEvent.keyDown(grid, { key: 'End' });
+    expect(grid.scrollLeft).toBeGreaterThan(0);
+    fireEvent.keyDown(grid, { key: 'Home' });
+    expect(grid.scrollLeft).toBe(0);
+  });
+
   it('clears the selection on Escape', () => {
     renderGrid();
     const grid = screen.getByRole('grid');
