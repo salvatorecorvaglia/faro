@@ -1,11 +1,34 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 // Tauri serves the frontend from a fixed port and expects the build in dist/.
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(mode === 'desktop-smoke'
+      ? [
+          {
+            name: 'native-smoke-bootstrap',
+            transformIndexHtml() {
+              return [
+                {
+                  tag: 'script',
+                  children: readFileSync(
+                    new URL('./tests/native/bootstrap.js', import.meta.url),
+                    'utf8',
+                  ),
+                  injectTo: 'head-prepend' as const,
+                },
+              ];
+            },
+          },
+        ]
+      : []),
+  ],
   resolve: {
     // import.meta.dirname rather than __dirname: Vite's native config loader
     // does not provide the CJS globals.
@@ -25,4 +48,4 @@ export default defineConfig({
     // unaffected; set this to `true` for a one-off build that needs them.
     sourcemap: false,
   },
-});
+}));

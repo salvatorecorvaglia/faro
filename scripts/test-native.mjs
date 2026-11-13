@@ -22,10 +22,11 @@ const config = {
         dataDirectory: path.join(directory, 'webview'),
         // Hosted Windows runners do not reliably keep the test window foregrounded.
         // Keep timers and worker-driven checks running when WebView2 is occluded.
+        // These replace Wry's defaults, so preserve its SmartScreen/mini-menu flags.
         ...(process.platform === 'win32'
           ? {
               additionalBrowserArgs:
-                '--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding',
+                '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding',
             }
           : {}),
       },
