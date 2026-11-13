@@ -24,5 +24,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
 // Removed from normal production bundles by Vite.
 if (import.meta.env.MODE === 'desktop-smoke') {
+  void import('../tests/native/smoke.js').then((smoke) => smoke.start());
   void import('./test/desktopBridge').then((bridge) => bridge.start());
 }

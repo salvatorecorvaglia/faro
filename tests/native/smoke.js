@@ -1,4 +1,4 @@
-void (async () => {
+export async function start() {
   const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
   const wait = async (predicate, message) => {
     const deadline = performance.now() + 15000;
@@ -122,4 +122,4 @@ void (async () => {
       },
     });
   }
-})();
+}

@@ -86,13 +86,6 @@ pub fn run() {
             let _ = app;
             Ok(())
         })
-        .on_page_load(|webview, payload| {
-            #[cfg(all(feature = "desktop-smoke", debug_assertions))]
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let _ = webview.eval(include_str!("../../tests/native/smoke.js"));
-            }
-            let _ = (webview, payload);
-        })
         .invoke_handler(|invoke| {
             #[cfg(all(feature = "desktop-smoke", debug_assertions))]
             if invoke.message.command().starts_with("smoke_") {

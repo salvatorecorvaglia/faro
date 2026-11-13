@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 const directory = await mkdtemp(path.join(os.tmpdir(), 'faro-native-'));
+if (process.env.GITHUB_OUTPUT) {
+  const { appendFile } = await import('node:fs/promises');
+  await appendFile(process.env.GITHUB_OUTPUT, `artifacts=${directory}\n`);
+}
 const frontend = path.join(directory, 'frontend');
 const config = {
   build: { frontendDist: frontend },
@@ -34,13 +38,17 @@ async function run(command, args, env, timeoutMs = 180_000) {
   child.stderr.on('data', (data) => {
     log += data;
   });
-  const timeout = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
-  const code = await new Promise((resolve, reject) => {
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill('SIGTERM');
+  }, timeoutMs);
+  const { code, signal } = await new Promise((resolve, reject) => {
     child.on('error', reject);
-    child.on('exit', resolve);
+    child.on('close', (code, signal) => resolve({ code, signal }));
   });
   clearTimeout(timeout);
-  return { code, log };
+  return { code, signal, timedOut, log };
 }
 try {
   const assets = await run(
@@ -91,7 +99,7 @@ try {
       result = JSON.parse(await readFile(report, 'utf8'));
     } catch {
       throw new Error(
-        `Native smoke produced no report; code=${native.code}; logs: ${directory}\n${native.log.slice(-6000)}`,
+        `Native smoke produced no report; code=${native.code}; signal=${native.signal}; timedOut=${native.timedOut}; logs: ${directory}\n${native.log.slice(-6000)}`,
       );
     }
     console.log(JSON.stringify({ directory, action, code: native.code, ...result }, null, 2));

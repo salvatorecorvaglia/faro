@@ -463,10 +463,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
       - name: Native close, quit, SQLite, import, restore and snapshot checks
+        id: native
         if: runner.os != 'Linux'
         run: pnpm test:desktop
       - name: Native checks under Xvfb
+        id: native-linux
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum pnpm test:desktop
+      - name: Save native smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-smoke-${{ matrix.os }}
+          path: |
+            ${{ steps.native.outputs.artifacts || steps.native-linux.outputs.artifacts }}/*.log
+            ${{ steps.native.outputs.artifacts || steps.native-linux.outputs.artifacts }}/*.json
+          if-no-files-found: ignore
       - name: Platform file publication regressions
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml transfer::tests --lib
