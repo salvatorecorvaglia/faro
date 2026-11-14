@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with one built against Tiberius 0.13.
 - Refresh frontend and Rust dependencies and raise the minimum Rust version
   to 1.94.
+- Run native macOS smoke tests on macOS 15 and retain native smoke logs and
+  reports as CI artifacts when checks fail.
 - Improve modal scrolling, focus restoration, platform-specific shortcut labels,
   keyboard access to tab controls, and text contrast in both themes.
 - Clarify that read-only mode helps prevent accidental writes; database
@@ -59,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement, and clear obsolete fallback values after successful persistence.
 - Restore SQL Server isolation settings after snapshot cleanup and use MySQL's
   simple protocol for transaction control.
+- Allow Tauri IPC connections through the content security policy so desktop
+  commands can reach the backend.
+- Embed native smoke-test assets correctly on Windows, keep checks running
+  when the test window is obscured, and report startup failures and timeouts
+  with page-load and process diagnostics.
 
 ### Security
 
