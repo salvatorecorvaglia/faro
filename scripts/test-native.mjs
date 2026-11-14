@@ -10,7 +10,11 @@ if (process.env.GITHUB_OUTPUT) {
 }
 const frontend = path.join(directory, 'frontend');
 const config = {
-  build: { frontendDist: frontend },
+  // A Windows absolute path can deserialize as FrontendDist::Url, causing
+  // Tauri to navigate to file:///... instead of embedding the frontend.
+  // The Files variant accepts directories recursively and is unambiguous,
+  // including when the temp directory is on a different drive from the repo.
+  build: { frontendDist: [frontend] },
   app: {
     windows: [
       {
