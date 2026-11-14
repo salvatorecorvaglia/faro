@@ -71,6 +71,16 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            #[cfg(all(feature = "desktop-smoke", debug_assertions))]
+            eprintln!(
+                "Native smoke: page {:?} {} ({})",
+                payload.event(),
+                payload.url(),
+                webview.label()
+            );
+            let _ = (webview, payload);
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
