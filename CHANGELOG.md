@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.0`, Biome to `2.6.8`, and Testing Library user-event to `14.6.12`; refresh Rust and frontend lockfiles and dependency overrides.
+
 ## [1.3.0] - 2026-11-15
 
 ### Added
