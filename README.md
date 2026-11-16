@@ -2,7 +2,7 @@
   <img src="resources/faro.svg" alt="Faro logo" width="96" height="96">
 </p>
 
-# Faro 🗼
+# Faro
 
 **Fast, clean, cross-platform database client**
 
