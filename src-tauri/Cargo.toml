@@ -40,7 +40,7 @@ sqlx-postgres = {version = "0.9", default-features = false, features = ["chrono"
 sqlx-mysql = {version = "0.9", default-features = false, features = ["chrono", "uuid", "bigdecimal", "json"]}
 
 # SQLite sessions and the settings store share rusqlite and one native SQLite library.
-rusqlite = { version = "0.42.0", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.43.0", features = ["bundled", "column_decltype"] }
 # The default "v1" feature pulls in the native store for each platform:
 # Keychain on macOS, Credential Manager on Windows, Secret Service on Linux.
 keyring = "4"

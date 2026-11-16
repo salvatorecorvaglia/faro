@@ -17,21 +17,22 @@ minimumReleaseAgeExclude:
   - "@vitest/spy@5.0.5"
   - vitest@5.0.5
   - "@vitest/coverage-v8@5.0.5"
-  - react-resizable-panels@4.14.6 || 4.14.8 || 4.22.0 || 4.22.1 || 4.23.0
-  - "@biomejs/biome@2.6.4 || 2.6.5"
-  - "@biomejs/cli-android-arm64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-android-x64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-darwin-arm64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-darwin-x64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-linux-arm64-musl@2.6.4 || 2.6.5"
-  - "@biomejs/cli-linux-arm64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-linux-x64-musl@2.6.4 || 2.6.5"
-  - "@biomejs/cli-linux-x64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-win32-arm64@2.6.4 || 2.6.5"
-  - "@biomejs/cli-win32-x64@2.6.4 || 2.6.5"
+  - react-resizable-panels@4.14.6 || 4.14.8 || 4.22.0 || 4.22.1 || 4.23.0 || 4.24.0
+  - "@biomejs/biome@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-android-arm64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-android-x64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-darwin-arm64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-darwin-x64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-linux-arm64-musl@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-linux-arm64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-linux-x64-musl@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-linux-x64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-win32-arm64@2.6.4 || 2.6.5 || 2.6.8"
+  - "@biomejs/cli-win32-x64@2.6.4 || 2.6.5 || 2.6.8"
   - "@playwright/test@1.65.1"
   - playwright-core@1.65.1
   - playwright@1.65.1
+  - "@testing-library/user-event@14.6.12"
 
 # CodeMirror breaks if two copies of @codemirror/view load: the packages
 # exchange class instances, and duplicate module identities fail instanceof
