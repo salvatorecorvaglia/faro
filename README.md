@@ -10,6 +10,14 @@
 
 ---
 
+## Homebrew
+
+Stable releases are distributed through the personal tap:
+
+```sh
+brew install --cask salvatorecorvaglia/tap/faro
+```
+
 ## Features ✨
 
 - ⚡ **Multi-Engine Support**: Native drivers for **PostgreSQL**, **MySQL**, **MariaDB**, **SQLite**, **DuckDB**, **MongoDB**, **ClickHouse**, and **Microsoft SQL Server (MSSQL)** with configurable SSL/TLS connection modes, automatic protocol fallback probing (`Prefer` HTTPS to HTTP), and custom CA/client certificate authentication.

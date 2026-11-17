@@ -1,0 +1,9 @@
+{
+  "name": "faro",
+  "kind": "cask",
+  "description": "Multi-engine database desktop client",
+  "title": "Faro",
+  "pattern": "Faro_{version}_{arch}.dmg",
+  "arm": "aarch64",
+  "intel": "x64"
+}

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add stable-release Homebrew cask generation with SHA-256 checksums, CI validation, release attachments, and optional publication to the personal tap; document installation and release maintenance.
+
 ### Changed
 
+- Update Tauri JavaScript API and CLI to `2.12.5`, the Rust runtime to `2.12.6`, tauri-build to `2.7.5`, UUID to `1.29.3`, and zip to `9.6.1`; refresh lockfiles.
 - Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.0`, Biome to `2.6.8`, and Testing Library user-event to `14.6.12`; refresh Rust and frontend lockfiles and dependency overrides.
 
 ## [1.3.0] - 2026-11-15
