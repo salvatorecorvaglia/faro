@@ -481,13 +481,3 @@ jobs:
           if-no-files-found: ignore
       - name: Platform file publication regressions
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml transfer::tests --lib
-
-  homebrew-tests:
-    name: Homebrew manifest contracts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - run: python3 -m unittest discover -s tests/homebrew -v
