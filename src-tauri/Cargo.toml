@@ -46,7 +46,7 @@ rusqlite = { version = "0.43.0", features = ["bundled", "column_decltype"] }
 keyring = "4"
 
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.29.2", features = ["v4", "serde"] }
+uuid = { version = "1.29.3", features = ["v4", "serde"] }
 # Arbitrary-precision decimals. Version tracks sqlx's, so the `BigDecimal`
 # decoded out of a row is the same type this crate names.
 bigdecimal = "0.4.11"
@@ -77,7 +77,7 @@ tiberius = { version = "0.13.0", default-features = false, features = ["native-t
 bb8 = "0.9"
 # The local bb8 manager uses the same Tiberius version as the driver.
 
-zip = { version = "9.5.1", default-features = false }
+zip = { version = "9.6.1", default-features = false }
 tempfile = "3"
 csv = "1.4"
 # Spreadsheet write and read. Pinned to current majors — older releases are
