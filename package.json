@@ -40,7 +40,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-resizable-panels": "^4.24.0",
-    "sql-formatter": "^15.9.0",
+    "sql-formatter": "^15.9.1",
     "zustand": "^5.1.0"
   },
   "devDependencies": {

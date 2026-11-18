@@ -46,6 +46,7 @@ minimumReleaseAgeExclude:
   - "@tauri-apps/cli-win32-x64-msvc@2.12.5"
   - "@tauri-apps/cli@2.12.5"
   - "@tauri-apps/api@2.12.5"
+  - sql-formatter@15.9.1
 
 # CodeMirror breaks if two copies of @codemirror/view load: the packages
 # exchange class instances, and duplicate module identities fail instanceof
