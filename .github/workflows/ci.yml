@@ -7,8 +7,6 @@ on:
       - "**.md"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
   workflow_call:
     inputs:
       release:
@@ -35,6 +33,12 @@ jobs:
   frontend:
     name: Frontend (Lint, Typecheck & Test)
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.1-noble
+      options: --ipc=host
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
 
     steps:
@@ -81,8 +85,8 @@ jobs:
       - name: JavaScript bundle budget and test bridge exclusion
         run: pnpm check:bundle
 
-      - name: Install browser test engines
-        run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Check browser image matches Playwright
+        run: test "$(node -p 'require("@playwright/test/package.json").version')" = "1.65.1"
 
       - name: Browser layout, focus, keyboard and grid checks
         run: pnpm test:browser
