@@ -19,6 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe('useUpdater', () => {
@@ -47,6 +48,14 @@ describe('useUpdater', () => {
     // the timer fires must not leave one pending.
     const { unmount } = renderHook(() => useUpdater());
     unmount();
+
+    vi.advanceTimersByTime(5000);
+    expect(checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('honours FARO_DISABLE_UPDATE_CHECK', () => {
+    vi.stubEnv('FARO_DISABLE_UPDATE_CHECK', '1');
+    renderHook(() => useUpdater());
 
     vi.advanceTimersByTime(5000);
     expect(checkForUpdates).not.toHaveBeenCalled();

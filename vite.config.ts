@@ -6,6 +6,10 @@ import { defineConfig } from 'vite';
 
 // Tauri serves the frontend from a fixed port and expects the build in dist/.
 export default defineConfig(({ mode }) => ({
+  // Expose FARO_DISABLE_UPDATE_CHECK to the webview. Tauri has no runtime
+  // environment to read, so the update-check opt-out is set at build time,
+  // with the same name the Electron apps read at launch.
+  envPrefix: ['VITE_', 'FARO_'],
   plugins: [
     react(),
     tailwindcss(),

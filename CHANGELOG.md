@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add Linux ARM64 desktop release builds, including `linux-aarch64` updater artifacts in CI and release manifests.
+- Add a build-time `FARO_DISABLE_UPDATE_CHECK=1` opt-out for the automatic startup update check.
+
 ### Changed
 
-- Update Tauri JavaScript API and CLI to `2.12.5`, the Rust runtime to `2.12.6`, tauri-build to `2.7.5`, UUID to `1.29.3`, and zip to `9.6.1`; refresh lockfiles.
-- Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.0`, Biome to `2.6.8`, and Testing Library user-event to `14.6.12`; refresh Rust and frontend lockfiles and dependency overrides.
+- Update Tauri JavaScript API and CLI to `2.12.5`, the Rust runtime to `2.12.6`, tauri-build to `2.7.5`, UUID to `1.29.3`, zip to `9.7.0`, and sqlx-core to `0.9.1`; refresh lockfiles.
+- Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.0`, Biome to `2.6.8`, Testing Library user-event to `14.6.12`, and Vitest with V8 coverage to `5.1.1`; refresh Rust and frontend lockfiles and dependency overrides.
 
 ## [1.3.0] - 2026-11-15
 
