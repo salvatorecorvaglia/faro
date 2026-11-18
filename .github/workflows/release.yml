@@ -20,6 +20,7 @@ jobs:
   validate:
     name: Validate Tag Ref
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -43,6 +44,7 @@ jobs:
     name: Publish verified installers
     needs: [validate, quality]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
