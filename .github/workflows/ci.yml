@@ -363,7 +363,7 @@ jobs:
           fi
       - name: Build installers once without publishing
         id: installers
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         with:
           args: ${{ matrix.args }}
       - name: Stage and checksum the installers
