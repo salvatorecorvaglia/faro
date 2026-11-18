@@ -288,6 +288,10 @@ jobs:
             target: ""
             args: ""
             updater-platform: linux-x86_64
+          - platform: "ubuntu-22.04-arm"
+            target: ""
+            args: ""
+            updater-platform: linux-aarch64
           - platform: "windows-latest"
             target: ""
             args: ""
@@ -325,7 +329,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install Linux dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu-22.04')
         run: |
           for source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
             if [[ -f "$source" ]]; then
@@ -368,7 +372,7 @@ jobs:
           import { createHash } from 'node:crypto';
           import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
           import { basename, join } from 'node:path';
-          const platforms = ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'windows-x86_64'];
+          const platforms = ['darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'linux-aarch64', 'windows-x86_64'];
           const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
           const safeName = (name) =>
             typeof name === 'string' &&
