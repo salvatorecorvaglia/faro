@@ -39,7 +39,7 @@
     "@tauri-apps/plugin-updater": "^2.14.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-resizable-panels": "^4.24.0",
+    "react-resizable-panels": "^4.24.1",
     "sql-formatter": "^15.9.1",
     "zustand": "^5.1.0"
   },

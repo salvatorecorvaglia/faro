@@ -17,7 +17,7 @@ minimumReleaseAgeExclude:
   - "@vitest/spy@5.0.5 || 5.1.1"
   - vitest@5.0.5 || 5.1.1
   - "@vitest/coverage-v8@5.0.5 || 5.1.1"
-  - react-resizable-panels@4.14.6 || 4.14.8 || 4.22.0 || 4.22.1 || 4.23.0 || 4.24.0
+  - react-resizable-panels@4.14.6 || 4.14.8 || 4.22.0 || 4.22.1 || 4.23.0 || 4.24.0 || 4.24.1
   - "@biomejs/biome@2.6.4 || 2.6.5 || 2.6.8"
   - "@biomejs/cli-android-arm64@2.6.4 || 2.6.5 || 2.6.8"
   - "@biomejs/cli-android-x64@2.6.4 || 2.6.5 || 2.6.8"
