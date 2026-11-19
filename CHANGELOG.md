@@ -14,8 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Update Tauri JavaScript API and CLI to `2.12.5`, the Rust runtime to `2.12.6`, tauri-build to `2.7.5`, UUID to `1.29.3`, zip to `9.7.0`, and sqlx-core to `0.9.1`; refresh lockfiles.
-- Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.0`, Biome to `2.6.8`, Testing Library user-event to `14.6.12`, and Vitest with V8 coverage to `5.1.1`; refresh Rust and frontend lockfiles and dependency overrides.
+- Update Tauri JavaScript API to `2.12.5`, the CLI to `2.12.6`, the Rust runtime to `2.12.7`, tauri-build to `2.7.5`, UUID to `1.29.3`, zip to `9.7.0`, and sqlx-core to `0.9.1`; refresh lockfiles.
+- Update rusqlite to `0.43.0`, react-resizable-panels to `4.24.1`, Biome to `2.6.8`, Testing Library user-event to `14.6.12`, and Vitest with V8 coverage to `5.1.1`; refresh Rust and frontend lockfiles and dependency overrides.
+- Update sql-formatter to `15.9.1`.
+- Add weekly Dependabot checks for GitHub Actions, frontend and Rust dependencies; refresh CI actions.
+- Preserve tag-triggered CI runs, skip Rust dependency audits during release checks, and set explicit build and publication timeouts.
+
+### Fixed
+
+- Run required CI checks for Markdown-only pull requests.
+- Run browser tests in the matching Playwright `1.65.1` container with preinstalled engines and dependencies to avoid browser setup timeouts.
 
 ## [1.3.0] - 2026-11-15
 
