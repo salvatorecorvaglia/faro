@@ -32,7 +32,7 @@ minimumReleaseAgeExclude:
   - "@playwright/test@1.65.1"
   - playwright-core@1.65.1
   - playwright@1.65.1
-  - "@testing-library/user-event@14.6.12"
+  - "@testing-library/user-event@14.6.12 || 14.6.13"
   - "@tauri-apps/cli-darwin-arm64@2.12.5 || 2.12.6"
   - "@tauri-apps/cli-darwin-x64@2.12.5 || 2.12.6"
   - "@tauri-apps/cli-linux-arm-gnueabihf@2.12.5 || 2.12.6"
@@ -47,6 +47,7 @@ minimumReleaseAgeExclude:
   - "@tauri-apps/cli@2.12.5 || 2.12.6"
   - "@tauri-apps/api@2.12.5"
   - sql-formatter@15.9.1
+  - "@testing-library/jest-dom@8.0.0"
 
 # CodeMirror breaks if two copies of @codemirror/view load: the packages
 # exchange class instances, and duplicate module identities fail instanceof
