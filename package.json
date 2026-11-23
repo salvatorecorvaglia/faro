@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.3.1",
   "type": "module",
-  "packageManager": "pnpm@12.16.1",
+  "packageManager": "pnpm@12.23.0",
   "description": "Fast, clean, cross-platform database client",
   "icon": "resources/faro.svg",
   "scripts": {
