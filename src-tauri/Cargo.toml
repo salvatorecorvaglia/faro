@@ -53,7 +53,7 @@ bigdecimal = "0.4.11"
 dirs = "7.0.0"
 # `bundled` compiles DuckDB in; there is no system libduckdb to link against on
 # a typical machine. It is the reason this crate is behind a feature.
-duckdb = { version = "1.20000.2", features = ["bundled"], optional = true }
+duckdb = { version = "1.20001.0", features = ["bundled"], optional = true }
 
 # MongoDB. `bson` is re-exported by the driver but named explicitly because the
 # query parser converts JSON into BSON directly.
@@ -77,12 +77,12 @@ tiberius = { version = "0.13.0", default-features = false, features = ["native-t
 bb8 = "0.9"
 # The local bb8 manager uses the same Tiberius version as the driver.
 
-zip = { version = "9.7.3", default-features = false }
+zip = { version = "9.8.2", default-features = false }
 tempfile = "3"
 csv = "1.4"
 # Spreadsheet write and read. Pinned to current majors — older releases are
 # what Cargo's MSRV-aware resolver picks if rust-version is left too low.
-rust_xlsxwriter = "0.103.0"
+rust_xlsxwriter = "0.104.0"
 calamine = "0.38.0"
 
 [features]
